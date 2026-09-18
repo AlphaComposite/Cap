@@ -101,6 +101,28 @@ describe("canPlayRawContentType", () => {
 });
 
 describe("resolvePlaybackSource", () => {
+	it("does not invalidate a presigned videoSrc with an unsigned cache buster", async () => {
+		const signedUrl =
+			"https://s3.example.com/cap/original.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc123";
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			createResponse(signedUrl, {
+				status: 206,
+				redirected: false,
+			}),
+		);
+
+		await expect(
+			resolvePlaybackSource({
+				videoSrc: signedUrl,
+				fetchImpl,
+				now: () => 123,
+			}),
+		).resolves.toMatchObject({ url: signedUrl, type: "mp4" });
+		expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(signedUrl, {
+			headers: { range: "bytes=0-0" },
+		});
+	});
+
 	it("uses the page's signed URL without a playlist request or changing its signature", async () => {
 		const initialUrl =
 			"https://bucket.s3.amazonaws.com/result.mp4?signature=abc";

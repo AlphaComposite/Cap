@@ -30,6 +30,23 @@ type ResolvePlaybackSourceInput = {
 };
 
 function appendCacheBust(url: string, timestamp: number): string {
+	try {
+		const parsed = new URL(url, "https://cap.so");
+		const signedParameters = [
+			"x-amz-signature",
+			"x-goog-signature",
+			"x-ms-signature",
+		];
+		if (
+			[...parsed.searchParams.keys()].some((key) =>
+				signedParameters.includes(key.toLowerCase()),
+			)
+		) {
+			return url;
+		}
+	} catch {
+		// Preserve the existing string-based fallback for non-standard relative URLs.
+	}
 	return url.includes("?")
 		? `${url}&_t=${timestamp}`
 		: `${url}?_t=${timestamp}`;
