@@ -26,6 +26,16 @@
 	</a>
 </p>
 
+> [!IMPORTANT]
+> **About this fork:** This is AlphaComposite's maintained public fork of
+> [Cap](https://github.com/CapSoftware/Cap), whose original authors and
+> canonical repository remain at CapSoftware/Cap. The fork's `main` branch is
+> kept as a clean upstream mirror, while `downstream/main` carries maintained
+> additions such as reversible transcript-driven no-speech and filler-word
+> editing. It is not an official CapSoftware distribution. See
+> [DOWNSTREAM_MAINTENANCE.md](DOWNSTREAM_MAINTENANCE.md) for branch policy,
+> upstream synchronization, verification, and contribution guidance.
+
 <img src="https://raw.githubusercontent.com/CapSoftware/Cap/refs/heads/main/apps/web/public/landing-cover.png" alt="Cap app preview">
 
 Cap is the open source alternative to Loom. It gives you fast screen recording, polished local editing, instant share links, comments, transcripts, analytics, team workspaces, custom domains, custom S3 storage, and full self-hosting when you need complete control.

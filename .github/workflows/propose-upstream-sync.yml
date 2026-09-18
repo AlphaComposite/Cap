@@ -1,0 +1,93 @@
+name: Propose upstream sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: propose-upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  propose:
+    if: github.repository == 'AlphaComposite/Cap'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out downstream branch
+        uses: actions/checkout@v4
+        with:
+          ref: downstream/main
+          fetch-depth: 0
+
+      - name: Fetch upstream and update clean mirror
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/CapSoftware/Cap.git
+          git fetch --prune upstream main
+          git push origin refs/remotes/upstream/main:refs/heads/main
+
+          upstream_sha=$(git rev-parse upstream/main)
+          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${upstream_sha:0:12}" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create reviewed merge candidate
+        if: steps.upstream.outputs.needed == 'true'
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="sync/upstream-${{ steps.upstream.outputs.short_sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$branch"
+
+          if ! git merge --no-ff --no-edit upstream/main; then
+            git merge --abort
+            echo "Upstream has conflicts with downstream/main. Resolve them in a local sync branch and run the full verification gates." >&2
+            exit 1
+          fi
+
+          git push --set-upstream origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Open upstream sync pull request
+        if: steps.upstream.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: ${{ steps.candidate.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base downstream/main \
+            --head "$SYNC_BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [[ -n "$existing" ]]; then
+            echo "Pull request #$existing already covers $SYNC_BRANCH."
+            exit 0
+          fi
+
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base downstream/main \
+            --head "$SYNC_BRANCH" \
+            --title "chore: merge upstream ${UPSTREAM_SHA:0:12}" \
+            --body "Automated upstream merge proposal for CapSoftware/Cap@${UPSTREAM_SHA}. This pull request must pass the downstream verification gates and be reviewed before merge."
