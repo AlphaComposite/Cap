@@ -1,6 +1,7 @@
 "use client";
 
-import type { VideoEditRange } from "@cap/database/types";
+import type { VideoAutoCuts, VideoEditRange } from "@cap/database/types";
+import { Switch } from "@cap/ui";
 import type { Video } from "@cap/web-domain";
 import { useVirtualizer } from "@virtual-grid/react";
 import {
@@ -13,12 +14,14 @@ import {
 	X,
 } from "lucide-react";
 import {
+	Fragment,
 	memo,
 	type PointerEvent as ReactPointerEvent,
 	type RefObject,
 	useCallback,
 	useDeferredValue,
 	useEffect,
+	useId,
 	useMemo,
 	useRef,
 	useState,
@@ -32,10 +35,12 @@ import {
 	type EditTranscriptGroup,
 	type EditTranscriptWord,
 	getDeletedTranscriptWordIds,
+	getTranscriptSilenceGaps,
 	groupEditTranscriptWords,
 	isFillerWord,
 	normalizeTranscriptSelection,
 	planFillerCuts,
+	planSilenceCuts,
 	planTranscriptCut,
 } from "@/lib/edit-transcript";
 import { useActiveTranscriptWordIndex } from "./use-active-transcript-word-index";
@@ -46,7 +51,12 @@ type TranscriptSidebarProps = {
 	videoId: Video.VideoId;
 	videoRef: RefObject<HTMLVideoElement | null>;
 	keepRanges: VideoEditRange[];
+	autoCuts: VideoAutoCuts;
 	onDeleteRanges: (ranges: VideoEditRange[]) => void;
+	onSetAutoCutLayer: (
+		kind: keyof VideoAutoCuts,
+		layer: VideoAutoCuts[keyof VideoAutoCuts],
+	) => void;
 };
 
 const SIDEBAR_CLASS_NAME =
@@ -68,13 +78,6 @@ function formatTimestamp(milliseconds: number) {
 	return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function isTimeKept(timeMs: number, keepRanges: readonly VideoEditRange[]) {
-	const timeSeconds = timeMs / 1000;
-	return keepRanges.some(
-		(range) => timeSeconds >= range.start && timeSeconds <= range.end,
-	);
-}
-
 function toVideoRanges(
 	ranges: readonly { startMs: number; endMs: number }[],
 ): VideoEditRange[] {
@@ -82,6 +85,35 @@ function toVideoRanges(
 		start: range.startMs / 1000,
 		end: range.endMs / 1000,
 	}));
+}
+
+function AutoCutToggle({
+	id,
+	checked,
+	label,
+	onCheckedChange,
+}: {
+	id: string;
+	checked: boolean;
+	label: string;
+	onCheckedChange: (checked: boolean) => void;
+}) {
+	return (
+		<div className="flex min-h-8 items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 transition-colors hover:bg-gray-2">
+			<label
+				htmlFor={id}
+				className="min-w-0 text-[11px] font-medium text-gray-11"
+			>
+				{label}
+			</label>
+			<Switch
+				id={id}
+				checked={checked}
+				onCheckedChange={onCheckedChange}
+				aria-label={label}
+			/>
+		</div>
+	);
 }
 
 function TranscriptSkeleton() {
@@ -120,6 +152,11 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 	deletedWordIds,
 	searchMatchSet,
 	previewFillers,
+	fillersEnabled,
+	removableFillerWordIds,
+	silenceEnabled,
+	silenceGapBeforeWordMs,
+	trailingSilenceGapMs,
 	wordElementsRef,
 	onSeek,
 	onWordPointerDown,
@@ -133,6 +170,11 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 	deletedWordIds: ReadonlySet<string>;
 	searchMatchSet: ReadonlySet<number>;
 	previewFillers: boolean;
+	fillersEnabled: boolean;
+	removableFillerWordIds: ReadonlySet<string>;
+	silenceEnabled: boolean;
+	silenceGapBeforeWordMs: ReadonlyMap<number, number>;
+	trailingSilenceGapMs: number;
 	wordElementsRef: RefObject<Map<number, HTMLButtonElement>>;
 	onSeek: (index: number) => void;
 	onWordPointerDown: (
@@ -173,8 +215,16 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 						const isActive = activeWordIndex === index;
 						const isDeleted = deletedWordIds.has(word.id);
 						const isFiller = isFillerWord(word.text);
+						const isRemovableFiller = removableFillerWordIds.has(word.id);
 						const isSearchMatch = searchMatchSet.has(index);
-						const willRemoveAsFiller = previewFillers && isFiller && !isDeleted;
+						const willRemoveAsFiller =
+							(previewFillers || fillersEnabled) &&
+							isFiller &&
+							isRemovableFiller &&
+							!isDeleted;
+						const pauseMs = silenceGapBeforeWordMs.get(index) ?? 0;
+						const trailingPauseMs =
+							index === words.length - 1 ? trailingSilenceGapMs : 0;
 
 						let stateClassName: string;
 						if (isSelected) {
@@ -197,29 +247,46 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 						}
 
 						return (
-							<button
-								key={word.id}
-								ref={(element) => {
-									if (element) {
-										wordElementsRef.current.set(index, element);
-									} else {
-										wordElementsRef.current.delete(index);
-									}
-								}}
-								type="button"
-								data-word-index={index}
-								onPointerDown={(event) => onWordPointerDown(index, event)}
-								onPointerEnter={(event) => onWordPointerEnter(index, event)}
-								className={[
-									"inline py-[3px] pr-[5px] text-left leading-5 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50",
-									stateClassName,
-									isDeleted && !isSelected
-										? "text-gray-7 line-through decoration-gray-6"
-										: "",
-								].join(" ")}
-							>
-								{word.text}
-							</button>
+							<Fragment key={word.id}>
+								{silenceEnabled && pauseMs > 0 && (
+									<span
+										aria-hidden
+										className="mr-1 inline-flex rounded-full bg-gray-3 px-1.5 py-0.5 font-mono text-[9px] font-semibold tabular-nums text-gray-9"
+									>
+										{`${(pauseMs / 1000).toFixed(pauseMs % 1000 === 0 ? 0 : 1)}s`}
+									</span>
+								)}
+								<button
+									ref={(element) => {
+										if (element) {
+											wordElementsRef.current.set(index, element);
+										} else {
+											wordElementsRef.current.delete(index);
+										}
+									}}
+									type="button"
+									data-word-index={index}
+									onPointerDown={(event) => onWordPointerDown(index, event)}
+									onPointerEnter={(event) => onWordPointerEnter(index, event)}
+									className={[
+										"inline py-[3px] pr-[5px] text-left leading-5 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50",
+										stateClassName,
+										isDeleted && !isSelected
+											? "text-gray-7 line-through decoration-gray-6"
+											: "",
+									].join(" ")}
+								>
+									{word.text}
+								</button>
+								{silenceEnabled && trailingPauseMs > 0 && (
+									<span
+										aria-hidden
+										className="mr-1 inline-flex rounded-full bg-gray-3 px-1.5 py-0.5 font-mono text-[9px] font-semibold tabular-nums text-gray-9"
+									>
+										{`${(trailingPauseMs / 1000).toFixed(trailingPauseMs % 1000 === 0 ? 0 : 1)}s`}
+									</span>
+								)}
+							</Fragment>
 						);
 					})}
 			</p>
@@ -231,7 +298,9 @@ export function TranscriptSidebar({
 	videoId,
 	videoRef,
 	keepRanges,
+	autoCuts,
 	onDeleteRanges,
+	onSetAutoCutLayer,
 }: TranscriptSidebarProps) {
 	const [response, setResponse] = useState<TranscriptResponse | null>(null);
 	const [isRequesting, setIsRequesting] = useState(false);
@@ -242,6 +311,8 @@ export function TranscriptSidebar({
 	const [searchQuery, setSearchQuery] = useState("");
 	const [searchMatchIndex, setSearchMatchIndex] = useState(0);
 	const [previewFillers, setPreviewFillers] = useState(false);
+	const silenceToggleId = useId();
+	const fillersToggleId = useId();
 	const deferredSearchQuery = useDeferredValue(searchQuery);
 	const dragAnchorRef = useRef<number | null>(null);
 	const selectionRef = useRef(selection);
@@ -254,7 +325,7 @@ export function TranscriptSidebar({
 	);
 
 	const loadTranscript = useCallback(async () => {
-		setResponse(await getEditTranscript(videoId));
+		setResponse(await getEditTranscript(videoId, "source"));
 	}, [videoId]);
 
 	useEffect(() => {
@@ -267,7 +338,7 @@ export function TranscriptSidebar({
 		let timeout: number;
 		const poll = async () => {
 			try {
-				const nextResponse = await getEditTranscript(videoId);
+				const nextResponse = await getEditTranscript(videoId, "source");
 				if (cancelled) return;
 				setResponse(nextResponse);
 				if (nextResponse.status === "processing") {
@@ -309,12 +380,65 @@ export function TranscriptSidebar({
 				: new Set<string>(),
 		[keepRanges, transcript],
 	);
-	const availableFillerCount = useMemo(
+	const fillerPlan = useMemo(
 		() =>
-			transcript?.words.filter(
-				(word) => isFillerWord(word.text) && !deletedWordIds.has(word.id),
-			).length ?? 0,
-		[deletedWordIds, transcript],
+			transcript
+				? planFillerCuts(transcript.words, transcript.durationMs)
+				: { ranges: [], fillerCount: 0, skippedCount: 0 },
+		[transcript],
+	);
+	const removableFillerWordIds = useMemo(() => {
+		if (!transcript) return new Set<string>();
+		return new Set(
+			transcript.words.flatMap((word) => {
+				if (!isFillerWord(word.text)) return [];
+				const midpointMs = (word.startMs + word.endMs) / 2;
+				return fillerPlan.ranges.some(
+					(range) => midpointMs >= range.startMs && midpointMs <= range.endMs,
+				)
+					? [word.id]
+					: [];
+			}),
+		);
+	}, [fillerPlan.ranges, transcript]);
+	const silenceGaps = useMemo(
+		() =>
+			transcript
+				? getTranscriptSilenceGaps(transcript.words, transcript.durationMs, {
+						thresholdMs: autoCuts.silence.thresholdMs,
+						padMs: autoCuts.silence.padMs,
+					})
+				: [],
+		[autoCuts.silence.padMs, autoCuts.silence.thresholdMs, transcript],
+	);
+	const silenceGapBeforeWordMs = useMemo(
+		() =>
+			new Map(
+				silenceGaps.flatMap((gap) =>
+					gap.beforeWordIndex === null
+						? []
+						: [[gap.beforeWordIndex, gap.endMs - gap.startMs] as const],
+				),
+			),
+		[silenceGaps],
+	);
+	const trailingSilenceGapMs =
+		silenceGaps.find((gap) => gap.beforeWordIndex === null)?.endMs ?? 0;
+	const trailingSilenceStartMs =
+		silenceGaps.find((gap) => gap.beforeWordIndex === null)?.startMs ?? 0;
+	const trailingSilenceDurationMs = Math.max(
+		0,
+		trailingSilenceGapMs - trailingSilenceStartMs,
+	);
+	const silencePlan = useMemo(
+		() =>
+			transcript
+				? planSilenceCuts(transcript.words, transcript.durationMs, {
+						thresholdMs: autoCuts.silence.thresholdMs,
+						padMs: autoCuts.silence.padMs,
+					})
+				: { ranges: [], gapCount: 0, removedMs: 0 },
+		[autoCuts.silence.padMs, autoCuts.silence.thresholdMs, transcript],
 	);
 	const searchMatches = useMemo(() => {
 		const query = deferredSearchQuery.trim().toLocaleLowerCase();
@@ -410,57 +534,42 @@ export function TranscriptSidebar({
 		if (nextWord) seekToWord(selection.endIndex + 1);
 	}, [clearSelection, onDeleteRanges, seekToWord, selection, transcript]);
 
-	const deleteFillers = useCallback(() => {
-		if (!transcript) return;
-		const plan = planFillerCuts(transcript.words, transcript.durationMs);
-		const activeRanges = plan.ranges.filter((range) =>
-			isTimeKept((range.startMs + range.endMs) / 2, keepRanges),
-		);
-		if (activeRanges.length === 0) {
-			toast.info("No safe filler words remain.");
-			return;
-		}
+	const toggleFillers = useCallback(
+		(enabled: boolean) => {
+			const removedCount = fillerPlan.fillerCount - fillerPlan.skippedCount;
+			if (enabled && fillerPlan.ranges.length === 0) {
+				toast.info("No safe filler words were detected.");
+				return;
+			}
+			onSetAutoCutLayer("fillers", {
+				...autoCuts.fillers,
+				enabled,
+				ranges: toVideoRanges(fillerPlan.ranges),
+				removedCount,
+				skippedCount: fillerPlan.skippedCount,
+			});
+			clearSelection();
+		},
+		[autoCuts.fillers, clearSelection, fillerPlan, onSetAutoCutLayer],
+	);
 
-		onDeleteRanges(toVideoRanges(activeRanges));
-		let activeRangeIndex = 0;
-		let removedCount = 0;
-		for (const word of transcript.words) {
-			if (!isFillerWord(word.text) || deletedWordIds.has(word.id)) continue;
-			const midpointMs = (word.startMs + word.endMs) / 2;
-			while (
-				activeRangeIndex < activeRanges.length &&
-				(activeRanges[activeRangeIndex]?.endMs ?? 0) < midpointMs
-			) {
-				activeRangeIndex++;
+	const toggleSilence = useCallback(
+		(enabled: boolean) => {
+			if (enabled && silencePlan.ranges.length === 0) {
+				toast.info("No extended no-speech pauses were detected.");
+				return;
 			}
-			const activeRange = activeRanges[activeRangeIndex];
-			if (
-				activeRange &&
-				midpointMs >= activeRange.startMs &&
-				midpointMs <= activeRange.endMs
-			) {
-				removedCount++;
-			}
-		}
-		const skippedCount = availableFillerCount - removedCount;
-		clearSelection();
-		if (skippedCount > 0) {
-			toast.info(
-				`Removed ${removedCount} fillers and skipped ${skippedCount} unsafe cuts.`,
-			);
-		} else {
-			toast.success(
-				`Removed ${removedCount} filler${removedCount === 1 ? "" : "s"}.`,
-			);
-		}
-	}, [
-		availableFillerCount,
-		clearSelection,
-		deletedWordIds,
-		keepRanges,
-		onDeleteRanges,
-		transcript,
-	]);
+			onSetAutoCutLayer("silence", {
+				...autoCuts.silence,
+				enabled,
+				ranges: toVideoRanges(silencePlan.ranges),
+				removedMs: silencePlan.removedMs,
+				gapCount: silencePlan.gapCount,
+			});
+			clearSelection();
+		},
+		[autoCuts.silence, clearSelection, onSetAutoCutLayer, silencePlan],
+	);
 
 	const moveSearchMatch = useCallback(
 		(direction: -1 | 1) => {
@@ -500,7 +609,7 @@ export function TranscriptSidebar({
 
 	const handleRequest = useCallback(async () => {
 		setIsRequesting(true);
-		const nextResponse = await requestEditTranscript(videoId);
+		const nextResponse = await requestEditTranscript(videoId, "source");
 		setResponse(nextResponse);
 		setIsRequesting(false);
 	}, [videoId]);
@@ -612,7 +721,7 @@ export function TranscriptSidebar({
 				const target = event.target;
 				if (
 					target instanceof HTMLElement &&
-					(target.matches("input, textarea, select") ||
+					(target.matches("input, textarea, select, button, [role='switch']") ||
 						target.isContentEditable)
 				) {
 					return;
@@ -642,22 +751,36 @@ export function TranscriptSidebar({
 							{transcript.words.length} words
 						</p>
 					</div>
-					{availableFillerCount > 0 && (
-						<button
-							type="button"
-							onClick={deleteFillers}
-							onMouseEnter={() => setPreviewFillers(true)}
-							onMouseLeave={() => setPreviewFillers(false)}
-							onFocus={() => setPreviewFillers(true)}
-							onBlur={() => setPreviewFillers(false)}
-							className="group inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-gray-4 bg-gray-1 pl-2.5 pr-1 text-[11px] font-medium text-gray-11 transition hover:border-red-100 hover:bg-red-50 hover:text-red-400"
-						>
-							Remove fillers
-							<span className="rounded-full bg-gray-3 px-1.5 py-px text-[10px] font-semibold tabular-nums text-gray-11 transition group-hover:bg-red-300/15 group-hover:text-red-400">
-								{availableFillerCount}
-							</span>
-						</button>
-					)}
+				</div>
+
+				<div className="mt-3 space-y-0.5 rounded-xl border border-gray-3 bg-gray-1 p-1">
+					<AutoCutToggle
+						id={silenceToggleId}
+						checked={autoCuts.silence.enabled}
+						label={
+							autoCuts.silence.enabled
+								? `${Number((silencePlan.removedMs / 1000).toFixed(1))}s of no-speech pauses removed`
+								: `Remove ${silencePlan.gapCount} no-speech pause${silencePlan.gapCount === 1 ? "" : "s"} (${Number((silencePlan.removedMs / 1000).toFixed(1))}s)`
+						}
+						onCheckedChange={toggleSilence}
+					/>
+					<div className="h-px bg-gray-3" />
+					<fieldset
+						aria-label="Filler word removal preview"
+						onMouseEnter={() => setPreviewFillers(true)}
+						onMouseLeave={() => setPreviewFillers(false)}
+					>
+						<AutoCutToggle
+							id={fillersToggleId}
+							checked={autoCuts.fillers.enabled}
+							label={
+								autoCuts.fillers.enabled
+									? `${removableFillerWordIds.size} filler word${removableFillerWordIds.size === 1 ? "" : "s"} removed`
+									: `Remove ${removableFillerWordIds.size} filler word${removableFillerWordIds.size === 1 ? "" : "s"}`
+							}
+							onCheckedChange={toggleFillers}
+						/>
+					</fieldset>
 				</div>
 
 				<div className="mt-3 flex h-8 items-center gap-2 rounded-lg bg-gray-3 px-2.5 ring-1 ring-transparent transition focus-within:bg-gray-1 focus-within:ring-blue-500/50">
@@ -764,6 +887,11 @@ export function TranscriptSidebar({
 										deletedWordIds={deletedWordIds}
 										searchMatchSet={searchMatchSet}
 										previewFillers={previewFillers}
+										fillersEnabled={autoCuts.fillers.enabled}
+										removableFillerWordIds={removableFillerWordIds}
+										silenceEnabled={autoCuts.silence.enabled}
+										silenceGapBeforeWordMs={silenceGapBeforeWordMs}
+										trailingSilenceGapMs={trailingSilenceDurationMs}
 										wordElementsRef={wordElementsRef}
 										onSeek={seekToWord}
 										onWordPointerDown={handleWordPointerDown}

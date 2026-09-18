@@ -20,6 +20,7 @@ import {
 } from "@/lib/edit-transcript";
 import { decryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
 import { runPromise } from "@/lib/server";
+import { parseVideoEditSpec } from "@/lib/video-edits";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { backfillEditTranscriptWorkflow } from "@/workflows/transcribe";
 
@@ -112,6 +113,7 @@ function isDurationCurrent(durationMs: number, expectedSeconds: number) {
 async function readCurrentEditTranscript(
 	bucket: Awaited<ReturnType<typeof loadEditableTranscriptVideo>>["bucket"],
 	video: typeof videos.$inferSelect,
+	timeline: "current" | "source" = "current",
 ): Promise<EditTranscript | null> {
 	const content = await getOptionalObject(
 		bucket,
@@ -134,17 +136,22 @@ async function readCurrentEditTranscript(
 			: null;
 	}
 
-	return isDurationCurrent(transcript.durationMs, edit.editSpec.sourceDuration)
-		? remapEditTranscriptThroughSpec(transcript, edit.editSpec)
-		: null;
+	const editSpec = parseVideoEditSpec(edit.editSpec);
+	if (!isDurationCurrent(transcript.durationMs, editSpec.sourceDuration)) {
+		return null;
+	}
+	return timeline === "source"
+		? transcript
+		: remapEditTranscriptThroughSpec(transcript, editSpec);
 }
 
 export async function getEditTranscript(
 	videoId: Video.VideoId,
+	timeline: "current" | "source" = "current",
 ): Promise<EditTranscriptResponse> {
 	try {
 		const { video, bucket } = await loadEditableTranscriptVideo(videoId);
-		const transcript = await readCurrentEditTranscript(bucket, video);
+		const transcript = await readCurrentEditTranscript(bucket, video, timeline);
 
 		if (transcript) {
 			return { status: "ready", transcript };
@@ -257,10 +264,11 @@ async function clearEditTranscriptBackfill(
 
 export async function requestEditTranscript(
 	videoId: Video.VideoId,
+	timeline: "current" | "source" = "current",
 ): Promise<EditTranscriptResponse> {
 	try {
 		const { user, video, bucket } = await loadEditableTranscriptVideo(videoId);
-		const transcript = await readCurrentEditTranscript(bucket, video);
+		const transcript = await readCurrentEditTranscript(bucket, video, timeline);
 		if (transcript) {
 			return { status: "ready", transcript };
 		}
@@ -270,7 +278,11 @@ export async function requestEditTranscript(
 			return { status: "processing" };
 		}
 
-		const transcriptAfterClaim = await readCurrentEditTranscript(bucket, video);
+		const transcriptAfterClaim = await readCurrentEditTranscript(
+			bucket,
+			video,
+			timeline,
+		);
 		if (transcriptAfterClaim) {
 			await clearEditTranscriptBackfill(videoId, claim.requestId);
 			return { status: "ready", transcript: transcriptAfterClaim };

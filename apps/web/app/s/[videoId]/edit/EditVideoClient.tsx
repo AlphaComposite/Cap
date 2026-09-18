@@ -1,5 +1,6 @@
 "use client";
 
+import type { VideoAutoCuts, VideoEditSpec } from "@cap/database/types";
 import {
 	Button,
 	Dialog,
@@ -34,10 +35,12 @@ import {
 	useState,
 } from "react";
 import { toast } from "sonner";
+import { getVideoDownloadInfo } from "@/actions/videos/download";
 import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
 } from "@/actions/videos/save-edits";
+import { isEditorShortcutTarget } from "@/lib/editor-keyboard";
 import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
@@ -46,10 +49,10 @@ import {
 	writeTimelineDraft,
 } from "@/lib/video-edit-drafts";
 import {
-	areEditSpecsEquivalent,
+	areEditSpecDocumentsEquivalent,
 	areTimelineStatesEquivalent,
 	createTimelineHistory,
-	createTimelineState,
+	createTimelineStateFromEditSpec,
 	deleteSelectedTimelineSegment,
 	deleteTimelineRanges,
 	findNextPlayableTime,
@@ -69,6 +72,7 @@ import {
 	redoTimelineHistory,
 	removeTimelineDisplaySplitPoint,
 	selectTimelineSegment,
+	setTimelineAutoCutLayer,
 	splitTimelineAt,
 	type TimelineHistory,
 	trimTimelineClipEdge,
@@ -80,6 +84,7 @@ import { CapVideoPlayer } from "../_components/CapVideoPlayer";
 import { VideoDownloadMenu } from "../_components/VideoDownloadMenu";
 import { captureVideoFrameDataUrl } from "../_components/video-frame-thumbnail";
 import { TranscriptSidebar } from "./TranscriptSidebar";
+import { useRenewingPlaybackSource } from "./use-renewing-playback-source";
 
 type EditableVideo = {
 	id: Video.VideoId;
@@ -623,9 +628,15 @@ function useLazyTimelineThumbnails({
 export function EditVideoClient({
 	video,
 	hasExistingEdits,
+	initialEditSpec,
+	playbackSrc,
+	usesOriginalSource,
 }: {
 	video: EditableVideo;
 	hasExistingEdits: boolean;
+	initialEditSpec: VideoEditSpec;
+	playbackSrc: string;
+	usesOriginalSource: boolean;
 }) {
 	const router = useRouter();
 	const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -633,7 +644,7 @@ export function EditVideoClient({
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const playheadOverlayRef = useRef<HTMLDivElement | null>(null);
 	const stateRef = useRef<VideoTimelineState>(
-		createTimelineState(video.duration),
+		createTimelineStateFromEditSpec(initialEditSpec),
 	);
 	const dragDraftRef = useRef<VideoTimelineState | null>(null);
 	// While trimming a clip edge we scrub the <video> to preview the edge frame
@@ -645,14 +656,24 @@ export function EditVideoClient({
 	const pendingVideoSeekRef = useRef<number | null>(null);
 	const videoSeekFrameRef = useRef(0);
 	const zoomRef = useRef(1);
+	const refreshOriginalSource = useCallback(async () => {
+		const result = await getVideoDownloadInfo(video.id, "original");
+		return result.success ? result.downloadUrl : null;
+	}, [video.id]);
+	const activePlaybackSrc = useRenewingPlaybackSource({
+		initialSrc: playbackSrc,
+		enabled: usesOriginalSource,
+		videoRef,
+		refresh: refreshOriginalSource,
+	});
 	const thumbnailCount = useThumbnailCount(timelineRef);
 	const draftStorageKey = useMemo(
 		() => getTimelineDraftKey(video.id),
 		[video.id],
 	);
 	const initialState = useMemo(
-		() => createTimelineState(video.duration),
-		[video.duration],
+		() => createTimelineStateFromEditSpec(initialEditSpec),
+		[initialEditSpec],
 	);
 	const [history, setHistory] = useState<TimelineHistory>(() =>
 		createTimelineHistory(initialState),
@@ -669,13 +690,13 @@ export function EditVideoClient({
 	const committedState = history.entries[history.index] ?? initialState;
 	const state = draftState ?? committedState;
 	const editSpec = useMemo(() => getTimelineEditSpec(state), [state]);
-	const initialEditSpec = useMemo(
+	const baselineEditSpec = useMemo(
 		() => getTimelineEditSpec(initialState),
 		[initialState],
 	);
 	const hasTimelineChanges = useMemo(
-		() => !areEditSpecsEquivalent(initialEditSpec, editSpec),
-		[editSpec, initialEditSpec],
+		() => !areEditSpecDocumentsEquivalent(baselineEditSpec, editSpec),
+		[baselineEditSpec, editSpec],
 	);
 	const hasDraftChanges = useMemo(
 		() => !areTimelineStatesEquivalent(initialState, committedState),
@@ -699,7 +720,7 @@ export function EditVideoClient({
 		() => getTimelineDisplaySplitPoints(state),
 		[state],
 	);
-	const playbackSrc = `/api/playlist?userId=${video.ownerId}&videoId=${video.id}&videoType=mp4`;
+
 	const timelineThumbnailUrl = useTimelineCoverThumbnail(video.id);
 	const visibleThumbnailRange = useVisibleTimelineThumbnailRange({
 		scrollContainerRef,
@@ -723,8 +744,8 @@ export function EditVideoClient({
 		[thumbnailCount, state, timelineDisplayDuration],
 	);
 	const timelineFrames = useLazyTimelineThumbnails({
-		videoSrc: playbackSrc,
-		sourceDuration: video.duration,
+		videoSrc: activePlaybackSrc,
+		sourceDuration: state.duration,
 		thumbnailTimes,
 		visibleRange: visibleThumbnailRange,
 		enabled: !isPlaying && activeHandle === null && draftState === null,
@@ -810,7 +831,12 @@ export function EditVideoClient({
 	useEffect(() => {
 		const draftStorage = getTimelineDraftStorage();
 		const restoredState = draftStorage
-			? readTimelineDraft(draftStorage, draftStorageKey, video.duration)
+			? readTimelineDraft(
+					draftStorage,
+					draftStorageKey,
+					initialState.duration,
+					initialEditSpec,
+				)
 			: null;
 		const nextState = restoredState ?? initialState;
 		setDraftState(null);
@@ -818,7 +844,7 @@ export function EditVideoClient({
 		setHistory(createTimelineHistory(nextState));
 		setPlayhead(nextState.trimStart);
 		setHydratedDraftKey(draftStorageKey);
-	}, [draftStorageKey, initialState, video.duration]);
+	}, [draftStorageKey, initialEditSpec, initialState]);
 
 	useEffect(() => {
 		if (hydratedDraftKey !== draftStorageKey) return;
@@ -828,8 +854,9 @@ export function EditVideoClient({
 			writeTimelineDraft(
 				draftStorage,
 				draftStorageKey,
-				video.duration,
+				initialState.duration,
 				committedState,
+				initialEditSpec,
 			);
 			return;
 		}
@@ -839,7 +866,8 @@ export function EditVideoClient({
 		draftStorageKey,
 		hasDraftChanges,
 		hydratedDraftKey,
-		video.duration,
+		initialEditSpec,
+		initialState.duration,
 	]);
 
 	const setPlayheadOnFrame = useCallback((time: number, immediate = false) => {
@@ -951,6 +979,32 @@ export function EditVideoClient({
 		[commitState, setPlayheadOnFrame, setVideoTimeOnFrame],
 	);
 
+	const handleSetAutoCutLayer = useCallback(
+		(kind: keyof VideoAutoCuts, layer: VideoAutoCuts[keyof VideoAutoCuts]) => {
+			const nextState =
+				kind === "silence"
+					? setTimelineAutoCutLayer(
+							stateRef.current,
+							"silence",
+							layer as VideoAutoCuts["silence"],
+						)
+					: setTimelineAutoCutLayer(
+							stateRef.current,
+							"fillers",
+							layer as VideoAutoCuts["fillers"],
+						);
+			const nextEditSpec = getTimelineEditSpec(nextState);
+			const nextPlayableTime =
+				findNextPlayableTime(playheadRef.current, nextEditSpec) ??
+				nextEditSpec.keepRanges.at(-1)?.end ??
+				0;
+			commitState(nextState);
+			setPlayheadOnFrame(nextPlayableTime, true);
+			setVideoTimeOnFrame(nextPlayableTime, true);
+		},
+		[commitState, setPlayheadOnFrame, setVideoTimeOnFrame],
+	);
+
 	// Loom-style: cut the clip at the current playhead into two independent clips.
 	const handleSplit = useCallback(() => {
 		commitState(splitTimelineAt(stateRef.current, playheadRef.current));
@@ -988,6 +1042,7 @@ export function EditVideoClient({
 		const SPLIT_SNAP = 0.25;
 		const splitAtPlayheadIndex = timelineDisplaySplitPoints.findIndex(
 			(splitPoint) =>
+				splitPoint.removable &&
 				splitPoint.sourceTimes.some(
 					(sourceTime) => Math.abs(sourceTime - playhead) <= SPLIT_SNAP,
 				),
@@ -1011,7 +1066,7 @@ export function EditVideoClient({
 		}
 		setIsSaving(true);
 		try {
-			await saveVideoEdits(video.id, editSpec);
+			await saveVideoEdits(video.id, editSpec, initialEditSpec);
 			if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
 			router.push(`/s/${video.id}`);
 			router.refresh();
@@ -1025,6 +1080,7 @@ export function EditVideoClient({
 		draftStorageKey,
 		editSpec,
 		hasTimelineChanges,
+		initialEditSpec,
 		isSaving,
 		router,
 		video.id,
@@ -1259,6 +1315,7 @@ export function EditVideoClient({
 	);
 
 	useEffect(() => {
+		if (!activePlaybackSrc) return;
 		let frameId = 0;
 		let playbackFrameId = 0;
 		let detachVideoListeners: (() => void) | null = null;
@@ -1394,7 +1451,7 @@ export function EditVideoClient({
 			cancelAnimationFrame(frameId);
 			detachVideoListeners?.();
 		};
-	}, [keepRanges, setPlayheadOnFrame]);
+	}, [activePlaybackSrc, keepRanges, setPlayheadOnFrame]);
 
 	useEffect(() => {
 		const videoElement = videoRef.current;
@@ -1465,17 +1522,8 @@ export function EditVideoClient({
 	}, [updatePlayheadOverlay]);
 
 	useEffect(() => {
-		const isFormTarget = (event: KeyboardEvent) => {
-			const target = event.target as HTMLElement | null;
-			return (
-				target?.tagName === "INPUT" ||
-				target?.tagName === "TEXTAREA" ||
-				target?.isContentEditable === true
-			);
-		};
-
 		const handleKeyDown = (event: KeyboardEvent) => {
-			if (isFormTarget(event)) return;
+			if (isEditorShortcutTarget(event.target, event.defaultPrevented)) return;
 			const isMeta = event.metaKey || event.ctrlKey;
 
 			if (event.key === " ") {
@@ -1646,7 +1694,7 @@ export function EditVideoClient({
 						}}
 					>
 						<CapVideoPlayer
-							videoSrc={playbackSrc}
+							videoSrc={activePlaybackSrc}
 							videoId={video.id}
 							chaptersSrc=""
 							captionsSrc=""
@@ -1659,7 +1707,7 @@ export function EditVideoClient({
 							disableReactionStamps
 							disablePreviewGif
 							disablePlaybackSpeedDial
-							duration={video.duration}
+							duration={state.duration}
 							showFloatingVolumeControl
 						/>
 					</div>
@@ -1866,6 +1914,7 @@ export function EditVideoClient({
 								})}
 
 								{timelineDisplaySplitPoints.map((splitPoint, index) => {
+									if (!splitPoint.removable) return null;
 									const positionPercent = getTimePercent(
 										splitPoint.time,
 										timelineDisplayDuration,
@@ -1930,7 +1979,7 @@ export function EditVideoClient({
 							<span className="text-gray-9">/</span>
 							<span
 								className={
-									outputDuration < video.duration - 0.05
+									outputDuration < state.duration - 0.05
 										? "font-semibold text-blue-600"
 										: "text-gray-10"
 								}
@@ -1992,7 +2041,9 @@ export function EditVideoClient({
 					videoId={video.id}
 					videoRef={videoRef}
 					keepRanges={keepRanges}
+					autoCuts={editSpec.autoCuts}
 					onDeleteRanges={handleTranscriptDelete}
+					onSetAutoCutLayer={handleSetAutoCutLayer}
 				/>
 			)}
 

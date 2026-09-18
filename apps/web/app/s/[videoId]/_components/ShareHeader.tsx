@@ -1183,6 +1183,7 @@ export const ShareHeader = ({
 												<VideoDownloadMenu
 													videoId={data.id}
 													hasEdits
+													canDownloadOriginal={false}
 													triggerLabel="Download"
 													triggerClassName="h-8 gap-1.5 rounded-full border border-gray-5 bg-gray-3 px-2.5 text-xs text-gray-12 transition hover:bg-gray-6"
 													trigger={

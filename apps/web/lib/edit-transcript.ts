@@ -66,6 +66,18 @@ export type FillerCutPlan = {
 	skippedCount: number;
 };
 
+export type SilenceCutPlan = {
+	ranges: { startMs: number; endMs: number }[];
+	gapCount: number;
+	removedMs: number;
+};
+
+export type TranscriptSilenceGap = {
+	startMs: number;
+	endMs: number;
+	beforeWordIndex: number | null;
+};
+
 export type AssemblyAIEditWord = {
 	text?: unknown;
 	start?: unknown;
@@ -645,6 +657,58 @@ export function planFillerCuts(
 		ranges: mergedRanges,
 		fillerCount: ranges.length + skippedCount,
 		skippedCount,
+	};
+}
+
+export function getTranscriptSilenceGaps(
+	words: readonly EditTranscriptWord[],
+	durationMs: number,
+	options: { thresholdMs?: number; padMs?: number } = {},
+): TranscriptSilenceGap[] {
+	const thresholdMs = Math.max(0, options.thresholdMs ?? 800);
+	const padMs = Math.max(0, options.padMs ?? 150);
+	const gaps: TranscriptSilenceGap[] = [];
+
+	const pushGap = (
+		from: number,
+		to: number,
+		beforeWordIndex: number | null,
+	) => {
+		if (to - from < thresholdMs) return;
+		const startMs = Math.max(0, Math.round(from + padMs));
+		const endMs = Math.min(durationMs, Math.round(to - padMs));
+		if (endMs - startMs < MIN_PLAYABLE_DURATION_MS) return;
+		gaps.push({ startMs: from, endMs: to, beforeWordIndex });
+	};
+
+	let coveredThroughMs = 0;
+	for (const [index, word] of words.entries()) {
+		pushGap(coveredThroughMs, word.startMs, index);
+		coveredThroughMs = Math.max(coveredThroughMs, word.endMs);
+	}
+	pushGap(coveredThroughMs, durationMs, null);
+	return gaps;
+}
+
+export function planSilenceCuts(
+	words: readonly EditTranscriptWord[],
+	durationMs: number,
+	options: { thresholdMs?: number; padMs?: number } = {},
+): SilenceCutPlan {
+	const padMs = Math.max(0, options.padMs ?? 150);
+	const gaps = getTranscriptSilenceGaps(words, durationMs, options);
+	const ranges = gaps.map((gap) => ({
+		startMs: Math.max(0, Math.round(gap.startMs + padMs)),
+		endMs: Math.min(durationMs, Math.round(gap.endMs - padMs)),
+	}));
+
+	return {
+		ranges,
+		gapCount: ranges.length,
+		removedMs: ranges.reduce(
+			(total, range) => total + range.endMs - range.startMs,
+			0,
+		),
 	};
 }
 

@@ -1,16 +1,22 @@
+import type { VideoEditSpec } from "@cap/database/types";
 import type { VideoTimelineState } from "@/lib/video-edits";
-import { normalizeTimelineState } from "@/lib/video-edits";
+import {
+	areEditSpecDocumentsEquivalent,
+	normalizeTimelineState,
+	parseVideoEditSpec,
+} from "@/lib/video-edits";
 
 export type TimelineDraftStorage = Pick<
 	Storage,
 	"getItem" | "removeItem" | "setItem"
 >;
 
-const TIMELINE_DRAFT_VERSION = 1;
+const TIMELINE_DRAFT_VERSION = 3;
 
 type StoredTimelineDraft = {
 	version: typeof TIMELINE_DRAFT_VERSION;
 	duration: number;
+	baselineEditSpec: VideoEditSpec;
 	state: VideoTimelineState;
 };
 
@@ -31,18 +37,36 @@ function isStoredEditRange(value: unknown) {
 }
 
 function isStoredTimelineState(value: unknown): value is VideoTimelineState {
-	return (
+	if (
 		isRecord(value) &&
 		isFiniteNumberValue(value.duration) &&
+		value.duration > 0 &&
 		isFiniteNumberValue(value.trimStart) &&
 		isFiniteNumberValue(value.trimEnd) &&
 		Array.isArray(value.splitPoints) &&
+		value.splitPoints.length <= 5_000 &&
 		value.splitPoints.every(isFiniteNumberValue) &&
 		Array.isArray(value.deletedRanges) &&
+		value.deletedRanges.length <= 5_000 &&
 		value.deletedRanges.every(isStoredEditRange) &&
 		(value.selectedSegmentId === null ||
-			typeof value.selectedSegmentId === "string")
-	);
+			(typeof value.selectedSegmentId === "string" &&
+				value.selectedSegmentId.length <= 256))
+	) {
+		try {
+			parseVideoEditSpec({
+				version: 2,
+				sourceDuration: value.duration,
+				keepRanges: [{ start: 0, end: value.duration }],
+				manualKeepRanges: [{ start: 0, end: value.duration }],
+				autoCuts: value.autoCuts,
+			});
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	return false;
 }
 
 export function getTimelineDraftKey(videoId: string) {
@@ -60,16 +84,22 @@ export function getTimelineDraftStorage(): TimelineDraftStorage | null {
 export function serializeTimelineDraft(
 	duration: number,
 	state: VideoTimelineState,
+	baselineEditSpec: VideoEditSpec,
 ) {
 	const draft: StoredTimelineDraft = {
 		version: TIMELINE_DRAFT_VERSION,
 		duration,
+		baselineEditSpec,
 		state: normalizeTimelineState({ ...state, duration }),
 	};
 	return JSON.stringify(draft);
 }
 
-export function parseTimelineDraft(raw: string | null, duration: number) {
+export function parseTimelineDraft(
+	raw: string | null,
+	duration: number,
+	baselineEditSpec: VideoEditSpec,
+) {
 	if (!raw) return null;
 
 	try {
@@ -79,8 +109,13 @@ export function parseTimelineDraft(raw: string | null, duration: number) {
 			parsed.version !== TIMELINE_DRAFT_VERSION ||
 			!isFiniteNumberValue(parsed.duration) ||
 			Math.abs(parsed.duration - duration) > 0.01 ||
+			!isRecord(parsed.baselineEditSpec) ||
 			!isStoredTimelineState(parsed.state)
 		) {
+			return null;
+		}
+		const storedBaseline = parseVideoEditSpec(parsed.baselineEditSpec);
+		if (!areEditSpecDocumentsEquivalent(storedBaseline, baselineEditSpec)) {
 			return null;
 		}
 		return normalizeTimelineState({ ...parsed.state, duration });
@@ -93,9 +128,14 @@ export function readTimelineDraft(
 	storage: TimelineDraftStorage,
 	storageKey: string,
 	duration: number,
+	baselineEditSpec: VideoEditSpec,
 ) {
 	try {
-		return parseTimelineDraft(storage.getItem(storageKey), duration);
+		return parseTimelineDraft(
+			storage.getItem(storageKey),
+			duration,
+			baselineEditSpec,
+		);
 	} catch {
 		return null;
 	}
@@ -106,9 +146,13 @@ export function writeTimelineDraft(
 	storageKey: string,
 	duration: number,
 	state: VideoTimelineState,
+	baselineEditSpec: VideoEditSpec,
 ) {
 	try {
-		storage.setItem(storageKey, serializeTimelineDraft(duration, state));
+		storage.setItem(
+			storageKey,
+			serializeTimelineDraft(duration, state, baselineEditSpec),
+		);
 	} catch {
 		return;
 	}

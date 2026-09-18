@@ -1,7 +1,15 @@
-import type { VideoEditRange, VideoEditSpec } from "@cap/database/types";
+import type {
+	VideoAutoCuts,
+	VideoEditRange,
+	VideoEditSpec,
+	VideoEditSpecV2,
+} from "@cap/database/types";
 
 const EPSILON = 0.001;
 const MIN_RANGE_DURATION = 0.05;
+const MAX_EDIT_DURATION_SECONDS = 31 * 24 * 60 * 60;
+const MAX_EDIT_RANGE_COUNT = 5_000;
+const MAX_AUTO_CUT_METADATA_MS = MAX_EDIT_DURATION_SECONDS * 1000;
 
 export type VideoTimelineState = {
 	duration: number;
@@ -9,6 +17,7 @@ export type VideoTimelineState = {
 	trimEnd: number;
 	splitPoints: number[];
 	deletedRanges: VideoEditRange[];
+	autoCuts?: VideoAutoCuts;
 	selectedSegmentId: string | null;
 };
 
@@ -29,6 +38,7 @@ export type VideoTimelineDisplaySplitPoint = {
 	sourceTime: number;
 	sourceTimes: number[];
 	splitIndices: number[];
+	removable: boolean;
 };
 
 export type VideoTimelineDisplaySplitDragHandle = "center" | "left" | "right";
@@ -39,6 +49,41 @@ export type TimelineHistory = {
 };
 
 const isFiniteNumber = (value: number) => Number.isFinite(value);
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseNonNegativeNumber(value: unknown, max: number) {
+	return typeof value === "number" &&
+		Number.isFinite(value) &&
+		value >= 0 &&
+		value <= max
+		? value
+		: null;
+}
+
+function parseCount(value: unknown) {
+	return Number.isInteger(value) &&
+		typeof value === "number" &&
+		value >= 0 &&
+		value <= MAX_EDIT_RANGE_COUNT
+		? value
+		: null;
+}
+
+function parseEditRanges(value: unknown, duration: number) {
+	if (!Array.isArray(value) || value.length > MAX_EDIT_RANGE_COUNT) return null;
+	const ranges: VideoEditRange[] = [];
+	for (const item of value) {
+		if (!isUnknownRecord(item)) return null;
+		const start = parseNonNegativeNumber(item.start, duration);
+		const end = parseNonNegativeNumber(item.end, duration);
+		if (start === null || end === null) return null;
+		ranges.push({ start, end });
+	}
+	return ranges;
+}
 
 export function roundEditTime(value: number) {
 	return Math.round(value * 1000) / 1000;
@@ -56,8 +101,66 @@ function getSegmentId(start: number, end: number) {
 	return `${roundEditTime(start)}:${roundEditTime(end)}`;
 }
 
+function getDefaultAutoCuts(): VideoAutoCuts {
+	return {
+		silence: {
+			enabled: false,
+			ranges: [],
+			thresholdMs: 800,
+			padMs: 150,
+			removedMs: 0,
+			gapCount: 0,
+		},
+		fillers: {
+			enabled: false,
+			ranges: [],
+			mode: "ums",
+			padMs: 80,
+			removedCount: 0,
+			skippedCount: 0,
+		},
+	};
+}
+
+function normalizeAutoCuts(
+	autoCuts: VideoTimelineState["autoCuts"],
+	duration: number,
+): VideoAutoCuts {
+	const defaults = getDefaultAutoCuts();
+	return {
+		silence: {
+			...defaults.silence,
+			...autoCuts?.silence,
+			ranges: normalizeKeepRanges(
+				autoCuts?.silence.ranges ?? defaults.silence.ranges,
+				duration,
+			).keepRanges,
+		},
+		fillers: {
+			...defaults.fillers,
+			...autoCuts?.fillers,
+			ranges: normalizeKeepRanges(
+				autoCuts?.fillers.ranges ?? defaults.fillers.ranges,
+				duration,
+			).keepRanges,
+		},
+	};
+}
+
+function getEffectiveDeletedRanges(state: VideoTimelineState) {
+	const autoCuts = normalizeAutoCuts(state.autoCuts, state.duration);
+	return normalizeKeepRanges(
+		[
+			...state.deletedRanges,
+			...(autoCuts.silence.enabled ? autoCuts.silence.ranges : []),
+			...(autoCuts.fillers.enabled ? autoCuts.fillers.ranges : []),
+		],
+		state.duration,
+	).keepRanges;
+}
+
 function getDisplayDeletedRanges(state: VideoTimelineState) {
-	return normalizeKeepRanges(state.deletedRanges, state.duration).keepRanges;
+	return getEffectiveDeletedRanges(state);
 }
 
 export function normalizeKeepRanges(
@@ -107,6 +210,148 @@ export function createIdentityEditSpec(sourceDuration: number): VideoEditSpec {
 	return normalizeKeepRanges(
 		duration > 0 ? [{ start: 0, end: duration }] : [],
 		duration,
+	);
+}
+
+export function normalizeVideoEditSpec(editSpec: VideoEditSpec): VideoEditSpec {
+	const duration = normalizeDuration(editSpec.sourceDuration);
+	if (editSpec.version === 1) {
+		return normalizeKeepRanges(editSpec.keepRanges, duration);
+	}
+
+	const manualKeepRanges = normalizeKeepRanges(
+		editSpec.manualKeepRanges,
+		duration,
+	).keepRanges;
+	const autoCuts = normalizeAutoCuts(editSpec.autoCuts, duration);
+	const cutRanges = [
+		...(autoCuts.silence.enabled ? autoCuts.silence.ranges : []),
+		...(autoCuts.fillers.enabled ? autoCuts.fillers.ranges : []),
+	];
+	return {
+		version: 2,
+		sourceDuration: duration,
+		manualKeepRanges,
+		autoCuts,
+		keepRanges: subtractRanges(manualKeepRanges, cutRanges, duration),
+	};
+}
+
+export function parseVideoEditSpec(value: unknown): VideoEditSpec {
+	if (!isUnknownRecord(value) || (value.version !== 1 && value.version !== 2)) {
+		throw new Error("Invalid video edit specification");
+	}
+	const sourceDuration = parseNonNegativeNumber(
+		value.sourceDuration,
+		MAX_EDIT_DURATION_SECONDS,
+	);
+	if (sourceDuration === null || sourceDuration <= 0) {
+		throw new Error("Invalid video edit specification");
+	}
+	const keepRanges = parseEditRanges(value.keepRanges, sourceDuration);
+	if (!keepRanges) throw new Error("Invalid video edit specification");
+	if (value.version === 1) {
+		return normalizeKeepRanges(keepRanges, sourceDuration);
+	}
+
+	const manualKeepRanges = parseEditRanges(
+		value.manualKeepRanges,
+		sourceDuration,
+	);
+	const autoCuts = value.autoCuts;
+	if (
+		!manualKeepRanges ||
+		!isUnknownRecord(autoCuts) ||
+		!isUnknownRecord(autoCuts.silence) ||
+		!isUnknownRecord(autoCuts.fillers)
+	) {
+		throw new Error("Invalid video edit specification");
+	}
+	const silenceRanges = parseEditRanges(
+		autoCuts.silence.ranges,
+		sourceDuration,
+	);
+	const fillerRanges = parseEditRanges(autoCuts.fillers.ranges, sourceDuration);
+	if (
+		silenceRanges &&
+		fillerRanges &&
+		keepRanges.length +
+			manualKeepRanges.length +
+			silenceRanges.length +
+			fillerRanges.length >
+			MAX_EDIT_RANGE_COUNT
+	) {
+		throw new Error("Invalid video edit specification");
+	}
+	const thresholdMs = parseNonNegativeNumber(
+		autoCuts.silence.thresholdMs,
+		MAX_AUTO_CUT_METADATA_MS,
+	);
+	const silencePadMs = parseNonNegativeNumber(
+		autoCuts.silence.padMs,
+		MAX_AUTO_CUT_METADATA_MS,
+	);
+	const removedMs = parseNonNegativeNumber(
+		autoCuts.silence.removedMs,
+		MAX_AUTO_CUT_METADATA_MS,
+	);
+	const gapCount = parseCount(autoCuts.silence.gapCount);
+	const fillerPadMs = parseNonNegativeNumber(
+		autoCuts.fillers.padMs,
+		MAX_AUTO_CUT_METADATA_MS,
+	);
+	const removedCount = parseCount(autoCuts.fillers.removedCount);
+	const skippedCount = parseCount(autoCuts.fillers.skippedCount);
+	if (
+		typeof autoCuts.silence.enabled !== "boolean" ||
+		typeof autoCuts.fillers.enabled !== "boolean" ||
+		autoCuts.fillers.mode !== "ums" ||
+		!silenceRanges ||
+		!fillerRanges ||
+		thresholdMs === null ||
+		silencePadMs === null ||
+		removedMs === null ||
+		gapCount === null ||
+		fillerPadMs === null ||
+		removedCount === null ||
+		skippedCount === null
+	) {
+		throw new Error("Invalid video edit specification");
+	}
+
+	return normalizeVideoEditSpec({
+		version: 2,
+		sourceDuration,
+		keepRanges,
+		manualKeepRanges,
+		autoCuts: {
+			silence: {
+				enabled: autoCuts.silence.enabled,
+				ranges: silenceRanges,
+				thresholdMs,
+				padMs: silencePadMs,
+				removedMs,
+				gapCount,
+			},
+			fillers: {
+				enabled: autoCuts.fillers.enabled,
+				ranges: fillerRanges,
+				mode: "ums",
+				padMs: fillerPadMs,
+				removedCount,
+				skippedCount,
+			},
+		},
+	});
+}
+
+export function areEditSpecDocumentsEquivalent(
+	left: VideoEditSpec,
+	right: VideoEditSpec,
+) {
+	return (
+		JSON.stringify(normalizeVideoEditSpec(left)) ===
+		JSON.stringify(normalizeVideoEditSpec(right))
 	);
 }
 
@@ -162,6 +407,17 @@ export function areTimelineStatesEquivalent(
 	if (
 		normalizedLeft.splitPoints.length !== normalizedRight.splitPoints.length ||
 		normalizedLeft.deletedRanges.length !== normalizedRight.deletedRanges.length
+	) {
+		return false;
+	}
+
+	if (
+		JSON.stringify(
+			normalizeAutoCuts(normalizedLeft.autoCuts, normalizedLeft.duration),
+		) !==
+		JSON.stringify(
+			normalizeAutoCuts(normalizedRight.autoCuts, normalizedRight.duration),
+		)
 	) {
 		return false;
 	}
@@ -315,33 +571,41 @@ export function subtractRanges(
 	deletedRanges: VideoEditRange[],
 	sourceDuration: number,
 ) {
-	let ranges = normalizeKeepRanges(baseRanges, sourceDuration).keepRanges;
+	const bases = normalizeKeepRanges(baseRanges, sourceDuration).keepRanges;
 	const deleted = normalizeKeepRanges(deletedRanges, sourceDuration).keepRanges;
+	const ranges: VideoEditRange[] = [];
+	let deletedIndex = 0;
 
-	for (const deletedRange of deleted) {
-		ranges = ranges.flatMap((range) => {
-			if (
-				deletedRange.end <= range.start + EPSILON ||
-				deletedRange.start >= range.end - EPSILON
-			) {
-				return [range];
-			}
+	for (const base of bases) {
+		while (
+			deletedIndex < deleted.length &&
+			(deleted[deletedIndex]?.end ?? 0) <= base.start + EPSILON
+		) {
+			deletedIndex++;
+		}
 
-			const nextRanges: VideoEditRange[] = [];
-			if (deletedRange.start - range.start >= MIN_RANGE_DURATION) {
-				nextRanges.push({
-					start: range.start,
-					end: roundEditTime(deletedRange.start),
+		let cursor = base.start;
+		let scanIndex = deletedIndex;
+		while (scanIndex < deleted.length) {
+			const cut = deleted[scanIndex];
+			if (!cut || cut.start >= base.end - EPSILON) break;
+			if (cut.start - cursor >= MIN_RANGE_DURATION) {
+				ranges.push({
+					start: roundEditTime(cursor),
+					end: roundEditTime(Math.min(cut.start, base.end)),
 				});
 			}
-			if (range.end - deletedRange.end >= MIN_RANGE_DURATION) {
-				nextRanges.push({
-					start: roundEditTime(deletedRange.end),
-					end: range.end,
-				});
-			}
-			return nextRanges;
-		});
+			cursor = Math.max(cursor, cut.end);
+			if (cursor >= base.end - EPSILON) break;
+			scanIndex++;
+		}
+		deletedIndex = scanIndex;
+		if (base.end - cursor >= MIN_RANGE_DURATION) {
+			ranges.push({
+				start: roundEditTime(cursor),
+				end: roundEditTime(base.end),
+			});
+		}
 	}
 
 	return normalizeKeepRanges(ranges, sourceDuration).keepRanges;
@@ -355,8 +619,38 @@ export function createTimelineState(duration: number): VideoTimelineState {
 		trimEnd: normalizedDuration,
 		splitPoints: [],
 		deletedRanges: [],
+		autoCuts: getDefaultAutoCuts(),
 		selectedSegmentId: null,
 	};
+}
+
+export function createTimelineStateFromEditSpec(
+	editSpec: VideoEditSpec,
+): VideoTimelineState {
+	const duration = normalizeDuration(editSpec.sourceDuration);
+	const manualKeepRanges = normalizeKeepRanges(
+		editSpec.version === 2 ? editSpec.manualKeepRanges : editSpec.keepRanges,
+		duration,
+	).keepRanges;
+	const deletedRanges = subtractRanges(
+		[{ start: 0, end: duration }],
+		manualKeepRanges,
+		duration,
+	);
+	return normalizeTimelineState({
+		duration,
+		trimStart: 0,
+		trimEnd: duration,
+		splitPoints: deletedRanges
+			.flatMap((range) => [range.start, range.end])
+			.filter((point) => point > 0 && point < duration),
+		deletedRanges,
+		autoCuts:
+			editSpec.version === 2
+				? normalizeAutoCuts(editSpec.autoCuts, duration)
+				: getDefaultAutoCuts(),
+		selectedSegmentId: null,
+	});
 }
 
 export function normalizeTimelineState(
@@ -384,6 +678,7 @@ export function normalizeTimelineState(
 		[],
 		duration,
 	).filter((range) => range.end > start && range.start < end);
+	const autoCuts = normalizeAutoCuts(state.autoCuts, duration);
 	const splitPoints = rawSplitPoints.filter(
 		(point) =>
 			!deletedRanges.some(
@@ -397,6 +692,7 @@ export function normalizeTimelineState(
 		trimEnd: end,
 		splitPoints,
 		deletedRanges,
+		autoCuts,
 	});
 	const selectedSegmentId =
 		state.selectedSegmentId &&
@@ -410,6 +706,7 @@ export function normalizeTimelineState(
 		trimEnd: end,
 		splitPoints,
 		deletedRanges,
+		autoCuts,
 		selectedSegmentId,
 	};
 }
@@ -417,13 +714,18 @@ export function normalizeTimelineState(
 export function getTimelineSegments(
 	state: VideoTimelineState,
 ): VideoTimelineSegment[] {
-	const boundaries = [
-		state.trimStart,
-		...state.splitPoints.filter(
-			(point) => point > state.trimStart && point < state.trimEnd,
-		),
-		state.trimEnd,
-	]
+	const effectiveDeletedRanges = getEffectiveDeletedRanges(state);
+	const boundaries = Array.from(
+		new Set([
+			state.trimStart,
+			...state.splitPoints.filter(
+				(point) => point > state.trimStart && point < state.trimEnd,
+			),
+			...effectiveDeletedRanges.flatMap((range) => [range.start, range.end]),
+			state.trimEnd,
+		]),
+	)
+		.filter((point) => point >= state.trimStart && point <= state.trimEnd)
 		.map(roundEditTime)
 		.sort((a, b) => a - b);
 
@@ -435,7 +737,7 @@ export function getTimelineSegments(
 
 		const id = getSegmentId(start, end);
 		const midpoint = start + (end - start) / 2;
-		const deleted = state.deletedRanges.some(
+		const deleted = effectiveDeletedRanges.some(
 			(range) =>
 				midpoint >= range.start - EPSILON && midpoint <= range.end + EPSILON,
 		);
@@ -448,6 +750,44 @@ export function getTimelineSegments(
 		});
 	}
 
+	return segments;
+}
+
+function getManualTimelineSegments(
+	state: VideoTimelineState,
+): VideoTimelineSegment[] {
+	const boundaries = [
+		state.trimStart,
+		...state.splitPoints.filter(
+			(point) => point > state.trimStart && point < state.trimEnd,
+		),
+		state.trimEnd,
+	]
+		.map(roundEditTime)
+		.sort((a, b) => a - b);
+	const deletedRanges = normalizeKeepRanges(
+		state.deletedRanges,
+		state.duration,
+	).keepRanges;
+
+	const segments: VideoTimelineSegment[] = [];
+	for (let index = 0; index < boundaries.length - 1; index++) {
+		const start = boundaries[index] ?? 0;
+		const end = boundaries[index + 1] ?? 0;
+		if (end - start < MIN_RANGE_DURATION) continue;
+		const id = getSegmentId(start, end);
+		const midpoint = start + (end - start) / 2;
+		segments.push({
+			id,
+			start,
+			end,
+			deleted: deletedRanges.some(
+				(range) =>
+					midpoint >= range.start - EPSILON && midpoint <= range.end + EPSILON,
+			),
+			selected: state.selectedSegmentId === id,
+		});
+	}
 	return segments;
 }
 
@@ -564,6 +904,15 @@ export function getTimelineDisplaySplitPoints(
 	const normalized = normalizeTimelineState(state);
 	const segments = getTimelineDisplaySegments(normalized);
 	const sortedSplitPoints = [...normalized.splitPoints].sort((a, b) => a - b);
+	const manualDeletedRanges = normalizeKeepRanges(
+		normalized.deletedRanges,
+		normalized.duration,
+	).keepRanges;
+	const autoCuts = normalizeAutoCuts(normalized.autoCuts, normalized.duration);
+	const activeAutoRanges = [
+		...(autoCuts.silence.enabled ? autoCuts.silence.ranges : []),
+		...(autoCuts.fillers.enabled ? autoCuts.fillers.ranges : []),
+	];
 	const markers: VideoTimelineDisplaySplitPoint[] = [];
 
 	for (let index = 0; index < segments.length - 1; index++) {
@@ -582,12 +931,22 @@ export function getTimelineDisplaySplitPoints(
 				: [],
 		);
 		const time = current.displayEnd;
+		const gapStart = Math.min(...sourceTimes);
+		const gapEnd = Math.max(...sourceTimes);
+		const overlapsGap = (range: VideoEditRange) =>
+			range.end > gapStart + EPSILON && range.start < gapEnd - EPSILON;
+		const removable =
+			sourceTimes.length === 1
+				? splitIndices.length > 0
+				: manualDeletedRanges.some(overlapsGap) &&
+					!activeAutoRanges.some(overlapsGap);
 		markers.push({
 			id: `${roundEditTime(time)}:${sourceTimes.map(roundEditTime).join(":")}`,
 			time,
 			sourceTime: current.end,
 			sourceTimes,
 			splitIndices,
+			removable,
 		});
 	}
 
@@ -613,7 +972,7 @@ export function getTimelineDisplaySplitDragTargetTime(
 	sourceTime: number,
 ) {
 	const splitPoint = getTimelineDisplaySplitPoints(state)[splitPointIndex];
-	if (!splitPoint || !isFiniteNumber(sourceTime)) return null;
+	if (!splitPoint?.removable || !isFiniteNumber(sourceTime)) return null;
 	if (splitPoint.sourceTimes.length === 1) return sourceTime;
 
 	const leftSourceTime = Math.min(...splitPoint.sourceTimes);
@@ -636,7 +995,7 @@ export function dragTimelineDisplaySplitPoint(
 	sourceTime: number,
 ) {
 	const splitPoint = getTimelineDisplaySplitPoints(state)[splitPointIndex];
-	if (!splitPoint) return state;
+	if (!splitPoint?.removable) return state;
 
 	const targetTime = getTimelineDisplaySplitDragTargetTime(
 		state,
@@ -658,7 +1017,7 @@ export function removeTimelineDisplaySplitPoint(
 	splitPointIndex: number,
 ): VideoTimelineState {
 	const splitPoint = getTimelineDisplaySplitPoints(state)[splitPointIndex];
-	if (!splitPoint) return state;
+	if (!splitPoint?.removable) return state;
 
 	if (splitPoint.sourceTimes.length === 1) {
 		const splitIndex = splitPoint.splitIndices[0];
@@ -794,6 +1153,28 @@ export function deleteTimelineRanges(
 	return getTimelineKeepRanges(nextState).length > 0 ? nextState : normalized;
 }
 
+export function setTimelineAutoCutLayer<K extends keyof VideoAutoCuts>(
+	state: VideoTimelineState,
+	kind: K,
+	update: Partial<VideoAutoCuts[K]> & { enabled: boolean },
+): VideoTimelineState {
+	const normalized = normalizeTimelineState(state);
+	const current = normalizeAutoCuts(normalized.autoCuts, normalized.duration);
+	const nextState = normalizeTimelineState({
+		...normalized,
+		autoCuts: {
+			...current,
+			[kind]: {
+				...current[kind],
+				...update,
+				ranges: update.ranges ? [...update.ranges] : current[kind].ranges,
+			},
+		},
+		selectedSegmentId: null,
+	});
+	return getTimelineKeepRanges(nextState).length > 0 ? nextState : normalized;
+}
+
 export function setTimelineTrim(
 	state: VideoTimelineState,
 	start: number,
@@ -844,9 +1225,12 @@ export function removeSplitPoint(
 ): VideoTimelineState {
 	const sorted = [...state.splitPoints].sort((a, b) => a - b);
 	if (splitIndex < 0 || splitIndex >= sorted.length) return state;
-	const currentSegments = getTimelineSegments(state);
+	const currentSegments = getManualTimelineSegments(state);
 	sorted.splice(splitIndex, 1);
-	const nextSegments = getTimelineSegments({ ...state, splitPoints: sorted });
+	const nextSegments = getManualTimelineSegments({
+		...state,
+		splitPoints: sorted,
+	});
 	const deletedRanges = nextSegments
 		.filter((segment) => {
 			const coveredSegments = currentSegments.filter(
@@ -977,17 +1361,27 @@ export function getTimelineKeepRanges(
 	const normalized = normalizeTimelineState(state);
 	return subtractRanges(
 		[{ start: normalized.trimStart, end: normalized.trimEnd }],
-		normalized.deletedRanges,
+		getEffectiveDeletedRanges(normalized),
 		normalized.duration,
 	);
 }
 
-export function getTimelineEditSpec(state: VideoTimelineState): VideoEditSpec {
+export function getTimelineEditSpec(
+	state: VideoTimelineState,
+): VideoEditSpecV2 {
 	const normalized = normalizeTimelineState(state);
-	return normalizeKeepRanges(
-		getTimelineKeepRanges(normalized),
+	const manualKeepRanges = subtractRanges(
+		[{ start: normalized.trimStart, end: normalized.trimEnd }],
+		normalized.deletedRanges,
 		normalized.duration,
 	);
+	return {
+		version: 2,
+		sourceDuration: normalized.duration,
+		manualKeepRanges,
+		keepRanges: getTimelineKeepRanges(normalized),
+		autoCuts: normalizeAutoCuts(normalized.autoCuts, normalized.duration),
+	};
 }
 
 export function findNextPlayableTime(

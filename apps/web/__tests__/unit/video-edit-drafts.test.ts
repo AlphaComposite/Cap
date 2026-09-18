@@ -10,7 +10,9 @@ import {
 } from "@/lib/video-edit-drafts";
 import {
 	areTimelineStatesEquivalent,
+	createIdentityEditSpec,
 	createTimelineState,
+	setTimelineAutoCutLayer,
 	splitTimelineAt,
 } from "@/lib/video-edits";
 
@@ -45,6 +47,8 @@ function createThrowingStorage(): TimelineDraftStorage {
 }
 
 describe("video edit draft storage", () => {
+	const baseline = createIdentityEditSpec(10);
+
 	it("creates stable per-video storage keys", () => {
 		expect(getTimelineDraftKey("video-1")).toBe(
 			"cap:edit-timeline-draft:video-1",
@@ -53,7 +57,11 @@ describe("video edit draft storage", () => {
 
 	it("serializes and parses a split-only draft", () => {
 		const state = splitTimelineAt(createTimelineState(10), 5);
-		const parsed = parseTimelineDraft(serializeTimelineDraft(10, state), 10);
+		const parsed = parseTimelineDraft(
+			serializeTimelineDraft(10, state, baseline),
+			10,
+			baseline,
+		);
 
 		expect(parsed).not.toBeNull();
 		if (!parsed) throw new Error("Expected parsed draft");
@@ -61,16 +69,36 @@ describe("video edit draft storage", () => {
 		expect(areTimelineStatesEquivalent(state, parsed)).toBe(true);
 	});
 
+	it("persists named auto-cut layers in revision-bound drafts", () => {
+		const state = setTimelineAutoCutLayer(createTimelineState(10), "silence", {
+			enabled: true,
+			ranges: [{ start: 2, end: 4 }],
+		});
+		const raw = serializeTimelineDraft(10, state, baseline);
+		const parsedDocument = JSON.parse(raw) as { version: number };
+		const parsed = parseTimelineDraft(raw, 10, baseline);
+
+		expect(parsedDocument.version).toBe(3);
+		expect(parsed?.autoCuts?.silence).toMatchObject({
+			enabled: true,
+			ranges: [{ start: 2, end: 4 }],
+		});
+	});
+
 	it("rejects invalid, stale, or mismatched drafts", () => {
 		const state = splitTimelineAt(createTimelineState(10), 5);
-		const raw = serializeTimelineDraft(10, state);
+		const raw = serializeTimelineDraft(10, state, baseline);
 		const parsed = JSON.parse(raw) as Record<string, unknown>;
 
-		expect(parseTimelineDraft("not json", 10)).toBeNull();
+		expect(parseTimelineDraft("not json", 10, baseline)).toBeNull();
 		expect(
-			parseTimelineDraft(JSON.stringify({ ...parsed, version: 0 }), 10),
+			parseTimelineDraft(
+				JSON.stringify({ ...parsed, version: 0 }),
+				10,
+				baseline,
+			),
 		).toBeNull();
-		expect(parseTimelineDraft(raw, 12)).toBeNull();
+		expect(parseTimelineDraft(raw, 12, baseline)).toBeNull();
 		expect(
 			parseTimelineDraft(
 				JSON.stringify({
@@ -78,7 +106,15 @@ describe("video edit draft storage", () => {
 					state: { ...state, splitPoints: ["bad"] },
 				}),
 				10,
+				baseline,
 			),
+		).toBeNull();
+		expect(
+			parseTimelineDraft(raw, 10, {
+				version: 1,
+				sourceDuration: 10,
+				keepRanges: [{ start: 0, end: 9 }],
+			}),
 		).toBeNull();
 	});
 
@@ -87,15 +123,15 @@ describe("video edit draft storage", () => {
 		const key = getTimelineDraftKey("video-1");
 		const state = splitTimelineAt(createTimelineState(10), 4);
 
-		writeTimelineDraft(storage, key, 10, state);
-		const restored = readTimelineDraft(storage, key, 10);
+		writeTimelineDraft(storage, key, 10, state, baseline);
+		const restored = readTimelineDraft(storage, key, 10, baseline);
 
 		expect(restored).not.toBeNull();
 		if (!restored) throw new Error("Expected restored draft");
 		expect(areTimelineStatesEquivalent(state, restored)).toBe(true);
 
 		clearTimelineDraft(storage, key);
-		expect(readTimelineDraft(storage, key, 10)).toBeNull();
+		expect(readTimelineDraft(storage, key, 10, baseline)).toBeNull();
 	});
 
 	it("treats storage failures as unavailable drafts", () => {
@@ -103,8 +139,10 @@ describe("video edit draft storage", () => {
 		const key = getTimelineDraftKey("video-1");
 		const state = splitTimelineAt(createTimelineState(10), 4);
 
-		expect(readTimelineDraft(storage, key, 10)).toBeNull();
-		expect(() => writeTimelineDraft(storage, key, 10, state)).not.toThrow();
+		expect(readTimelineDraft(storage, key, 10, baseline)).toBeNull();
+		expect(() =>
+			writeTimelineDraft(storage, key, 10, state, baseline),
+		).not.toThrow();
 		expect(() => clearTimelineDraft(storage, key)).not.toThrow();
 	});
 });

@@ -14,6 +14,7 @@ vi.mock("@cap/env", () => ({
 vi.mock("@cap/ui", () => ({ Logo: () => null }));
 vi.mock("@cap/utils", () => ({ userIsPro: () => true }));
 vi.mock("@cap/web-backend", () => ({
+	ImageUploads: Context.GenericTag("EmbedTestImages"),
 	VideosPolicy: Context.GenericTag("EmbedTestPolicy"),
 	provideOptionalAuth: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
 	resolveEffectiveVideoRules: () => ({ settings: {} }),
@@ -21,6 +22,9 @@ vi.mock("@cap/web-backend", () => ({
 vi.mock("@/lib/server", () => ({
 	runPromise: <A, E>(effect: Effect.Effect<A, E, unknown>) =>
 		effect.pipe(
+			Effect.provideService(Context.GenericTag("EmbedTestImages"), {
+				resolveImageUrl: (url: string) => url,
+			}),
 			Effect.provideService(Context.GenericTag("EmbedTestPolicy"), {
 				canView: () => Effect.void,
 			}),

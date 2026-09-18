@@ -21,11 +21,14 @@ import {
 } from "@/lib/video-edit-operation";
 import { getEditSourceKey, isEditSourceKey } from "@/lib/video-edit-processing";
 import {
+	areEditSpecDocumentsEquivalent,
 	areEditSpecsEquivalent,
 	composeEditSpecs,
 	createIdentityEditSpec,
 	getEditSpecOutputDuration,
 	normalizeKeepRanges,
+	normalizeVideoEditSpec,
+	parseVideoEditSpec,
 } from "@/lib/video-edits";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { isAiGenerationEnabled } from "@/utils/flags";
@@ -53,9 +56,42 @@ async function objectExists(
 ) {
 	return await bucket.headObject(key).pipe(
 		Effect.as(true),
-		Effect.catchAll(() => Effect.succeed(false)),
+		Effect.catchAll((error) =>
+			isDefinitiveObjectNotFound(error)
+				? Effect.succeed(false)
+				: Effect.fail(error),
+		),
 		runPromise,
 	);
+}
+
+function isDefinitiveObjectNotFound(error: unknown) {
+	const pending = [error];
+	const visited = new Set<unknown>();
+	for (let index = 0; index < pending.length && index < 16; index++) {
+		const value = pending[index];
+		if (typeof value !== "object" || value === null || visited.has(value)) {
+			continue;
+		}
+		visited.add(value);
+		const record = value as Record<string, unknown>;
+		const metadata = record.$metadata;
+		const status =
+			typeof metadata === "object" &&
+			metadata !== null &&
+			"httpStatusCode" in metadata
+				? metadata.httpStatusCode
+				: record.status;
+		if (
+			status === 404 ||
+			record.name === "NoSuchKey" ||
+			record.name === "NotFound"
+		) {
+			return true;
+		}
+		pending.push(record.cause, record.error);
+	}
+	return false;
 }
 
 async function getVideoBucket(video: typeof videos.$inferSelect) {
@@ -68,11 +104,15 @@ async function getVideoBucket(video: typeof videos.$inferSelect) {
 async function ensureOriginalSourceCopy(
 	video: typeof videos.$inferSelect,
 	sourceKey = getEditSourceKey(video.ownerId, video.id),
+	allowCreate = true,
 ) {
 	const bucket = await getVideoBucket(video);
 	const hasSource = await objectExists(bucket, sourceKey);
 
 	if (!hasSource) {
+		if (!allowCreate) {
+			throw new Error("Original video is no longer available");
+		}
 		const resultKey = getResultKey(video.ownerId, video.id);
 		await bucket
 			.copyObject(`${bucket.bucketName}/${resultKey}`, sourceKey)
@@ -133,15 +173,10 @@ async function markEditProcessing({
 			.from(videoEdits)
 			.where(eq(videoEdits.videoId, video.id))
 			.for("update");
-		if (
-			!areEditSpecsEquivalent(
-				currentEdit?.editSpec ??
-					createIdentityEditSpec(
-						current.duration ?? previousSpec.sourceDuration,
-					),
-				previousSpec,
-			)
-		) {
+		const currentSpec = currentEdit
+			? parseVideoEditSpec(currentEdit.editSpec)
+			: createIdentityEditSpec(current.duration ?? previousSpec.sourceDuration);
+		if (!areEditSpecDocumentsEquivalent(currentSpec, previousSpec)) {
 			throw new Error("Video edits changed before this edit could start");
 		}
 		await tx.insert(videoUploads).values({
@@ -234,8 +269,13 @@ async function loadEditableVideo(
 export async function saveVideoEdits(
 	videoId: Video.VideoId,
 	editSpec: VideoEditSpec,
+	expectedEditSpec?: VideoEditSpec,
 ) {
 	const { user, video } = await loadEditableVideo(videoId);
+	const requestedEditSpec = parseVideoEditSpec(editSpec);
+	const expectedBaseline = expectedEditSpec
+		? parseVideoEditSpec(expectedEditSpec)
+		: null;
 
 	const [existingEdit] = await db()
 		.select()
@@ -243,25 +283,45 @@ export async function saveVideoEdits(
 		.where(eq(videoEdits.videoId, videoId));
 
 	const previousSpec =
-		existingEdit?.editSpec ??
-		createIdentityEditSpec(video.duration ?? editSpec.sourceDuration);
-	const expectedCurrentDuration = existingEdit
-		? getEditSpecOutputDuration(previousSpec)
-		: (video.duration ?? editSpec.sourceDuration);
-	const currentOutputSpec = normalizeKeepRanges(
-		editSpec.keepRanges,
-		expectedCurrentDuration,
-	);
+		(existingEdit ? parseVideoEditSpec(existingEdit.editSpec) : null) ??
+		createIdentityEditSpec(video.duration ?? requestedEditSpec.sourceDuration);
+	if (
+		expectedBaseline &&
+		!areEditSpecDocumentsEquivalent(previousSpec, expectedBaseline)
+	) {
+		throw new Error(
+			"This video was edited in another session. Reload before saving your changes.",
+		);
+	}
+	let normalizedEditSpec: VideoEditSpec;
+	if (requestedEditSpec.version === 2) {
+		const expectedSourceDuration = existingEdit
+			? previousSpec.sourceDuration
+			: (video.duration ?? requestedEditSpec.sourceDuration);
+		if (
+			Math.abs(requestedEditSpec.sourceDuration - expectedSourceDuration) > 0.01
+		) {
+			throw new Error("Video source changed before this edit could start");
+		}
+		normalizedEditSpec = normalizeVideoEditSpec(requestedEditSpec);
+	} else {
+		const expectedCurrentDuration = existingEdit
+			? getEditSpecOutputDuration(previousSpec)
+			: (video.duration ?? requestedEditSpec.sourceDuration);
+		const currentOutputSpec = normalizeKeepRanges(
+			requestedEditSpec.keepRanges,
+			expectedCurrentDuration,
+		);
+		normalizedEditSpec = existingEdit
+			? composeEditSpecs(previousSpec, currentOutputSpec)
+			: currentOutputSpec;
+	}
 
-	if (getEditSpecOutputDuration(currentOutputSpec) <= 0) {
+	if (getEditSpecOutputDuration(normalizedEditSpec) <= 0) {
 		throw new Error("Edit must keep at least one playable range");
 	}
 
-	const normalizedEditSpec = existingEdit
-		? composeEditSpecs(previousSpec, currentOutputSpec)
-		: currentOutputSpec;
-
-	if (areEditSpecsEquivalent(previousSpec, normalizedEditSpec)) {
+	if (areEditSpecDocumentsEquivalent(previousSpec, normalizedEditSpec)) {
 		revalidatePath(`/s/${videoId}/edit`);
 		return { success: true, skipped: true };
 	}
@@ -275,7 +335,7 @@ export async function saveVideoEdits(
 		previousSpec,
 	});
 	try {
-		await ensureOriginalSourceCopy(video, sourceKey);
+		await ensureOriginalSourceCopy(video, sourceKey, !existingEdit);
 	} catch (error) {
 		await clearPendingEdit(videoId, sourceKey, operation);
 		throw error;
@@ -315,6 +375,9 @@ export async function restoreVideoToOriginal(videoId: Video.VideoId) {
 		.select()
 		.from(videoEdits)
 		.where(eq(videoEdits.videoId, videoId));
+	const existingEditSpec = existingEdit
+		? parseVideoEditSpec(existingEdit.editSpec)
+		: null;
 
 	if (!existingEdit && !legacyUpload) {
 		revalidatePath(`/s/${videoId}/edit`);
@@ -326,8 +389,7 @@ export async function restoreVideoToOriginal(videoId: Video.VideoId) {
 	const bucket = await getVideoBucket(video);
 	if (!(await objectExists(bucket, sourceKey)))
 		throw new Error("Original video is no longer available");
-	let sourceDuration =
-		existingEdit?.editSpec.sourceDuration ?? video.duration ?? 0;
+	let sourceDuration = existingEditSpec?.sourceDuration ?? video.duration ?? 0;
 	if (legacyUpload) {
 		const mediaServerUrl = serverEnv().MEDIA_SERVER_URL;
 		if (!mediaServerUrl)
@@ -362,7 +424,7 @@ export async function restoreVideoToOriginal(videoId: Video.VideoId) {
 		sourceDuration = result.metadata.duration;
 	}
 	const previousSpec =
-		existingEdit?.editSpec ??
+		existingEditSpec ??
 		createIdentityEditSpec(video.duration ?? sourceDuration);
 	const restoredSpec = createIdentityEditSpec(sourceDuration);
 	if (getEditSpecOutputDuration(restoredSpec) <= 0)

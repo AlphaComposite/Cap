@@ -407,6 +407,40 @@ describe("getEditTranscript", () => {
 		]);
 	});
 
+	it("returns immutable source-timeline words for the editor", async () => {
+		const objects = new Map<string, string>([
+			[TRANSCRIPT_KEY, storedOriginalTranscript()],
+		]);
+		const bucket = createBucket(objects);
+		const { database } = createDatabase(
+			{ ...video, duration: 10 },
+			{
+				editSpec: {
+					version: 1,
+					sourceDuration: 25,
+					keepRanges: [{ start: 5, end: 15 }],
+				},
+			},
+		);
+		mocks.db.mockReturnValue(database);
+		mocks.getAccessForVideo.mockReturnValue(pipeValue([bucket]));
+
+		const { getEditTranscript } = await import(
+			"@/actions/videos/get-edit-transcript"
+		);
+		const response = await getEditTranscript("video-1" as never, "source");
+
+		if (response.status !== "ready") {
+			throw new Error(`Expected a ready transcript, got ${response.status}`);
+		}
+		expect(response.transcript.durationMs).toBe(25_000);
+		expect(response.transcript.words.map((word) => word.text)).toEqual([
+			"before",
+			"kept",
+			"after",
+		]);
+	});
+
 	it("reports missing when the sidecar no longer matches the original media", async () => {
 		const objects = new Map<string, string>([
 			[TRANSCRIPT_KEY, storedOriginalTranscript(18_000)],

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	areEditSpecDocumentsEquivalent,
 	areEditSpecsEquivalent,
 	areTimelineStatesEquivalent,
 	composeEditSpecs,
 	createIdentityEditSpec,
 	createTimelineHistory,
 	createTimelineState,
+	createTimelineStateFromEditSpec,
 	deleteSelectedTimelineSegment,
 	deleteTimelineRanges,
 	dragTimelineDisplaySplitPoint,
@@ -15,6 +17,7 @@ import {
 	getTimelineDisplayDuration,
 	getTimelineDisplaySegments,
 	getTimelineDisplaySplitPoints,
+	getTimelineEditSpec,
 	getTimelineKeepRanges,
 	getTimelineSegments,
 	mapOutputTimeToSourceTime,
@@ -22,12 +25,15 @@ import {
 	mapTimelineDisplayTimeToSourceTime,
 	mapTimelineSourceTimeToDisplayTime,
 	normalizeKeepRanges,
+	normalizeVideoEditSpec,
+	parseVideoEditSpec,
 	pushTimelineHistory,
 	redoTimelineHistory,
 	remapCurrentOutputTimeThroughEdit,
 	removeSplitPoint,
 	removeTimelineDisplaySplitPoint,
 	selectTimelineSegment,
+	setTimelineAutoCutLayer,
 	splitTimelineAt,
 	trimTimelineClipEdge,
 	undoTimelineHistory,
@@ -126,6 +132,109 @@ describe("video edit specs", () => {
 			),
 		).toBe(false);
 	});
+
+	it("recomputes effective ranges for layered edit documents", () => {
+		const normalized = normalizeVideoEditSpec({
+			version: 2,
+			sourceDuration: 10,
+			manualKeepRanges: [{ start: 0, end: 9 }],
+			keepRanges: [{ start: 0, end: 10 }],
+			autoCuts: {
+				silence: {
+					enabled: true,
+					ranges: [{ start: 2, end: 4 }],
+					thresholdMs: 800,
+					padMs: 150,
+					removedMs: 2_000,
+					gapCount: 1,
+				},
+				fillers: {
+					enabled: false,
+					ranges: [{ start: 6, end: 7 }],
+					mode: "ums",
+					padMs: 80,
+					removedCount: 1,
+					skippedCount: 0,
+				},
+			},
+		});
+
+		expect(normalized.keepRanges).toEqual([
+			{ start: 0, end: 2 },
+			{ start: 4, end: 9 },
+		]);
+	});
+
+	it("rejects malformed or unbounded edit documents", () => {
+		expect(() =>
+			parseVideoEditSpec({
+				version: 2,
+				sourceDuration: 10,
+				keepRanges: [{ start: 0, end: 10 }],
+				manualKeepRanges: [{ start: 0, end: 10 }],
+				autoCuts: {
+					silence: {
+						enabled: "yes",
+						ranges: [],
+						thresholdMs: 800,
+						padMs: 150,
+						removedMs: 0,
+						gapCount: 0,
+					},
+					fillers: {
+						enabled: false,
+						ranges: [],
+						mode: "all",
+						padMs: 80,
+						removedCount: 0,
+						skippedCount: 0,
+					},
+				},
+			}),
+		).toThrow("Invalid video edit specification");
+		expect(() =>
+			parseVideoEditSpec({
+				version: 1,
+				sourceDuration: Number.POSITIVE_INFINITY,
+				keepRanges: [],
+			}),
+		).toThrow("Invalid video edit specification");
+		expect(() =>
+			parseVideoEditSpec({
+				version: 1,
+				sourceDuration: 10,
+				keepRanges: [{ start: 0, end: 11 }],
+			}),
+		).toThrow("Invalid video edit specification");
+		expect(() =>
+			parseVideoEditSpec({
+				version: 1,
+				sourceDuration: 10,
+				keepRanges: Array.from({ length: 5_001 }, () => ({
+					start: 0,
+					end: 1,
+				})),
+			}),
+		).toThrow("Invalid video edit specification");
+	});
+
+	it("distinguishes layer state when rendered ranges are unchanged", () => {
+		const manual = deleteTimelineRanges(createTimelineState(10), [
+			{ start: 2, end: 4 },
+		]);
+		const withoutLayer = getTimelineEditSpec(manual);
+		const withCoveredLayer = getTimelineEditSpec(
+			setTimelineAutoCutLayer(manual, "silence", {
+				enabled: true,
+				ranges: [{ start: 2.5, end: 3.5 }],
+			}),
+		);
+
+		expect(areEditSpecsEquivalent(withoutLayer, withCoveredLayer)).toBe(true);
+		expect(areEditSpecDocumentsEquivalent(withoutLayer, withCoveredLayer)).toBe(
+			false,
+		);
+	});
 });
 
 describe("timeline editing", () => {
@@ -142,6 +251,154 @@ describe("timeline editing", () => {
 			{ start: 4.7, end: 10 },
 		]);
 		expect(nextState.splitPoints).toEqual([1.02, 1.35, 4.1, 4.7]);
+	});
+
+	it("composes independent auto-cut layers without baking manual cuts", () => {
+		const manual = deleteTimelineRanges(createTimelineState(10), [
+			{ start: 2, end: 3 },
+		]);
+		const withSilence = setTimelineAutoCutLayer(manual, "silence", {
+			enabled: true,
+			ranges: [{ start: 1, end: 2.5 }],
+		});
+		const withBoth = setTimelineAutoCutLayer(withSilence, "fillers", {
+			enabled: true,
+			ranges: [{ start: 2.4, end: 4 }],
+		});
+
+		expect(getTimelineKeepRanges(withBoth)).toEqual([
+			{ start: 0, end: 1 },
+			{ start: 4, end: 10 },
+		]);
+		expect(
+			getTimelineKeepRanges(
+				setTimelineAutoCutLayer(withBoth, "silence", { enabled: false }),
+			),
+		).toEqual([
+			{ start: 0, end: 2 },
+			{ start: 4, end: 10 },
+		]);
+		expect(
+			getTimelineKeepRanges(
+				setTimelineAutoCutLayer(withBoth, "fillers", { enabled: false }),
+			),
+		).toEqual([
+			{ start: 0, end: 1 },
+			{ start: 3, end: 10 },
+		]);
+		expect(manual.deletedRanges).toEqual([{ start: 2, end: 3 }]);
+	});
+
+	it("restores manual split points after an auto-cut layer is disabled", () => {
+		const split = splitTimelineAt(createTimelineState(10), 3);
+		const enabled = setTimelineAutoCutLayer(split, "silence", {
+			enabled: true,
+			ranges: [{ start: 2, end: 4 }],
+		});
+		const disabled = setTimelineAutoCutLayer(enabled, "silence", {
+			enabled: false,
+		});
+
+		expect(disabled.splitPoints).toEqual([3]);
+		expect(getTimelineSegments(disabled)).toHaveLength(2);
+	});
+
+	it("projects auto-cut boundaries into timeline segments without persisting them", () => {
+		const enabled = setTimelineAutoCutLayer(
+			createTimelineState(10),
+			"silence",
+			{
+				enabled: true,
+				ranges: [{ start: 2, end: 4 }],
+			},
+		);
+
+		expect(
+			getTimelineSegments(enabled).map(({ start, end, deleted }) => ({
+				start,
+				end,
+				deleted,
+			})),
+		).toEqual([
+			{ start: 0, end: 2, deleted: false },
+			{ start: 2, end: 4, deleted: true },
+			{ start: 4, end: 10, deleted: false },
+		]);
+		expect(enabled.splitPoints).toEqual([]);
+		expect(getTimelineDisplaySplitPoints(enabled)).toEqual([
+			expect.objectContaining({ removable: false }),
+		]);
+		expect(
+			areTimelineStatesEquivalent(
+				enabled,
+				removeTimelineDisplaySplitPoint(enabled, 0),
+			),
+		).toBe(true);
+	});
+
+	it("materializes a versioned source-timeline edit document", () => {
+		const manual = deleteTimelineRanges(createTimelineState(10), [
+			{ start: 2, end: 3 },
+		]);
+		const state = setTimelineAutoCutLayer(manual, "silence", {
+			enabled: true,
+			ranges: [{ start: 5, end: 7 }],
+		});
+
+		expect(getTimelineEditSpec(state)).toEqual({
+			version: 2,
+			sourceDuration: 10,
+			manualKeepRanges: [
+				{ start: 0, end: 2 },
+				{ start: 3, end: 10 },
+			],
+			keepRanges: [
+				{ start: 0, end: 2 },
+				{ start: 3, end: 5 },
+				{ start: 7, end: 10 },
+			],
+			autoCuts: {
+				silence: {
+					enabled: true,
+					ranges: [{ start: 5, end: 7 }],
+					thresholdMs: 800,
+					padMs: 150,
+					removedMs: 0,
+					gapCount: 0,
+				},
+				fillers: {
+					enabled: false,
+					ranges: [],
+					mode: "ums",
+					padMs: 80,
+					removedCount: 0,
+					skippedCount: 0,
+				},
+			},
+		});
+	});
+
+	it("migrates a version-one edit mask into the manual source layer", () => {
+		const state = createTimelineStateFromEditSpec({
+			version: 1,
+			sourceDuration: 10,
+			keepRanges: [
+				{ start: 0, end: 2 },
+				{ start: 4, end: 10 },
+			],
+		});
+
+		expect(state.deletedRanges).toEqual([{ start: 2, end: 4 }]);
+		expect(state.autoCuts?.silence.enabled).toBe(false);
+		expect(state.autoCuts?.fillers.enabled).toBe(false);
+		expect(getTimelineKeepRanges(state)).toEqual([
+			{ start: 0, end: 2 },
+			{ start: 4, end: 10 },
+		]);
+		expect(getTimelineEditSpec(state).manualKeepRanges).toEqual([
+			{ start: 0, end: 2 },
+			{ start: 4, end: 10 },
+		]);
 	});
 
 	it("does not allow transcript deletion to remove all playable video", () => {
@@ -453,9 +710,14 @@ describe("timeline editing", () => {
 		expect(initialSegment).toBeDefined();
 		if (!initialSegment) throw new Error("Expected initial segment");
 		const selected = selectTimelineSegment(initial, initialSegment.id);
+		const plannedAutoCut = setTimelineAutoCutLayer(initial, "silence", {
+			enabled: false,
+			ranges: [{ start: 2, end: 4 }],
+		});
 
 		expect(areTimelineStatesEquivalent(initial, split)).toBe(false);
 		expect(areTimelineStatesEquivalent(initial, selected)).toBe(true);
+		expect(areTimelineStatesEquivalent(initial, plannedAutoCut)).toBe(false);
 		expect(
 			areEditSpecsEquivalent(
 				normalizeKeepRanges(getTimelineKeepRanges(initial), initial.duration),

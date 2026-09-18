@@ -110,11 +110,44 @@ export type VideoEditRange = {
 	end: number;
 };
 
-export type VideoEditSpec = {
+export type VideoAutoCutSilenceLayer = {
+	enabled: boolean;
+	ranges: VideoEditRange[];
+	thresholdMs: number;
+	padMs: number;
+	removedMs: number;
+	gapCount: number;
+};
+
+export type VideoAutoCutFillersLayer = {
+	enabled: boolean;
+	ranges: VideoEditRange[];
+	mode: "ums";
+	padMs: number;
+	removedCount: number;
+	skippedCount: number;
+};
+
+export type VideoAutoCuts = {
+	silence: VideoAutoCutSilenceLayer;
+	fillers: VideoAutoCutFillersLayer;
+};
+
+export type VideoEditSpecV1 = {
 	version: 1;
 	sourceDuration: number;
 	keepRanges: VideoEditRange[];
 };
+
+export type VideoEditSpecV2 = {
+	version: 2;
+	sourceDuration: number;
+	keepRanges: VideoEditRange[];
+	manualKeepRanges: VideoEditRange[];
+	autoCuts: VideoAutoCuts;
+};
+
+export type VideoEditSpec = VideoEditSpecV1 | VideoEditSpecV2;
 
 /**
  * Space metadata structure

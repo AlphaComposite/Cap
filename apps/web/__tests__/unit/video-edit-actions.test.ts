@@ -51,7 +51,11 @@ vi.mock("@cap/database", () => {
 			set: (data: Record<string, unknown>) => ({
 				where: async () => {
 					mocks.writes.push(`update-${table.name}`);
-					Object.assign(mocks.video, data);
+					if (table.name === "edit") {
+						mocks.edit = { ...(mocks.edit ?? {}), ...data };
+					} else {
+						Object.assign(mocks.video, data);
+					}
 				},
 			}),
 		}),
@@ -166,7 +170,9 @@ function legacyUpload() {
 
 describe("video edit claims and recovery", () => {
 	it("claims the recording before copying its original source", async () => {
-		mocks.head.mockReturnValue(Effect.fail(new Error("Missing")));
+		mocks.head.mockReturnValue(
+			Effect.fail(Object.assign(new Error("Missing"), { name: "NoSuchKey" })),
+		);
 		mocks.copy.mockImplementation(() => {
 			expect(mocks.upload?.phase).toBe("processing");
 			return Effect.void;
@@ -175,6 +181,204 @@ describe("video edit claims and recovery", () => {
 		expect(mocks.copy).toHaveBeenCalledOnce();
 		expect(mocks.start).toHaveBeenCalledOnce();
 	});
+
+	it("fails closed when original-source existence cannot be verified", async () => {
+		mocks.head.mockReturnValue(Effect.fail(new Error("storage timeout")));
+		await expect(saveVideoEdits(videoId, trim)).rejects.toThrow();
+		expect(mocks.copy).not.toHaveBeenCalled();
+		expect(mocks.start).not.toHaveBeenCalled();
+		expect(mocks.clear).toHaveBeenCalledWith(
+			videoId,
+			sourceKey,
+			expect.objectContaining({ token: expect.any(String) }),
+		);
+	});
+
+	it("does not reconstruct a missing original from an edited output", async () => {
+		mocks.edit = {
+			sourceKey,
+			editSpec: {
+				version: 1,
+				sourceDuration: 10,
+				keepRanges: [{ start: 0, end: 8 }],
+			},
+		};
+		mocks.head.mockReturnValue(
+			Effect.fail(Object.assign(new Error("Missing"), { name: "NoSuchKey" })),
+		);
+
+		await expect(saveVideoEdits(videoId, trim)).rejects.toThrow(
+			"Original video is no longer available",
+		);
+		expect(mocks.copy).not.toHaveBeenCalled();
+		expect(mocks.start).not.toHaveBeenCalled();
+		expect(mocks.clear).toHaveBeenCalledWith(
+			videoId,
+			sourceKey,
+			expect.objectContaining({ token: expect.any(String) }),
+		);
+	});
+
+	it("recomputes layered source edits before dispatching the renderer", async () => {
+		await saveVideoEdits(videoId, {
+			version: 2,
+			sourceDuration: 10,
+			manualKeepRanges: [{ start: 0, end: 10 }],
+			keepRanges: [{ start: 0, end: 10 }],
+			autoCuts: {
+				silence: {
+					enabled: true,
+					ranges: [{ start: 2, end: 4 }],
+					thresholdMs: 800,
+					padMs: 150,
+					removedMs: 2_000,
+					gapCount: 1,
+				},
+				fillers: {
+					enabled: false,
+					ranges: [],
+					mode: "ums",
+					padMs: 80,
+					removedCount: 0,
+					skippedCount: 0,
+				},
+			},
+		});
+
+		expect(mocks.start).toHaveBeenCalledWith(expect.any(Function), [
+			expect.objectContaining({
+				keepRanges: [
+					{ start: 0, end: 2 },
+					{ start: 4, end: 10 },
+				],
+				editSpec: expect.objectContaining({
+					version: 2,
+					keepRanges: [
+						{ start: 0, end: 2 },
+						{ start: 4, end: 10 },
+					],
+				}),
+			}),
+		]);
+	});
+
+	it("serializes layer-only changes through the edit workflow", async () => {
+		const baseAutoCuts = {
+			silence: {
+				enabled: false,
+				ranges: [{ start: 2.5, end: 3.5 }],
+				thresholdMs: 800,
+				padMs: 150,
+				removedMs: 1_000,
+				gapCount: 1,
+			},
+			fillers: {
+				enabled: false,
+				ranges: [],
+				mode: "ums" as const,
+				padMs: 80,
+				removedCount: 0,
+				skippedCount: 0,
+			},
+		};
+		mocks.edit = {
+			sourceKey,
+			editSpec: {
+				version: 2,
+				sourceDuration: 10,
+				manualKeepRanges: [
+					{ start: 0, end: 2 },
+					{ start: 4, end: 10 },
+				],
+				keepRanges: [
+					{ start: 0, end: 2 },
+					{ start: 4, end: 10 },
+				],
+				autoCuts: baseAutoCuts,
+			},
+		};
+
+		await saveVideoEdits(videoId, {
+			...(mocks.edit.editSpec as Record<string, unknown>),
+			autoCuts: {
+				...baseAutoCuts,
+				silence: { ...baseAutoCuts.silence, enabled: true },
+			},
+		} as never);
+
+		expect(mocks.start).toHaveBeenCalledWith(expect.any(Function), [
+			expect.objectContaining({
+				editSpec: expect.objectContaining({
+					autoCuts: expect.objectContaining({
+						silence: expect.objectContaining({ enabled: true }),
+					}),
+				}),
+			}),
+		]);
+	});
+
+	it("persists a first layer-only document even when output is unchanged", async () => {
+		mocks.head.mockReturnValue(
+			Effect.fail(Object.assign(new Error("Missing"), { name: "NoSuchKey" })),
+		);
+		await saveVideoEdits(videoId, {
+			version: 2,
+			sourceDuration: 10,
+			manualKeepRanges: [{ start: 0, end: 10 }],
+			keepRanges: [{ start: 0, end: 10 }],
+			autoCuts: {
+				silence: {
+					enabled: false,
+					ranges: [{ start: 2, end: 3 }],
+					thresholdMs: 800,
+					padMs: 150,
+					removedMs: 1_000,
+					gapCount: 1,
+				},
+				fillers: {
+					enabled: false,
+					ranges: [],
+					mode: "ums",
+					padMs: 80,
+					removedCount: 0,
+					skippedCount: 0,
+				},
+			},
+		});
+
+		expect(mocks.copy).toHaveBeenCalledOnce();
+		expect(mocks.start).toHaveBeenCalledOnce();
+	});
+
+	it("rejects a stale client baseline before claiming or rendering", async () => {
+		mocks.edit = {
+			sourceKey,
+			editSpec: {
+				version: 1,
+				sourceDuration: 10,
+				keepRanges: [{ start: 0, end: 8 }],
+			},
+		};
+
+		await expect(
+			saveVideoEdits(
+				videoId,
+				{
+					version: 1,
+					sourceDuration: 8,
+					keepRanges: [{ start: 0, end: 7 }],
+				},
+				{
+					version: 1,
+					sourceDuration: 10,
+					keepRanges: [{ start: 0, end: 10 }],
+				},
+			),
+		).rejects.toThrow("edited in another session");
+		expect(mocks.writes).toEqual([]);
+		expect(mocks.start).not.toHaveBeenCalled();
+	});
+
 	it("releases a pending claim when the workflow start fails", async () => {
 		mocks.start.mockRejectedValue(new Error("Enqueue failed"));
 		await expect(saveVideoEdits(videoId, trim)).rejects.toThrow(

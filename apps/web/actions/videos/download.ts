@@ -86,11 +86,14 @@ export async function getVideoDownloadInfo(
 
 	if (!video) throw new Error("Video not found");
 
-	const allowed = await canUserDownloadVideo({
-		userId: user.id,
-		ownerId: video.ownerId,
-		videoId,
-	});
+	const allowed =
+		variant === "original"
+			? user.id === video.ownerId
+			: await canUserDownloadVideo({
+					userId: user.id,
+					ownerId: video.ownerId,
+					videoId,
+				});
 
 	if (!allowed) {
 		throw new Error("You don't have permission to download this video");

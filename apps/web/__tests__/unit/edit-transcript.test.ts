@@ -10,6 +10,7 @@ import {
 	normalizeTranscriptSelection,
 	parseEditTranscript,
 	planFillerCuts,
+	planSilenceCuts,
 	planTranscriptCut,
 	remapEditTranscriptThroughSpec,
 	serializeEditTranscript,
@@ -228,6 +229,49 @@ describe("edit transcript", () => {
 			fillerCount: 2,
 			skippedCount: 0,
 		});
+	});
+
+	it("plans extended silence cuts with natural edge padding", () => {
+		const transcript = createEditTranscript(
+			{
+				speech_model_used: "universal-2",
+				words: [
+					{ text: "hello", start: 100, end: 300 },
+					{ text: "world", start: 1_300, end: 1_500 },
+				],
+			},
+			2_500,
+		);
+
+		expect(planSilenceCuts(transcript.words, transcript.durationMs)).toEqual({
+			ranges: [
+				{ startMs: 450, endMs: 1_150 },
+				{ startMs: 1_650, endMs: 2_350 },
+			],
+			gapCount: 2,
+			removedMs: 1_400,
+		});
+	});
+
+	it("does not classify overlapping speech as silence", () => {
+		const transcript = createEditTranscript(
+			{
+				speech_model_used: "universal-2",
+				words: [
+					{ text: "long", start: 0, end: 1_000 },
+					{ text: "overlap", start: 100, end: 200 },
+					{ text: "later", start: 1_200, end: 1_400 },
+				],
+			},
+			1_500,
+		);
+
+		expect(
+			planSilenceCuts(transcript.words, transcript.durationMs, {
+				thresholdMs: 800,
+				padMs: 0,
+			}),
+		).toEqual({ ranges: [], gapCount: 0, removedMs: 0 });
 	});
 
 	it("plans exact safe cuts for the real missing-filler response", () => {
