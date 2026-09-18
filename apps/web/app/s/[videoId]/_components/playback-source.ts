@@ -37,10 +37,16 @@ function appendCacheBust(url: string, timestamp: number): string {
 			"x-goog-signature",
 			"x-ms-signature",
 		];
+		const parameterNames = [...parsed.searchParams.keys()].map((key) =>
+			key.toLowerCase(),
+		);
+		const isCloudFrontSigned =
+			parameterNames.includes("signature") &&
+			parameterNames.includes("key-pair-id") &&
+			(parameterNames.includes("policy") || parameterNames.includes("expires"));
 		if (
-			[...parsed.searchParams.keys()].some((key) =>
-				signedParameters.includes(key.toLowerCase()),
-			)
+			isCloudFrontSigned ||
+			parameterNames.some((key) => signedParameters.includes(key))
 		) {
 			return url;
 		}

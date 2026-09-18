@@ -123,6 +123,25 @@ describe("resolvePlaybackSource", () => {
 		});
 	});
 
+	it.each([
+		"https://cdn.example.com/video.mp4?Policy=encoded&Signature=abc&Key-Pair-Id=key",
+		"https://cdn.example.com/video.mp4?Expires=2000000000&Signature=abc&Key-Pair-Id=key",
+	])("preserves a CloudFront-signed videoSrc", async (signedUrl) => {
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			createResponse(signedUrl, {
+				status: 206,
+				redirected: false,
+			}),
+		);
+
+		await expect(
+			resolvePlaybackSource({ videoSrc: signedUrl, fetchImpl, now: () => 123 }),
+		).resolves.toMatchObject({ url: signedUrl, type: "mp4" });
+		expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(signedUrl, {
+			headers: { range: "bytes=0-0" },
+		});
+	});
+
 	it("uses the page's signed URL without a playlist request or changing its signature", async () => {
 		const initialUrl =
 			"https://bucket.s3.amazonaws.com/result.mp4?signature=abc";
