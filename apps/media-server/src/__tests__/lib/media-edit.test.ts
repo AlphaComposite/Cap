@@ -41,6 +41,34 @@ function readH264Encoding(filePath: string) {
 	return { level: stream.level, timeBase: stream.time_base };
 }
 
+function readStreamEndpointDifference(filePath: string) {
+	const result = JSON.parse(
+		execFileSync("ffprobe", [
+			"-hide_banner",
+			"-v",
+			"error",
+			"-show_entries",
+			"stream=codec_type,start_time,duration",
+			"-of",
+			"json",
+			filePath,
+		]).toString(),
+	) as {
+		streams?: Array<{
+			codec_type: "audio" | "video";
+			start_time: string;
+			duration: string;
+		}>;
+	};
+	const video = result.streams?.find((stream) => stream.codec_type === "video");
+	const audio = result.streams?.find((stream) => stream.codec_type === "audio");
+	if (!video || !audio)
+		throw new Error("Edited video must contain A/V streams");
+	const videoEnd = Number(video.start_time) + Number(video.duration);
+	const audioEnd = Number(audio.start_time) + Number(audio.duration);
+	return Math.abs(videoEnd - audioEnd);
+}
+
 afterAll(() => {
 	for (const file of tempFiles) {
 		if (existsSync(file)) {
@@ -143,8 +171,31 @@ describe("media edit helpers", () => {
 		expect(args.filter((value) => value === "-ss")).toHaveLength(3);
 		expect(filter).toContain("concat=n=3:v=1:a=1[v][a]");
 		expect(filter).toContain("[1:v:0]fps=60,setpts=PTS-STARTPTS[v1]");
-		expect(filter).toContain("[2:a:0]asetpts=PTS-STARTPTS[a2]");
+		expect(filter).toContain(
+			"[0:a:0]asetpts=PTS-STARTPTS,afade=t=out:st=0.985:d=0.015[a0]",
+		);
+		expect(filter).toContain(
+			"[1:a:0]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.015,afade=t=out:st=0.785:d=0.015[a1]",
+		);
+		expect(filter).toContain(
+			"[2:a:0]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.015[a2]",
+		);
 		expect(args[args.indexOf("-enc_time_base:v") + 1]).toBe("1/60");
+	});
+
+	test("keeps 30ms splice fades across transcode batch boundaries", () => {
+		const args = buildTranscodeEditArgs(
+			"/input.mp4",
+			[{ start: 4, end: 5 }],
+			"/output.mp4",
+			true,
+			30,
+			{ rangeOffset: 4, totalRangeCount: 6 },
+		);
+		const filter = args[args.indexOf("-filter_complex") + 1];
+
+		expect(filter).toContain("afade=t=in:st=0:d=0.015");
+		expect(filter).toContain("afade=t=out:st=0.985:d=0.015");
 	});
 
 	test("pins fractional frame rates to a safe encoder time base", () => {
@@ -200,6 +251,9 @@ describe("renderEditedVideo integration tests", () => {
 		expect(outputMetadata.audioCodec).toBe("aac");
 		expect(outputMetadata.duration).toBeGreaterThan(0.3);
 		expect(outputMetadata.duration).toBeLessThan(metadata.duration + 0.2);
+		expect(readStreamEndpointDifference(editedFile.path)).toBeLessThanOrEqual(
+			0.02,
+		);
 		expect(progressUpdates.length).toBeGreaterThan(0);
 		expect(progressUpdates.at(-1)).toBe(75);
 		const encoding = readH264Encoding(editedFile.path);

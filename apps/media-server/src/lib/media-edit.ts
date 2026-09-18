@@ -24,6 +24,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_OUTPUT_FPS = 30;
 const MAX_TRANSCODE_RANGES_PER_BATCH = 4;
+const SPLICE_CROSSFADE_SECONDS = 0.03;
 
 function roundTime(value: number) {
 	return Math.round(value * 1000) / 1000;
@@ -154,6 +155,11 @@ export function buildTranscodeEditArgs(
 	outputPath: string,
 	hasAudio: boolean,
 	fps = DEFAULT_OUTPUT_FPS,
+	boundaryContext: {
+		rangeOffset: number;
+		totalRangeCount: number;
+		intermediate?: boolean;
+	} = { rangeOffset: 0, totalRangeCount: ranges.length },
 ) {
 	if (ranges.length === 0 || ranges.length > MAX_TRANSCODE_RANGES_PER_BATCH) {
 		throw new Error(
@@ -161,10 +167,21 @@ export function buildTranscodeEditArgs(
 		);
 	}
 
-	const filters = ranges.flatMap((_, index) => {
+	const filters = ranges.flatMap((range, index) => {
 		const videoFilter = `[${index}:v:0]fps=${getOutputFps(fps)},setpts=PTS-STARTPTS[v${index}]`;
 		if (!hasAudio) return [videoFilter];
-		return [videoFilter, `[${index}:a:0]asetpts=PTS-STARTPTS[a${index}]`];
+		const globalIndex = boundaryContext.rangeOffset + index;
+		const halfFade = SPLICE_CROSSFADE_SECONDS / 2;
+		const audioFilters = ["asetpts=PTS-STARTPTS"];
+		if (globalIndex > 0) {
+			audioFilters.push(`afade=t=in:st=0:d=${halfFade}`);
+		}
+		if (globalIndex < boundaryContext.totalRangeCount - 1) {
+			audioFilters.push(
+				`afade=t=out:st=${formatTime(Math.max(0, getRangeDuration(range) - halfFade))}:d=${halfFade}`,
+			);
+		}
+		return [videoFilter, `[${index}:a:0]${audioFilters.join(",")}[a${index}]`];
 	});
 	const inputs = ranges
 		.map((_, index) => `[v${index}]${hasAudio ? `[a${index}]` : ""}`)
@@ -197,14 +214,21 @@ export function buildTranscodeEditArgs(
 		"yuv420p",
 		"-enc_time_base:v",
 		`1/${getOutputFps(fps)}`,
-		...(hasAudio ? ["-map", "[a]", "-c:a", "aac", "-b:a", "160k"] : ["-an"]),
-		"-movflags",
-		"+faststart",
+		...(hasAudio
+			? boundaryContext.intermediate
+				? ["-map", "[a]", "-c:a", "pcm_s16le"]
+				: ["-map", "[a]", "-c:a", "aac", "-b:a", "160k"]
+			: ["-an"]),
+		...(!boundaryContext.intermediate ? ["-movflags", "+faststart"] : []),
 		outputPath,
 	];
 }
 
-function buildConcatArgs(listPath: string, outputPath: string) {
+function buildConcatArgs(
+	listPath: string,
+	outputPath: string,
+	hasAudio: boolean,
+) {
 	return [
 		"ffmpeg",
 		"-hide_banner",
@@ -216,9 +240,10 @@ function buildConcatArgs(listPath: string, outputPath: string) {
 		"-i",
 		listPath,
 		"-map",
-		"0",
-		"-c",
+		"0:v:0",
+		"-c:v",
 		"copy",
+		...(hasAudio ? ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k"] : ["-an"]),
 		"-movflags",
 		"+faststart",
 		outputPath,
@@ -341,6 +366,7 @@ function concatFileLine(path: string) {
 
 async function concatSegments(
 	segmentFiles: TempFileHandle[],
+	hasAudio: boolean,
 	timeoutMs: number,
 	abortSignal?: AbortSignal,
 ) {
@@ -353,7 +379,7 @@ async function concatSegments(
 			`${segmentFiles.map((segment) => concatFileLine(segment.path)).join("\n")}\n`,
 		);
 		await runFfmpegCommand(
-			buildConcatArgs(concatList.path, outputFile.path),
+			buildConcatArgs(concatList.path, outputFile.path, hasAudio),
 			timeoutMs,
 			abortSignal,
 		);
@@ -402,16 +428,30 @@ async function renderTranscodedEdit(
 	abortSignal?: AbortSignal,
 ) {
 	const batches = createTranscodeBatches(keepRanges);
+	const usesIntermediatePcm = batches.length > 1 && hasAudio;
 	const batchFiles: TempFileHandle[] = [];
 	const startedAt = performance.now();
 
 	try {
 		onProgress?.(5, "Preparing edit...");
 		for (const [index, batch] of batches.entries()) {
-			const batchFile = await createTempFile(".mp4");
+			const batchFile = await createTempFile(
+				usesIntermediatePcm ? ".mkv" : ".mp4",
+			);
 			batchFiles.push(batchFile);
 			await runFfmpegCommand(
-				buildTranscodeEditArgs(inputPath, batch, batchFile.path, hasAudio, fps),
+				buildTranscodeEditArgs(
+					inputPath,
+					batch,
+					batchFile.path,
+					hasAudio,
+					fps,
+					{
+						rangeOffset: index * MAX_TRANSCODE_RANGES_PER_BATCH,
+						totalRangeCount: keepRanges.length,
+						intermediate: usesIntermediatePcm,
+					},
+				),
 				getRemainingTimeoutMs(startedAt, timeoutMs),
 				abortSignal,
 			);
@@ -433,6 +473,7 @@ async function renderTranscodedEdit(
 
 		const outputFile = await concatSegments(
 			batchFiles,
+			hasAudio,
 			getRemainingTimeoutMs(startedAt, timeoutMs),
 			abortSignal,
 		);
