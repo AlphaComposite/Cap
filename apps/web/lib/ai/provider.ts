@@ -111,7 +111,9 @@ function isProviderConfigured(provider: AiProviderId): boolean {
 		case "groq":
 			return Boolean(env.GROQ_API_KEY);
 		case "openai-compatible":
-			return Boolean(env.AI_BASE_URL && env.AI_MODEL);
+			return Boolean(
+				nonBlankEnvValue(env.AI_BASE_URL) && nonBlankEnvValue(env.AI_MODEL),
+			);
 	}
 }
 
@@ -166,27 +168,35 @@ export function isAiConfigured(role: AiModelRole = "generation"): boolean {
 	return getAiProviderChain(role).length > 0;
 }
 
+function nonBlankEnvValue(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed || undefined;
+}
+
 function envModelOverride(role: AiModelRole): string | undefined {
 	const env = serverEnv();
 	switch (role) {
 		case "generation":
-			return env.AI_MODEL;
+			return nonBlankEnvValue(env.AI_MODEL);
 		case "chat":
-			return env.AI_CHAT_MODEL;
+			return nonBlankEnvValue(env.AI_CHAT_MODEL);
 		case "chat-streaming":
-			return env.AI_STREAM_MODEL;
+			return nonBlankEnvValue(env.AI_STREAM_MODEL);
 	}
 }
 
 function openAiCompatibleModelId(role: AiModelRole): string | undefined {
 	const env = serverEnv();
+	const generationModel = nonBlankEnvValue(env.AI_MODEL);
+	const chatModel = nonBlankEnvValue(env.AI_CHAT_MODEL);
+	const streamModel = nonBlankEnvValue(env.AI_STREAM_MODEL);
 	switch (role) {
 		case "generation":
-			return env.AI_MODEL;
+			return generationModel;
 		case "chat":
-			return env.AI_CHAT_MODEL ?? env.AI_MODEL;
+			return chatModel ?? generationModel;
 		case "chat-streaming":
-			return env.AI_STREAM_MODEL ?? env.AI_CHAT_MODEL ?? env.AI_MODEL;
+			return streamModel ?? chatModel ?? generationModel;
 	}
 }
 

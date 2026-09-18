@@ -124,6 +124,16 @@ describe("getConfiguredAiProviders", () => {
 		expect(getConfiguredAiProviders()).toEqual(["groq", "openai-compatible"]);
 	});
 
+	it("does not configure openai-compatible from whitespace-only values", () => {
+		envWith({
+			GROQ_API_KEY: "groq-key",
+			AI_BASE_URL: "   ",
+			AI_MODEL: "   ",
+		});
+
+		expect(getConfiguredAiProviders()).toEqual(["groq"]);
+	});
+
 	it("does not auto-detect openai-compatible from an explicit assemblyai gateway url", () => {
 		envWith({
 			AI_PROVIDER: "assemblyai",
@@ -238,6 +248,20 @@ describe("role model defaults", () => {
 });
 
 describe("env model overrides", () => {
+	it("uses provider defaults when compose supplies blank override values", () => {
+		envWith({
+			AI_PROVIDER: "openai",
+			OPENAI_API_KEY: "openai-key",
+			AI_MODEL: "",
+			AI_CHAT_MODEL: "",
+			AI_STREAM_MODEL: "",
+		});
+
+		expect(getAiModel("generation")?.modelId).toBe("gpt-4o-mini");
+		expect(getAiModel("chat")?.modelId).toBe("gpt-4o-mini");
+		expect(getAiModel("chat-streaming")?.modelId).toBe("gpt-4o-mini");
+	});
+
 	it("applies per-role overrides to the explicit provider", () => {
 		envWith({
 			AI_PROVIDER: "groq",
@@ -272,6 +296,20 @@ describe("env model overrides", () => {
 			AI_PROVIDER: "openai-compatible",
 			AI_BASE_URL: "http://localhost:11434/v1",
 			AI_MODEL: "base-model",
+		});
+
+		expect(getAiModel("generation")?.modelId).toBe("base-model");
+		expect(getAiModel("chat")?.modelId).toBe("base-model");
+		expect(getAiModel("chat-streaming")?.modelId).toBe("base-model");
+	});
+
+	it("cascades openai-compatible models past blank role overrides", () => {
+		envWith({
+			AI_PROVIDER: "openai-compatible",
+			AI_BASE_URL: "http://localhost:11434/v1",
+			AI_MODEL: "base-model",
+			AI_CHAT_MODEL: "   ",
+			AI_STREAM_MODEL: "   ",
 		});
 
 		expect(getAiModel("generation")?.modelId).toBe("base-model");
