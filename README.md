@@ -36,6 +36,36 @@
 > [DOWNSTREAM_MAINTENANCE.md](DOWNSTREAM_MAINTENANCE.md) for branch policy,
 > upstream synchronization, verification, and contribution guidance.
 
+## Automatic cleanup in the web editor
+
+The editor can generate two optional cut layers from transcript timing: extended
+no-speech pauses and a conservative set of filler words. Both controls start off,
+show exactly what they can remove, and can be toggled independently.
+
+<table>
+  <tr>
+    <td width="64%" valign="top">
+      <img src=".github/assets/downstream/automatic-cut-controls.jpg" alt="Transcript panel with enabled controls reporting 0.7 seconds of no-speech pauses and four filler words removed">
+      <p><strong>Choose what to remove.</strong> The transcript panel reports the planned or removed amount for each automatic layer. Here it found one 0.7-second no-speech pause and four removable filler words.</p>
+    </td>
+    <td width="36%" valign="top" align="center">
+      <img src=".github/assets/downstream/adjusted-watch-time.jpg" width="260" alt="Video player showing 1.2 times playback and an adjusted watch time of 1 minute 58 seconds beside the crossed-out original duration of 2 minutes 21 seconds">
+      <p><strong>See the time difference.</strong> The player puts the original duration and adjusted watch time under the play button. At 1.2x, this 2m 21s video takes 1m 58s to watch.</p>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src=".github/assets/downstream/generated-cut-timeline.jpg" alt="Video editor timeline with source clips separated by automatically generated cut markers">
+</p>
+<p align="center"><sub><strong>Generated cuts stay visible.</strong> The timeline shows where the automatic layers will skip source footage, so the result can be inspected before saving.</sub></p>
+
+Automatic cuts use immutable source timestamps. Manual cuts, no-speech pauses,
+and filler words remain separate layers, so turning one option off restores only
+that layer's content. The same composed ranges drive preview playback, saved
+output, and downloads. Short audio fades are applied at rendered splice points
+to suppress clicks without adding a visual dissolve.
+
 <img src="https://raw.githubusercontent.com/CapSoftware/Cap/refs/heads/main/apps/web/public/landing-cover.png" alt="Cap app preview">
 
 Cap is the open source alternative to Loom. It gives you fast screen recording, polished local editing, instant share links, comments, transcripts, analytics, team workspaces, custom domains, custom S3 storage, and full self-hosting when you need complete control.
