@@ -244,6 +244,7 @@ function buildConcatArgs(
 		"-c:v",
 		"copy",
 		...(hasAudio ? ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k"] : ["-an"]),
+		"-shortest",
 		"-movflags",
 		"+faststart",
 		outputPath,
