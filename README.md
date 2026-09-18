@@ -46,7 +46,7 @@ show exactly what they can remove, and can be toggled independently.
   <tr>
     <td width="64%" valign="top">
       <img src=".github/assets/downstream/automatic-cut-controls.jpg" alt="Transcript panel with enabled controls reporting 0.7 seconds of no-speech pauses and four filler words removed">
-      <p><strong>Choose what to remove.</strong> The transcript panel reports the planned or removed amount for each automatic layer. Here it found one 0.7-second no-speech pause and four removable filler words.</p>
+      <p><strong>Choose what to remove.</strong> The transcript panel reports the planned or removed amount for each automatic layer. Here it found 0.7 seconds of no-speech pauses and four removable filler words.</p>
     </td>
     <td width="36%" valign="top" align="center">
       <img src=".github/assets/downstream/adjusted-watch-time.jpg" width="260" alt="Video player showing 1.2 times playback and an adjusted watch time of 1 minute 58 seconds beside the crossed-out original duration of 2 minutes 21 seconds">
