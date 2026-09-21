@@ -4,12 +4,16 @@ import type { ImageUpload, Video } from "@cap/web-domain";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "motion/react";
 import dynamic from "next/dynamic";
-import { forwardRef, Suspense, useState } from "react";
+import { forwardRef, Suspense, useRef, useState } from "react";
 import type { OrganizationSettings } from "@/app/(org)/dashboard/dashboard-data";
 import { useCurrentUser } from "@/app/Layout/AuthContext";
 import type { VideoData } from "../types";
+import { isSummaryTabDisabled } from "./summary-visibility";
 import { Activity } from "./tabs/Activity";
-import type { SummaryEditingState } from "./tabs/SummaryEditor";
+import type {
+	SummaryEditingState,
+	SummarySaveRequest,
+} from "./tabs/SummaryEditor";
 
 // Activity is the default tab, so it stays in the entry chunk; the other tabs
 // (and their deps — react-markdown for Summary, the 1000-line transcript view)
@@ -126,6 +130,8 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 
 		const transcriptDisabled =
 			videoSettings?.disableTranscript ?? data.orgSettings?.disableTranscript;
+		const summaryDisabled =
+			videoSettings?.disableSummary ?? data.orgSettings?.disableSummary;
 
 		const defaultTab =
 			// Landing right after stopping a recording: the transcript is what's
@@ -138,7 +144,7 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 							data.orgSettings?.disableComments
 						)
 					? "activity"
-					: !(videoSettings?.disableSummary ?? data.orgSettings?.disableSummary)
+					: isOwner || !summaryDisabled
 						? "summary"
 						: !transcriptDisabled
 							? "transcript"
@@ -146,13 +152,29 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 
 		const [summaryEditingState, setSummaryEditingState] =
 			useState<SummaryEditingState>("clean");
-		const canLeaveSummary = () =>
-			summaryEditingState !== "saving" &&
-			(summaryEditingState !== "dirty" ||
-				window.confirm("Discard your unsaved summary and chapter changes?"));
+		const summarySaveRequestRef = useRef<SummarySaveRequest | null>(null);
+		const leavePendingRef = useRef(false);
+		const leaveSummary = async (action: () => void) => {
+			if (leavePendingRef.current) return;
+			if (
+				activeTab !== "summary" ||
+				summaryEditingState === "clean" ||
+				!summarySaveRequestRef.current
+			) {
+				action();
+				return;
+			}
+
+			leavePendingRef.current = true;
+			try {
+				if (await summarySaveRequestRef.current()) action();
+			} finally {
+				leavePendingRef.current = false;
+			}
+		};
 
 		const [activeTab, setActiveTab] = useState<TabType>(defaultTab);
-		const [[page, direction], setPage] = useState([0, 0]);
+		const [[_page, direction], setPage] = useState([0, 0]);
 
 		const tabs = [
 			{
@@ -167,9 +189,7 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 						{
 							id: "summary",
 							label: "Summary",
-							disabled:
-								videoSettings?.disableSummary ??
-								data.orgSettings?.disableSummary,
+							disabled: isSummaryTabDisabled(isOwner, summaryDisabled),
 						},
 						{
 							id: "transcript",
@@ -182,13 +202,15 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 		];
 
 		const paginate = (tabId: TabType) => {
-			if (tabId === activeTab || !canLeaveSummary()) return;
-			const currentIndex = tabs.findIndex((tab) => tab.id === activeTab);
-			const newIndex = tabs.findIndex((tab) => tab.id === tabId);
-			const direction = newIndex > currentIndex ? 1 : -1;
+			if (tabId === activeTab) return;
+			void leaveSummary(() => {
+				const currentIndex = tabs.findIndex((tab) => tab.id === activeTab);
+				const newIndex = tabs.findIndex((tab) => tab.id === tabId);
+				const direction = newIndex > currentIndex ? 1 : -1;
 
-			setPage([page + direction, direction]);
-			setActiveTab(tabId);
+				setPage(([currentPage]) => [currentPage + direction, direction]);
+				setActiveTab(tabId);
+			});
 		};
 
 		const renderTabContent = () => {
@@ -229,8 +251,11 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 							transcriptionStatus={data.transcriptionStatus}
 							duration={data.duration}
 							onEditingStateChange={setSummaryEditingState}
+							onSaveRequestChange={(request) => {
+								summarySaveRequestRef.current = request;
+							}}
 							onSeek={onSeek}
-							isSummaryDisabled={videoSettings?.disableSummary}
+							isSummaryDisabled={summaryDisabled}
 							initialAiData={aiData || undefined}
 							aiGenerationEnabled={aiGenerationEnabled}
 						/>
@@ -297,9 +322,7 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 						{onCollapse && (
 							<button
 								type="button"
-								onClick={() => {
-									if (canLeaveSummary()) onCollapse();
-								}}
+								onClick={() => void leaveSummary(onCollapse)}
 								aria-label="Hide comments"
 								title="Hide comments"
 								className="hidden shrink-0 items-center justify-center px-3 text-gray-9 transition-colors hover:bg-gray-1 hover:text-gray-12 lg:flex"

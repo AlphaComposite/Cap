@@ -44,6 +44,8 @@ import {
 } from "@/lib/video-edit-operation";
 import {
 	getEditSpecOutputDuration,
+	mapOutputChaptersToSource,
+	projectSourceChaptersToOutput,
 	remapCurrentOutputTimeThroughEdit,
 } from "@/lib/video-edits";
 import { decodeStorageVideo } from "@/lib/video-storage";
@@ -544,10 +546,21 @@ export async function verifyRenderedEditOutput(
 	throw lastError ?? new Error("Rendered video verification failed");
 }
 
-function clearAiMetadata(metadata: VideoMetadata | null): VideoMetadata {
+function clearAiMetadata(
+	metadata: VideoMetadata | null,
+	previousSpec: VideoEditSpec,
+	nextSpec: VideoEditSpec,
+): VideoMetadata {
 	const nextMetadata = { ...(metadata ?? {}) };
-	delete nextMetadata.summary;
-	delete nextMetadata.chapters;
+	if (nextMetadata.summaryManuallyEdited !== true) delete nextMetadata.summary;
+	if (nextMetadata.chaptersManuallyEdited === true) {
+		nextMetadata.chapters = projectSourceChaptersToOutput(
+			mapOutputChaptersToSource(nextMetadata.chapters ?? [], previousSpec),
+			nextSpec,
+		);
+	} else {
+		delete nextMetadata.chapters;
+	}
 	delete nextMetadata.aiGenerationStatus;
 	return nextMetadata;
 }
@@ -835,7 +848,11 @@ export async function saveEditResultAndComplete(
 				delete source.audioLevelSourceKey;
 				delete source.audioLevelOutputKey;
 			}
-			const nextMetadata = clearAiMetadata(lockedVideo.metadata);
+			const nextMetadata = clearAiMetadata(
+				lockedVideo.metadata,
+				previousSpec,
+				editSpec,
+			);
 			delete nextMetadata.desktopRecordingUpload;
 			await tx
 				.update(videos)

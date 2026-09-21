@@ -309,6 +309,15 @@ export function getAiContentGuidelines(videoDuration: number): {
 			"Aim for 250-400 words. Exceed 400 only when necessary to preserve important decisions, responsibilities, or next steps.";
 	}
 
+	const chapterGuidance =
+		videoDuration < 120
+			? 'Return an empty "chapters" array because videos shorter than two minutes do not need chapters.'
+			: videoDuration < 600
+				? "Create 2-4 chapters when the transcript supports meaningful topic or phase changes. Include an opening chapter near 0 seconds, then mark the major transitions. Do not create chapters for filler or minor UI actions."
+				: videoDuration < 1800
+					? "Create 4-8 chapters when the transcript supports meaningful topic or phase changes. Include an opening chapter near 0 seconds and cover the major sections across the video. Do not create chapters for filler or minor UI actions."
+					: "Create 6-12 chapters when the transcript supports meaningful topic or phase changes. Include an opening chapter near 0 seconds and cover the major sections across the full video so viewers can navigate it. Do not create chapters for filler, minor UI actions, or every transcript segment.";
+
 	return {
 		summary: `- Write a standalone summary that lets someone understand the video without watching it.
 - State the subject and the speaker's intention first: what the video is about and why it was recorded. If the intention is not explicit, describe only what the transcript supports.
@@ -321,10 +330,7 @@ export function getAiContentGuidelines(videoDuration: number): {
 - Be concise, but never omit information required to understand or act on the video. Do not pad the summary to reach a target length.
 - Convert detached narration into first person. For example, write "I review the proposal" instead of "The speaker reviews the proposal". Do not introduce names, projects, or personal details that are not present in the transcript.
 - ${lengthInstruction}`,
-		chapters:
-			videoDuration < 120
-				? 'Return an empty "chapters" array because videos shorter than two minutes do not need chapters.'
-				: "Create the fewest chapters needed to identify meaningful topic or phase changes. Do not create chapters for filler, minor UI actions, or every transcript segment.",
+		chapters: chapterGuidance,
 	};
 }
 
@@ -334,18 +340,26 @@ function getVideoDuration(segments: VttSegment[]): number {
 	return lastSegment ? lastSegment.start + 3 : 0;
 }
 
-function clampChapters(
+export function clampChapters(
 	chapters: { title: string; start: number }[],
 	videoDuration: number,
 ): { title: string; start: number }[] {
-	const filtered = chapters.filter((ch) => ch.start < videoDuration);
+	const filtered = chapters
+		.filter(
+			(ch) =>
+				Number.isFinite(ch.start) && ch.start >= 0 && ch.start < videoDuration,
+		)
+		.sort((a, b) => a.start - b.start);
 
 	if (filtered.length === 0 && chapters.length > 0) {
 		const first = chapters[0];
 		return first ? [{ title: first.title, start: 0 }] : [];
 	}
 
-	const minGap = Math.max(5, Math.floor(videoDuration / 10));
+	// A percentage-only gap becomes extremely destructive for long recordings
+	// (33 minutes previously meant a 198-second bucket). Cap it at one minute so
+	// legitimate section changes survive while near-duplicate model output does not.
+	const minGap = Math.max(5, Math.min(60, Math.floor(videoDuration / 20)));
 	const deduped: { title: string; start: number }[] = [];
 	for (const chapter of filtered) {
 		const last = deduped[deduped.length - 1];
@@ -355,6 +369,50 @@ function clampChapters(
 	}
 
 	return deduped;
+}
+
+/**
+ * Only enforce a chapter floor when both the recording and the analysis have
+ * strong structural evidence. This deliberately does not force chapters onto
+ * short recordings or a long transcript that fit in one coherent section.
+ */
+export function getMinimumUsefulChapterCount(
+	videoDuration: number,
+	sectionCandidates: { title: string; start: number }[],
+): number {
+	// getVideoDuration estimates from the final cue start (+3s), so a real
+	// 30-minute recording can appear almost one minute shorter here.
+	if (videoDuration < 29 * 60) return 0;
+
+	const distinctTitles = new Set(
+		sectionCandidates
+			.filter(
+				(candidate) =>
+					candidate.title.trim().length > 0 &&
+					Number.isFinite(candidate.start) &&
+					candidate.start >= 0,
+			)
+			.map((candidate) =>
+				candidate.title.trim().replace(/\s+/g, " ").toLocaleLowerCase(),
+			),
+	);
+
+	return distinctTitles.size >= 2 ? 2 : 0;
+}
+
+export function getRequiredChapterSynthesisCount(
+	videoDuration: number,
+	sectionCandidates: { title: string; start: number }[],
+): number {
+	const minimumChapterCount = getMinimumUsefulChapterCount(
+		videoDuration,
+		sectionCandidates,
+	);
+	if (minimumChapterCount === 0) return 0;
+	return clampChapters(sectionCandidates, videoDuration).length <
+		minimumChapterCount
+		? minimumChapterCount
+		: 0;
 }
 
 async function saveResults(
@@ -679,17 +737,8 @@ ${chunk.text}`;
 		}
 	}
 
-	const allChapters: { title: string; start: number }[] = [];
-	const sortedChapters = chunkSummaries
-		.flatMap((c) => c.chapters)
-		.sort((a, b) => a.start - b.start);
-	const minGap = Math.max(5, Math.floor(videoDuration / 10));
-	for (const chapter of sortedChapters) {
-		const lastChapter = allChapters[allChapters.length - 1];
-		if (!lastChapter || Math.abs(chapter.start - lastChapter.start) >= minGap) {
-			allChapters.push(chapter);
-		}
-	}
+	const chapterCandidates = chunkSummaries.flatMap((c) => c.chapters);
+	let allChapters = clampChapters(chapterCandidates, videoDuration);
 
 	const allKeyPoints = chunkSummaries.flatMap((c) => c.keyPoints);
 
@@ -701,6 +750,32 @@ ${chunk.text}`;
 			return `Section ${i + 1} (${timeRange}):\n${c.summary}${keyPointsList}`;
 		})
 		.join("\n\n");
+	const minimumChapterCount = getRequiredChapterSynthesisCount(
+		videoDuration,
+		chapterCandidates,
+	);
+
+	if (minimumChapterCount > 0) {
+		const chapterPrompt = `You are Cap AI, creating navigation chapters from timestamped section analyses for a ${videoDuration}-second video.
+
+Section analyses:
+${sectionDetails}
+
+The analyses contain distinct chapter candidates that indicate multiple meaningful sections. Return at least ${minimumChapterCount} distinct, useful chapters that cover the supported topic or phase changes across the video. Reuse accurate section timestamps and do not invent topics not present in the analyses.
+
+Provide JSON in this format:
+{
+  "chapters": [{"title": "string (specific descriptive title)", "start": number (seconds from video start)}]
+}
+
+- Include an opening chapter near 0 seconds.
+- All chapter starts must be between 0 and ${videoDuration} seconds.
+- Return ONLY valid JSON without markdown formatting or code blocks.`;
+
+		allChapters = await callAiApi(chapterPrompt, (text) =>
+			parseChapterSynthesis(text, minimumChapterCount, videoDuration),
+		);
+	}
 
 	const finalPrompt = `You are Cap AI, an expert at turning video analyses into useful, concise summaries.
 
@@ -801,6 +876,47 @@ export function parseFinalSummary(content: string): {
 		throw new Error("AI response did not contain a valid summary");
 	}
 	return { title: parsed.title, summary: parsed.summary };
+}
+
+export function parseChapterSynthesis(
+	content: string,
+	minimumChapterCount: number,
+	videoDuration?: number,
+): { title: string; start: number }[] {
+	const parsed = JSON.parse(extractJsonObject(content)) as {
+		chapters?: unknown;
+	};
+	const chapters = Array.isArray(parsed.chapters)
+		? parsed.chapters.filter(
+				(chapter): chapter is { title: string; start: number } =>
+					typeof chapter === "object" &&
+					chapter !== null &&
+					typeof chapter.title === "string" &&
+					chapter.title.trim().length > 0 &&
+					typeof chapter.start === "number" &&
+					chapter.start >= 0,
+			)
+		: [];
+	const usableChapters =
+		typeof videoDuration === "number"
+			? clampChapters(chapters, videoDuration)
+			: chapters.sort((a, b) => a.start - b.start);
+
+	if (usableChapters.length < minimumChapterCount) {
+		throw new Error(
+			`AI response did not contain at least ${minimumChapterCount} useful chapters`,
+		);
+	}
+	const distinctTitles = new Set(
+		usableChapters.map((chapter) => chapter.title.trim().toLocaleLowerCase()),
+	);
+	if (distinctTitles.size < minimumChapterCount) {
+		throw new Error(
+			`AI response did not contain at least ${minimumChapterCount} distinct chapter titles`,
+		);
+	}
+
+	return usableChapters;
 }
 
 export function parseAiResponse(content: string): AiResult {

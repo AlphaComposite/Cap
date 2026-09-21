@@ -513,6 +513,102 @@ describe("edited recording publication", () => {
 			expect(video.source).toEqual({ type: "webMP4" });
 		},
 	);
+	it("preserves manual AI content and remaps chapters through consecutive edits", async () => {
+		const previousSpec: VideoEditSpec = {
+			version: 1,
+			sourceDuration: 10,
+			keepRanges: [
+				{ start: 0, end: 4 },
+				{ start: 6, end: 10 },
+			],
+		};
+		const nextSpec: VideoEditSpec = {
+			version: 1,
+			sourceDuration: 10,
+			keepRanges: [
+				{ start: 0, end: 2 },
+				{ start: 8, end: 10 },
+			],
+		};
+		video.metadata = {
+			...video.metadata,
+			summary: "Keep my summary",
+			summaryManuallyEdited: true,
+			chapters: [
+				{ title: "Opening", start: 1 },
+				{ title: "Removed section", start: 5 },
+				{ title: "Tail", start: 7 },
+			],
+			chaptersManuallyEdited: true,
+			aiGenerationStatus: "complete",
+			editProcessing: {
+				...operation,
+				ownerId: video.ownerId,
+				bucket: video.bucket,
+				storageIntegrationId: video.storageIntegrationId,
+				sourceKey,
+				source: JSON.stringify(video.source),
+				dispatch: "accepted",
+			},
+		};
+
+		await saveEditResultAndComplete(
+			"video",
+			sourceKey,
+			previousSpec,
+			nextSpec,
+			{ ...metadata, duration: 4 },
+			operation,
+		);
+
+		expect(video.metadata).toMatchObject({
+			summary: "Keep my summary",
+			summaryManuallyEdited: true,
+			chapters: [
+				{ title: "Opening", start: 1 },
+				{ title: "Removed section", start: 2 },
+				{ title: "Tail", start: 3 },
+			],
+			chaptersManuallyEdited: true,
+		});
+		expect(video.metadata).not.toHaveProperty("aiGenerationStatus");
+	});
+
+	it("clears generated AI content while preserving manual-edit flags", async () => {
+		video.metadata = {
+			...video.metadata,
+			summary: "Generated summary",
+			summaryManuallyEdited: false,
+			chapters: [{ title: "Generated chapter", start: 1 }],
+			chaptersManuallyEdited: false,
+			editProcessing: {
+				...operation,
+				ownerId: video.ownerId,
+				bucket: video.bucket,
+				storageIntegrationId: video.storageIntegrationId,
+				sourceKey,
+				source: JSON.stringify(video.source),
+				dispatch: "accepted",
+			},
+		};
+
+		await saveEditResultAndComplete(
+			"video",
+			sourceKey,
+			editSpec,
+			editSpec,
+			metadata,
+			operation,
+		);
+
+		expect(video.metadata).not.toHaveProperty("summary");
+		expect(video.metadata).not.toHaveProperty("chapters");
+		expect(video.metadata).toMatchObject({
+			summaryManuallyEdited: false,
+			chaptersManuallyEdited: false,
+		});
+	});
+
 	it.each(["desktopMP4", "webMP4"])(
 		"clears the previous audio derivative when publishing a %s edit",
 		async (type) => {

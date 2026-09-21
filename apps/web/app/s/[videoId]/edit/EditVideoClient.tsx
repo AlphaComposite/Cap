@@ -83,6 +83,10 @@ import { navigateWithTransition } from "@/utils/view-transition";
 import { CapVideoPlayer } from "../_components/CapVideoPlayer";
 import { VideoDownloadMenu } from "../_components/VideoDownloadMenu";
 import { captureVideoFrameDataUrl } from "../_components/video-frame-thumbnail";
+import {
+	EditorChapterMarkers,
+	useEditorChapterPreview,
+} from "./EditorChapterPreview";
 import { TranscriptSidebar } from "./TranscriptSidebar";
 import { useRenewingPlaybackSource } from "./use-renewing-playback-source";
 
@@ -627,12 +631,14 @@ function useLazyTimelineThumbnails({
 
 export function EditVideoClient({
 	video,
+	chapters,
 	hasExistingEdits,
 	initialEditSpec,
 	playbackSrc,
 	usesOriginalSource,
 }: {
 	video: EditableVideo;
+	chapters: { title: string; start: number }[];
 	hasExistingEdits: boolean;
 	initialEditSpec: VideoEditSpec;
 	playbackSrc: string;
@@ -802,6 +808,11 @@ export function EditVideoClient({
 		() => getEditSpecOutputDuration(editSpec),
 		[editSpec],
 	);
+	const { chaptersUrl, projectedChapters } = useEditorChapterPreview({
+		chapters,
+		initialEditSpec,
+		editSpec,
+	});
 	const outputPlayhead = useMemo(() => {
 		const mapped = mapSourceTimeToOutputTime(clampedPlayhead, editSpec);
 		if (mapped !== null) return mapped;
@@ -993,6 +1004,30 @@ export function EditVideoClient({
 							"fillers",
 							layer as VideoAutoCuts["fillers"],
 						);
+			const nextEditSpec = getTimelineEditSpec(nextState);
+			const nextPlayableTime =
+				findNextPlayableTime(playheadRef.current, nextEditSpec) ??
+				nextEditSpec.keepRanges.at(-1)?.end ??
+				0;
+			commitState(nextState);
+			setPlayheadOnFrame(nextPlayableTime, true);
+			setVideoTimeOnFrame(nextPlayableTime, true);
+		},
+		[commitState, setPlayheadOnFrame, setVideoTimeOnFrame],
+	);
+
+	const handleInitializeAutoCuts = useCallback(
+		(autoCuts: VideoAutoCuts) => {
+			const withSilence = setTimelineAutoCutLayer(
+				stateRef.current,
+				"silence",
+				autoCuts.silence,
+			);
+			const nextState = setTimelineAutoCutLayer(
+				withSilence,
+				"fillers",
+				autoCuts.fillers,
+			);
 			const nextEditSpec = getTimelineEditSpec(nextState);
 			const nextPlayableTime =
 				findNextPlayableTime(playheadRef.current, nextEditSpec) ??
@@ -1696,7 +1731,7 @@ export function EditVideoClient({
 						<CapVideoPlayer
 							videoSrc={activePlaybackSrc}
 							videoId={video.id}
-							chaptersSrc=""
+							chaptersSrc={chaptersUrl ?? ""}
 							captionsSrc=""
 							disableCaptions
 							videoRef={videoRef}
@@ -1784,6 +1819,11 @@ export function EditVideoClient({
 										</div>
 									))}
 								</div>
+
+								<EditorChapterMarkers
+									chapters={projectedChapters}
+									outputDuration={outputDuration}
+								/>
 
 								<div
 									className="pointer-events-none absolute inset-y-0 left-0 bg-black/70"
@@ -2044,6 +2084,7 @@ export function EditVideoClient({
 					autoCuts={editSpec.autoCuts}
 					onDeleteRanges={handleTranscriptDelete}
 					onSetAutoCutLayer={handleSetAutoCutLayer}
+					onInitializeAutoCuts={handleInitializeAutoCuts}
 				/>
 			)}
 

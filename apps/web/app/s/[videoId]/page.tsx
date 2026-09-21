@@ -55,6 +55,10 @@ import { resolveDefaultPlaybackSpeed } from "@/lib/playback-speed";
 import { getPublicShareVideo } from "@/lib/public-share-video";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
+import {
+	filterAiDataForViewer,
+	filterVideoMetadataForViewer,
+} from "@/lib/server-ai-data-visibility";
 import { getSharePageBranding } from "@/lib/share-branding";
 import { getSharePlaybackUrl } from "@/lib/share-playback";
 import { buildShareVideoMetadata } from "@/lib/share-video-metadata";
@@ -828,17 +832,16 @@ async function AuthorizedContent({
 	}
 
 	const metadata = (video.metadata as VideoMetadata) || {};
-	const aiGenerationStatus = metadata.aiGenerationStatus || null;
-
-	const initialAiData = {
-		title: metadata.aiTitle || null,
-		summary: metadata.summary || null,
-		chapters: metadata.chapters || null,
-		aiGenerationStatus,
-	};
+	const isOwner = user?.id === video.owner.id;
+	const initialAiData = filterAiDataForViewer(
+		metadata,
+		rules.settings,
+		isOwner,
+	);
 
 	const videoWithOrganizationInfo = {
 		...video,
+		metadata: filterVideoMetadataForViewer(metadata, rules.settings, isOwner),
 		hasActiveUpload,
 		ownerIsOverShareLimit,
 		owner: {
@@ -921,7 +924,7 @@ async function AuthorizedContent({
 				data={videoWithOrganizationInfo}
 				initialPlaybackUrl={initialPlaybackUrlPromise}
 				screenshotImageUrl={screenshotImageUrl}
-				videoSettings={videoWithOrganizationInfo.settings}
+				videoSettings={rules.settings}
 				comments={commentsPromise}
 				views={viewsPromise}
 				customDomain={customDomain}

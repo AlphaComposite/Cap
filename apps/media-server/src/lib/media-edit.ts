@@ -158,6 +158,7 @@ export function buildTranscodeEditArgs(
 	boundaryContext: {
 		rangeOffset: number;
 		totalRangeCount: number;
+		durationOffset?: number;
 		intermediate?: boolean;
 	} = { rangeOffset: 0, totalRangeCount: ranges.length },
 ) {
@@ -167,12 +168,26 @@ export function buildTranscodeEditArgs(
 		);
 	}
 
+	const outputFps = getOutputFps(fps);
+	let durationOffset = boundaryContext.durationOffset ?? 0;
 	const filters = ranges.flatMap((range, index) => {
-		const videoFilter = `[${index}:v:0]fps=${getOutputFps(fps)},setpts=PTS-STARTPTS[v${index}]`;
+		const rangeDuration = getRangeDuration(range);
+		const nextDurationOffset = durationOffset + rangeDuration;
+		const frameCount = Math.max(
+			1,
+			Math.round(nextDurationOffset * outputFps) -
+				Math.round(durationOffset * outputFps),
+		);
+		durationOffset = nextDurationOffset;
+		const videoDuration = frameCount / outputFps;
+		const videoFilter = `[${index}:v:0]fps=${outputFps},trim=duration=${formatTime(videoDuration)},setpts=PTS-STARTPTS[v${index}]`;
 		if (!hasAudio) return [videoFilter];
 		const globalIndex = boundaryContext.rangeOffset + index;
 		const halfFade = SPLICE_CROSSFADE_SECONDS / 2;
-		const audioFilters = ["asetpts=PTS-STARTPTS"];
+		const audioFilters = [
+			`atrim=duration=${formatTime(rangeDuration)}`,
+			"asetpts=PTS-STARTPTS",
+		];
 		if (globalIndex > 0) {
 			audioFilters.push(`afade=t=in:st=0:d=${halfFade}`);
 		}
@@ -228,6 +243,7 @@ function buildConcatArgs(
 	listPath: string,
 	outputPath: string,
 	hasAudio: boolean,
+	expectedDuration: number,
 ) {
 	return [
 		"ffmpeg",
@@ -244,6 +260,8 @@ function buildConcatArgs(
 		"-c:v",
 		"copy",
 		...(hasAudio ? ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k"] : ["-an"]),
+		"-t",
+		formatTime(expectedDuration),
 		"-shortest",
 		"-movflags",
 		"+faststart",
@@ -361,13 +379,15 @@ async function runFfmpegCommand(
 	}
 }
 
-function concatFileLine(path: string) {
-	return `file '${path.replaceAll("'", "'\\''")}'`;
+function concatFileEntry(path: string, duration: number) {
+	return `file '${path.replaceAll("'", "'\\''")}'\nduration ${duration.toFixed(6)}`;
 }
 
 async function concatSegments(
 	segmentFiles: TempFileHandle[],
+	segmentDurations: number[],
 	hasAudio: boolean,
+	expectedDuration: number,
 	timeoutMs: number,
 	abortSignal?: AbortSignal,
 ) {
@@ -377,10 +397,19 @@ async function concatSegments(
 	try {
 		await writeFile(
 			concatList.path,
-			`${segmentFiles.map((segment) => concatFileLine(segment.path)).join("\n")}\n`,
+			`${segmentFiles
+				.map((segment, index) =>
+					concatFileEntry(segment.path, segmentDurations[index] ?? 0),
+				)
+				.join("\n")}\n`,
 		);
 		await runFfmpegCommand(
-			buildConcatArgs(concatList.path, outputFile.path, hasAudio),
+			buildConcatArgs(
+				concatList.path,
+				outputFile.path,
+				hasAudio,
+				expectedDuration,
+			),
 			timeoutMs,
 			abortSignal,
 		);
@@ -431,7 +460,9 @@ async function renderTranscodedEdit(
 	const batches = createTranscodeBatches(keepRanges);
 	const usesIntermediatePcm = batches.length > 1 && hasAudio;
 	const batchFiles: TempFileHandle[] = [];
+	const batchVideoDurations: number[] = [];
 	const startedAt = performance.now();
+	let durationOffset = 0;
 
 	try {
 		onProgress?.(5, "Preparing edit...");
@@ -450,12 +481,24 @@ async function renderTranscodedEdit(
 					{
 						rangeOffset: index * MAX_TRANSCODE_RANGES_PER_BATCH,
 						totalRangeCount: keepRanges.length,
+						durationOffset,
 						intermediate: usesIntermediatePcm,
 					},
 				),
 				getRemainingTimeoutMs(startedAt, timeoutMs),
 				abortSignal,
 			);
+			const nextDurationOffset = durationOffset + getTotalRangeDuration(batch);
+			const outputFps = getOutputFps(fps);
+			// The concat demuxer otherwise advances by each MKV container's padded
+			// duration. Use the batch's exact encoded-frame span so every frame is
+			// retained and batch-level PCM packet padding cannot accumulate.
+			batchVideoDurations.push(
+				(Math.round(nextDurationOffset * outputFps) -
+					Math.round(durationOffset * outputFps)) /
+					outputFps,
+			);
+			durationOffset = nextDurationOffset;
 			onProgress?.(
 				5 + ((index + 1) / batches.length) * 65,
 				"Preparing edit...",
@@ -474,7 +517,9 @@ async function renderTranscodedEdit(
 
 		const outputFile = await concatSegments(
 			batchFiles,
+			batchVideoDurations,
 			hasAudio,
+			getTotalRangeDuration(keepRanges),
 			getRemainingTimeoutMs(startedAt, timeoutMs),
 			abortSignal,
 		);

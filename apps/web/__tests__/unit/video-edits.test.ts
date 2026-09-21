@@ -20,6 +20,8 @@ import {
 	getTimelineEditSpec,
 	getTimelineKeepRanges,
 	getTimelineSegments,
+	mapOutputChaptersToSource,
+	mapOutputChapterTimeToSourceTime,
 	mapOutputTimeToSourceTime,
 	mapSourceTimeToOutputTime,
 	mapTimelineDisplayTimeToSourceTime,
@@ -27,6 +29,7 @@ import {
 	normalizeKeepRanges,
 	normalizeVideoEditSpec,
 	parseVideoEditSpec,
+	projectSourceChaptersToOutput,
 	pushTimelineHistory,
 	redoTimelineHistory,
 	remapCurrentOutputTimeThroughEdit,
@@ -73,6 +76,126 @@ describe("video edit specs", () => {
 		expect(mapSourceTimeToOutputTime(2, spec)).toBe(1);
 		expect(mapSourceTimeToOutputTime(4, spec)).toBeNull();
 		expect(mapOutputTimeToSourceTime(3, spec)).toBe(6);
+	});
+
+	it("maps saved output chapters to immutable source coordinates once", () => {
+		const savedSpec = normalizeKeepRanges(
+			[
+				{ start: 0, end: 4 },
+				{ start: 6, end: 10 },
+			],
+			10,
+		);
+
+		expect(
+			mapOutputChaptersToSource(
+				[
+					{ title: "Opening", start: 1 },
+					{ title: "Demo", start: 5 },
+				],
+				savedSpec,
+			),
+		).toEqual([
+			{ title: "Opening", start: 1 },
+			{ title: "Demo", start: 7 },
+		]);
+	});
+
+	it("maps saved output chapters at splice boundaries to the next source range", () => {
+		const savedSpec = normalizeKeepRanges(
+			[
+				{ start: 0, end: 2 },
+				{ start: 4, end: 8 },
+			],
+			8,
+		);
+
+		expect(
+			mapOutputChaptersToSource([{ title: "After cut", start: 2 }], savedSpec),
+		).toEqual([{ title: "After cut", start: 4 }]);
+	});
+
+	it("maps chapter preview splice boundaries to the next playable source range", () => {
+		const spec = normalizeKeepRanges(
+			[
+				{ start: 0, end: 2 },
+				{ start: 4, end: 8 },
+			],
+			8,
+		);
+
+		expect(mapOutputChapterTimeToSourceTime(1, spec)).toBe(1);
+		expect(mapOutputChapterTimeToSourceTime(2, spec)).toBe(4);
+		expect(mapOutputChapterTimeToSourceTime(6, spec)).toBe(8);
+	});
+
+	it("projects source chapters through every edit layer without cumulative drift", () => {
+		const sourceChapters = [
+			{ title: "Opening", start: 1 },
+			{ title: "Removed topic", start: 3 },
+			{ title: "Demo", start: 7 },
+			{ title: "End fallback", start: 9.5 },
+		];
+		const withEveryLayer = normalizeVideoEditSpec({
+			version: 2,
+			sourceDuration: 10,
+			manualKeepRanges: [{ start: 0, end: 8 }],
+			keepRanges: [],
+			autoCuts: {
+				silence: {
+					enabled: true,
+					ranges: [{ start: 2, end: 4 }],
+					thresholdMs: 800,
+					padMs: 150,
+					removedMs: 2_000,
+					gapCount: 1,
+				},
+				fillers: {
+					enabled: true,
+					ranges: [{ start: 6, end: 7.5 }],
+					mode: "ums",
+					padMs: 80,
+					removedCount: 1,
+					skippedCount: 0,
+				},
+			},
+		});
+		if (withEveryLayer.version !== 2) {
+			throw new Error("Expected a layered edit specification");
+		}
+
+		expect(
+			projectSourceChaptersToOutput(sourceChapters, withEveryLayer),
+		).toEqual([
+			{ title: "Opening", start: 1 },
+			{ title: "Removed topic", start: 2 },
+			{ title: "Demo", start: 4 },
+			{ title: "End fallback", start: 4.5 },
+		]);
+
+		const silenceDisabled = normalizeVideoEditSpec({
+			...withEveryLayer,
+			autoCuts: {
+				...withEveryLayer.autoCuts,
+				silence: { ...withEveryLayer.autoCuts.silence, enabled: false },
+			},
+		});
+		expect(
+			projectSourceChaptersToOutput(sourceChapters, silenceDisabled),
+		).toEqual([
+			{ title: "Opening", start: 1 },
+			{ title: "Removed topic", start: 3 },
+			{ title: "Demo", start: 6 },
+			{ title: "End fallback", start: 6.5 },
+		]);
+		expect(
+			projectSourceChaptersToOutput(sourceChapters, withEveryLayer),
+		).toEqual([
+			{ title: "Opening", start: 1 },
+			{ title: "Removed topic", start: 2 },
+			{ title: "Demo", start: 4 },
+			{ title: "End fallback", start: 4.5 },
+		]);
 	});
 
 	it("composes repeated edits through the retained source", () => {

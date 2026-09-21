@@ -8,11 +8,10 @@ export function setGeneratedAiContent(
 ) {
 	const path = `$.${field}`;
 	const editedPath = `$.${field}ManuallyEdited`;
-	// Empty values are deliberate removals. clearAiMetadata in edit-video.ts
-	// deletes the keys on media replacement, allowing regeneration despite old flags.
+	// The manual-edit flag is authoritative, including for a deliberate empty
+	// value whose JSON key may be absent. Generation must never race and restore it.
 	return sql`IF(
-		JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, ${editedPath})) = 'true'
-		AND JSON_CONTAINS_PATH(${videos.metadata}, 'one', ${path}),
+		JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, ${editedPath})) = 'true',
 		${metadata},
 		JSON_SET(${metadata}, ${path}, CAST(${JSON.stringify(value)} AS JSON), ${editedPath}, CAST('false' AS JSON))
 	)`;

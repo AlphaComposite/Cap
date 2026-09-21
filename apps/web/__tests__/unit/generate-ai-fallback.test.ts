@@ -43,7 +43,10 @@ vi.mock("server-only", () => ({}));
 import { AiUnavailableError } from "@/lib/ai/run";
 import {
 	callAiApi,
+	getMinimumUsefulChapterCount,
+	getRequiredChapterSynthesisCount,
 	parseAiResponse,
+	parseChapterSynthesis,
 	parseChunkAnalysis,
 	parseFinalSummary,
 } from "@/workflows/generate-ai";
@@ -137,6 +140,92 @@ describe("callAiApi provider fallback on invalid output", () => {
 
 		expect(error).toBeInstanceOf(AiUnavailableError);
 		expect(error.cause).toBe(outage);
+	});
+
+	it("retries a long multi-section chapter synthesis when one generic chapter is returned", async () => {
+		generateTextMock
+			.mockResolvedValueOnce({
+				text: '{"chapters":[{"title":"Overview","start":0}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"chapters":[{"title":"Onboarding","start":0},{"title":"Billing changes","start":960}]}',
+			});
+
+		await expect(
+			callAiApi("prompt", (text) => parseChapterSynthesis(text, 2)),
+		).resolves.toEqual([
+			{ title: "Onboarding", start: 0 },
+			{ title: "Billing changes", start: 960 },
+		]);
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("useful chapter coverage", () => {
+	const distinctSections = [
+		{ title: "Onboarding", start: 0 },
+		{ title: "Billing changes", start: 960 },
+	];
+
+	it("requires multiple chapters only for long transcripts with distinct section candidates", () => {
+		expect(getMinimumUsefulChapterCount(30 * 60, distinctSections)).toBe(2);
+		expect(getMinimumUsefulChapterCount(45 * 60, distinctSections)).toBe(2);
+		// Transcript duration is estimated from the final cue start, so allow the
+		// final cue of a 30-minute recording to begin up to a minute earlier.
+		expect(getMinimumUsefulChapterCount(29 * 60, distinctSections)).toBe(2);
+		expect(getMinimumUsefulChapterCount(28 * 60, distinctSections)).toBe(0);
+		expect(
+			getMinimumUsefulChapterCount(45 * 60, distinctSections.slice(0, 1)),
+		).toBe(0);
+	});
+
+	it("does not force synthesis for a long multi-chunk single-topic analysis", () => {
+		const mechanicallySplitCandidates = Array.from(
+			{ length: 6 },
+			(_, index) => ({
+				title:
+					index % 2 === 0 ? "Product walkthrough" : " product WALKTHROUGH ",
+				start: index * 450,
+			}),
+		);
+
+		expect(
+			getMinimumUsefulChapterCount(45 * 60, mechanicallySplitCandidates),
+		).toBe(0);
+	});
+
+	it("requires synthesis when distinct candidates collapse below the coverage floor", () => {
+		expect(
+			getRequiredChapterSynthesisCount(45 * 60, [
+				{ title: "Onboarding", start: 0 },
+				{ title: "Billing changes", start: 20 },
+			]),
+		).toBe(2);
+		expect(
+			getRequiredChapterSynthesisCount(45 * 60, [
+				{ title: "Product walkthrough", start: 0 },
+				{ title: " product WALKTHROUGH ", start: 20 },
+			]),
+		).toBe(0);
+	});
+
+	it("rejects a generic single chapter when multiple chapters are required", () => {
+		expect(() =>
+			parseChapterSynthesis('{"chapters":[{"title":"Overview","start":0}]}', 2),
+		).toThrow("at least 2 useful chapters");
+	});
+
+	it("does not force chapters when the transcript lacks multi-section evidence", () => {
+		expect(parseChapterSynthesis('{"chapters":[]}', 0)).toEqual([]);
+	});
+
+	it("does not count duplicate generic titles as useful coverage", () => {
+		expect(() =>
+			parseChapterSynthesis(
+				'{"chapters":[{"title":"Overview","start":0},{"title":" overview ","start":900}]}',
+				2,
+			),
+		).toThrow("distinct chapter titles");
 	});
 });
 

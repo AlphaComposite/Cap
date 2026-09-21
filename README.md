@@ -38,9 +38,11 @@
 
 ## Automatic cleanup in the web editor
 
-The editor can generate two optional cut layers from transcript timing: extended
-no-speech pauses and a conservative set of filler words. Both controls start off,
-show exactly what they can remove, and can be toggled independently.
+The editor generates two optional cut layers from transcript timing: extended
+no-speech pauses and a conservative set of filler words. On a fresh transcript,
+both controls start enabled together so the first saved render applies one combined
+cleanup pass. Each layer shows exactly what it removes and can still be toggled
+independently without changing the immutable source.
 
 <table>
   <tr>
