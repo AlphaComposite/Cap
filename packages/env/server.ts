@@ -196,6 +196,18 @@ function createServerEnv() {
 			S3_PUBLIC_ENDPOINT: process.env.CAP_AWS_ENDPOINT,
 			S3_INTERNAL_ENDPOINT: process.env.CAP_AWS_ENDPOINT,
 			...process.env,
+			// Keep AI settings explicit. Next/Turbopack cannot reliably trace keys
+			// supplied only through a process.env spread in standalone builds.
+			AI_PROVIDER: process.env.AI_PROVIDER,
+			ASSEMBLY_API_KEY: process.env.ASSEMBLY_API_KEY,
+			ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+			OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+			GROQ_API_KEY: process.env.GROQ_API_KEY,
+			AI_MODEL: process.env.AI_MODEL,
+			AI_CHAT_MODEL: process.env.AI_CHAT_MODEL,
+			AI_STREAM_MODEL: process.env.AI_STREAM_MODEL,
+			AI_BASE_URL: process.env.AI_BASE_URL,
+			AI_API_KEY: process.env.AI_API_KEY,
 			NODE_ENV: process.env.NODE_ENV ?? "production",
 			VERCEL_URL_HOST: process.env.VERCEL_URL,
 			VERCEL_BRANCH_URL_HOST: process.env.VERCEL_BRANCH_URL,
