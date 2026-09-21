@@ -1,11 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const serverEnvMock = vi.hoisted(() =>
-	vi.fn<() => Record<string, string | undefined>>(() => ({})),
-);
+const { createOpenAIMock, openAiChatMock, serverEnvMock } = vi.hoisted(() => {
+	const openAiChatMock = vi.fn((modelId: string) => ({ modelId }));
+	return {
+		createOpenAIMock: vi.fn(() => ({ chat: openAiChatMock })),
+		openAiChatMock,
+		serverEnvMock: vi.fn<() => Record<string, string | undefined>>(() => ({})),
+	};
+});
 
 vi.mock("@cap/env", () => ({
 	serverEnv: serverEnvMock,
+}));
+
+vi.mock("@ai-sdk/openai", () => ({
+	createOpenAI: createOpenAIMock,
 }));
 
 import {
@@ -19,7 +28,87 @@ const envWith = (env: Record<string, string | undefined>) => {
 	serverEnvMock.mockReturnValue(env);
 };
 
+const runtimeAiEnvKeys = [
+	"AI_PROVIDER",
+	"ASSEMBLY_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"OPENAI_API_KEY",
+	"GROQ_API_KEY",
+	"AI_MODEL",
+	"AI_CHAT_MODEL",
+	"AI_STREAM_MODEL",
+	"AI_BASE_URL",
+	"AI_API_KEY",
+] as const;
+const originalRuntimeAiEnv = Object.fromEntries(
+	runtimeAiEnvKeys.map((key) => [key, process.env[key]]),
+);
+const runtimeOpenAiKey = ["runtime", "openai", "key"].join("-");
+const fallbackOpenAiKey = ["fallback", "openai", "key"].join("-");
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	for (const key of runtimeAiEnvKeys) delete process.env[key];
+});
+
+afterAll(() => {
+	for (const key of runtimeAiEnvKeys) {
+		const value = originalRuntimeAiEnv[key];
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+});
+
 describe("getConfiguredAiProviders", () => {
+	it("uses the runtime OpenAI provider and key when serverEnv lacks them", () => {
+		envWith({});
+		process.env.AI_PROVIDER = "openai";
+		process.env.OPENAI_API_KEY = runtimeOpenAiKey;
+
+		const selection = getAiModel("generation");
+
+		expect(selection?.provider).toBe("openai");
+		selection?.model();
+		expect(createOpenAIMock).toHaveBeenCalledWith({
+			apiKey: runtimeOpenAiKey,
+		});
+		expect(openAiChatMock).toHaveBeenCalledWith("gpt-4o-mini");
+	});
+
+	it("does not replace valid serverEnv values with blank runtime values", () => {
+		envWith({
+			AI_PROVIDER: "openai",
+			OPENAI_API_KEY: fallbackOpenAiKey,
+			AI_MODEL: "fallback-model",
+		});
+		process.env.AI_PROVIDER = "";
+		process.env.OPENAI_API_KEY = "   ";
+		process.env.AI_MODEL = "";
+
+		const selection = getAiModel("generation");
+
+		expect(selection?.provider).toBe("openai");
+		expect(selection?.modelId).toBe("fallback-model");
+		selection?.model();
+		expect(createOpenAIMock).toHaveBeenCalledWith({
+			apiKey: fallbackOpenAiKey,
+		});
+	});
+
+	it("does not replace a validated provider with an invalid runtime provider", () => {
+		envWith({
+			AI_PROVIDER: "openai",
+			OPENAI_API_KEY: fallbackOpenAiKey,
+			AI_MODEL: "fallback-model",
+		});
+		process.env.AI_PROVIDER = "invalid-provider";
+
+		expect(getAiModel("generation")).toMatchObject({
+			provider: "openai",
+			modelId: "fallback-model",
+		});
+	});
+
 	it("auto-detects generation providers by key presence in order groq, openai, anthropic", () => {
 		envWith({
 			GROQ_API_KEY: "groq-key",
