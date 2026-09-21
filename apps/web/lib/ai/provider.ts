@@ -39,7 +39,10 @@ const AI_ENV_KEYS = [
 
 function aiEnv(): ReturnType<typeof serverEnv> {
 	const fallback = serverEnv();
-	const runtimeProcessEnv = globalThis.process?.env;
+	const runtimeProcess = Reflect.get(globalThis, "process") as
+		| { env?: Record<string, string | undefined> }
+		| undefined;
+	const runtimeProcessEnv = runtimeProcess?.env;
 	const runtime = Object.fromEntries(
 		AI_ENV_KEYS.flatMap((key) => {
 			const value = runtimeProcessEnv?.[key];
