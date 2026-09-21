@@ -144,7 +144,7 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 							data.orgSettings?.disableComments
 						)
 					? "activity"
-					: isOwner || !summaryDisabled
+					: !isSummaryTabDisabled(isOwner, summaryDisabled)
 						? "summary"
 						: !transcriptDisabled
 							? "transcript"

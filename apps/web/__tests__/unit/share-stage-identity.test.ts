@@ -70,7 +70,9 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
-	useQuery: () => ({ data: undefined }),
+	useQuery: ({ initialData }: { initialData?: unknown }) => ({
+		data: initialData,
+	}),
 }));
 
 vi.mock("@/actions/videos/get-status", () => ({
@@ -199,6 +201,49 @@ describe("Share view toggle", () => {
 		expect(container.querySelector("[data-sidebar]")).not.toBeNull();
 		expect(container.querySelector("[data-timeline-view]")).toBeNull();
 		expect(window.location.search).toBe("");
+
+		await act(async () => {
+			root.unmount();
+		});
+	});
+
+	it("renders public summary content in classic row 3 after the toolbar and outside the comments rail", async () => {
+		const container = document.createElement("div");
+		document.body.append(container);
+		const root = createRoot(container);
+
+		await act(async () => {
+			root.render(
+				createElement(
+					Share,
+					createProps({
+						initialAiData: {
+							summary: "A public summary",
+							chapters: null,
+						},
+					}),
+				),
+			);
+		});
+
+		const toolbar = container.querySelector("[data-toolbar]");
+		const summary = container.querySelector("[data-timeline-view]");
+		const summaryRegion = summary?.parentElement;
+		const commentsRail = container.querySelector("aside");
+
+		expect(toolbar).not.toBeNull();
+		expect(summaryRegion).not.toBeNull();
+		if (!summaryRegion) throw new Error("Missing public summary region");
+		expect(summaryRegion.className).toContain("lg:row-start-3");
+		expect(summaryRegion.className).not.toContain("hidden");
+		expect(summaryRegion.className).not.toContain("lg:block");
+		expect(
+			Boolean(
+				(toolbar?.compareDocumentPosition(summaryRegion) ?? 0) &
+					Node.DOCUMENT_POSITION_FOLLOWING,
+			),
+		).toBe(true);
+		expect(commentsRail?.contains(summaryRegion)).toBe(false);
 
 		await act(async () => {
 			root.unmount();

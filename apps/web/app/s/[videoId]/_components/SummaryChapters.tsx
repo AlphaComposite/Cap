@@ -42,35 +42,44 @@ const SummaryChapters = ({
 	if (aiLoading || (!hasSummary && !hasChapters)) return null;
 
 	return (
-		<div className="p-4 bg-white rounded-2xl border border-gray-3">
+		<div className="mx-auto w-full max-w-3xl px-1 pb-10 pt-5 sm:px-4 sm:pb-14 sm:pt-8 lg:px-8">
 			{hasSummary && (
-				<>
-					<h3 className="text-lg font-medium">Summary</h3>
-					<div className="text-sm prose prose-sm prose-gray max-w-none prose-p:my-2 prose-ul:my-2 prose-li:my-0 prose-strong:text-gray-12">
+				<section data-testid="public-summary" className="space-y-3">
+					<h2 className="text-xl font-semibold tracking-tight text-gray-12 sm:text-2xl">
+						Summary
+					</h2>
+					<div className="prose prose-sm prose-gray max-w-none text-[15px] leading-7 text-gray-11 prose-p:my-2 prose-ul:my-2 prose-li:my-0 prose-strong:text-gray-12">
 						<ReactMarkdown>{aiData.summary}</ReactMarkdown>
 					</div>
-				</>
+				</section>
 			)}
 
 			{hasChapters && (
-				<div className={hasSummary ? "mt-6" : ""}>
-					<h3 className="mb-2 text-lg font-medium">Chapters</h3>
-					<div className="divide-y">
+				<section
+					data-testid="public-chapters"
+					className={hasSummary ? "mt-10 border-t border-gray-4 pt-8" : ""}
+				>
+					<h2 className="mb-4 text-xl font-semibold tracking-tight text-gray-12 sm:text-2xl">
+						Chapters
+					</h2>
+					<div className="divide-y divide-gray-4">
 						{aiData.chapters?.map((chapter) => (
 							<button
 								type="button"
 								key={chapter.start}
-								className="flex items-center w-full p-2 text-left rounded transition-colors hover:bg-gray-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-9"
+								className="group grid w-full grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-3 py-3 text-left text-gray-12 transition-colors hover:text-blue-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-9 focus-visible:ring-offset-2 sm:py-3.5"
 								onClick={() => handleSeek(chapter.start)}
 							>
-								<span className="w-16 text-xs text-gray-500">
+								<span className="font-mono text-xs font-medium text-blue-10">
 									{formatTimeMinutes(chapter.start)}
 								</span>
-								<span className="ml-2 text-sm">{chapter.title}</span>
+								<span className="min-w-0 text-sm font-medium sm:text-[15px]">
+									{chapter.title}
+								</span>
 							</button>
 						))}
 					</div>
-				</div>
+				</section>
 			)}
 		</div>
 	);
