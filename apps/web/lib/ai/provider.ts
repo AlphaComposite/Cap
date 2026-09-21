@@ -1,4 +1,3 @@
-import process from "node:process";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -40,9 +39,10 @@ const AI_ENV_KEYS = [
 
 function aiEnv(): ReturnType<typeof serverEnv> {
 	const fallback = serverEnv();
+	const runtimeProcessEnv = globalThis.process?.env;
 	const runtime = Object.fromEntries(
 		AI_ENV_KEYS.flatMap((key) => {
-			const value = process.env[key];
+			const value = runtimeProcessEnv?.[key];
 			if (!value?.trim()) return [];
 			if (
 				key === "AI_PROVIDER" &&
