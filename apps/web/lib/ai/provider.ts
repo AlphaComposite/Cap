@@ -16,6 +16,44 @@ export type AiModelRole = "generation" | "chat" | "chat-streaming";
 
 type AiSdkProviderOptions = Record<string, Record<string, JSONValue>>;
 
+const AI_PROVIDER_IDS: readonly AiProviderId[] = [
+	"assemblyai",
+	"openai",
+	"anthropic",
+	"groq",
+	"openai-compatible",
+];
+
+const AI_ENV_KEYS = [
+	"AI_PROVIDER",
+	"ASSEMBLY_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"OPENAI_API_KEY",
+	"GROQ_API_KEY",
+	"AI_MODEL",
+	"AI_CHAT_MODEL",
+	"AI_STREAM_MODEL",
+	"AI_BASE_URL",
+	"AI_API_KEY",
+] as const;
+
+function aiEnv(): ReturnType<typeof serverEnv> {
+	const fallback = serverEnv();
+	const runtime = Object.fromEntries(
+		AI_ENV_KEYS.flatMap((key) => {
+			const value = process.env[key];
+			if (!value?.trim()) return [];
+			if (
+				key === "AI_PROVIDER" &&
+				!AI_PROVIDER_IDS.includes(value as AiProviderId)
+			)
+				return [];
+			return [[key, value]];
+		}),
+	);
+	return { ...fallback, ...runtime } as ReturnType<typeof serverEnv>;
+}
+
 export interface AiModelOptions {
 	/**
 	 * Ask the provider to repair malformed JSON output (AssemblyAI LLM
@@ -100,7 +138,7 @@ const AUTO_DETECT_ORDER: Record<AiModelRole, readonly AiProviderId[]> = {
 };
 
 function isProviderConfigured(provider: AiProviderId): boolean {
-	const env = serverEnv();
+	const env = aiEnv();
 	switch (provider) {
 		case "assemblyai":
 			return Boolean(env.ASSEMBLY_API_KEY);
@@ -133,7 +171,7 @@ function missingCredentialHint(provider: AiProviderId): string {
 export function getConfiguredAiProviders(
 	role: AiModelRole = "generation",
 ): AiProviderId[] {
-	const explicit = serverEnv().AI_PROVIDER;
+	const explicit = aiEnv().AI_PROVIDER;
 	const providers: AiProviderId[] = [];
 
 	if (explicit) {
@@ -167,7 +205,7 @@ export function isAiConfigured(role: AiModelRole = "generation"): boolean {
 }
 
 function envModelOverride(role: AiModelRole): string | undefined {
-	const env = serverEnv();
+	const env = aiEnv();
 	switch (role) {
 		case "generation":
 			return env.AI_MODEL;
@@ -179,7 +217,7 @@ function envModelOverride(role: AiModelRole): string | undefined {
 }
 
 function openAiCompatibleModelId(role: AiModelRole): string | undefined {
-	const env = serverEnv();
+	const env = aiEnv();
 	switch (role) {
 		case "generation":
 			return env.AI_MODEL;
@@ -199,7 +237,7 @@ function resolveModelId(
 	// for the explicitly selected provider only — fallback providers keep
 	// their own defaults so the fallback chain stays valid.
 	const override =
-		serverEnv().AI_PROVIDER === provider ? envModelOverride(role) : undefined;
+		aiEnv().AI_PROVIDER === provider ? envModelOverride(role) : undefined;
 	return override ?? DEFAULT_MODELS[provider][role];
 }
 
@@ -208,7 +246,7 @@ function createModel(
 	modelId: string,
 	options?: AiModelOptions,
 ): LanguageModel {
-	const env = serverEnv();
+	const env = aiEnv();
 	switch (provider) {
 		case "groq":
 			return createGroq({ apiKey: env.GROQ_API_KEY })(modelId);
