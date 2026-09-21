@@ -31,6 +31,7 @@ import { PlaybackProvider } from "./_components/playback/PlaybackContext";
 import { ShareVideo } from "./_components/ShareVideo";
 import { type ShareView, ShareViewToggle } from "./_components/ShareViewToggle";
 import { Sidebar } from "./_components/Sidebar";
+import { areAllSidebarTabsDisabled } from "./_components/summary-visibility";
 import { Toolbar } from "./_components/Toolbar";
 import { formatTimeAgo } from "./_components/tabs/Activity/utils";
 import { TimelineSkeleton } from "./_components/timeline/TimelineSkeleton";
@@ -407,11 +408,13 @@ export const Share = ({
 	const areCaptionsDisabled = isScreenshot || isDisabled("disableCaptions");
 	const areCommentStampsDisabled = isDisabled("disableComments");
 	const areReactionStampsDisabled = isDisabled("disableReactions");
-	const allSettingsDisabled = isScreenshot
-		? isDisabled("disableComments")
-		: isDisabled("disableComments") &&
-			isDisabled("disableSummary") &&
-			isDisabled("disableTranscript");
+	const viewerIsOwner = viewerId === data.owner.id;
+	const allSettingsDisabled = areAllSidebarTabsDisabled({
+		isOwner: viewerIsOwner,
+		isScreenshot,
+		commentsDisabled: isDisabled("disableComments"),
+		transcriptDisabled: isDisabled("disableTranscript"),
+	});
 
 	const shouldShowLoading = () => {
 		const hasVisibleAiSection = !isSummaryDisabled || !areChaptersDisabled;
