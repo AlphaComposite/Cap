@@ -1071,7 +1071,7 @@ export const Share = ({
 										{view === "classic" && (
 											<motion.div
 												key="summary"
-												className="hidden lg:block lg:col-span-full lg:row-start-3"
+												className="lg:col-span-full lg:row-start-3"
 												initial={{ opacity: 0 }}
 												animate={{ opacity: 1 }}
 												exit={{ opacity: 0 }}
