@@ -41,6 +41,8 @@ function isStoredTimelineState(value: unknown): value is VideoTimelineState {
 		isRecord(value) &&
 		isFiniteNumberValue(value.duration) &&
 		value.duration > 0 &&
+		(value.autoCutsInitialized === undefined ||
+			typeof value.autoCutsInitialized === "boolean") &&
 		isFiniteNumberValue(value.trimStart) &&
 		isFiniteNumberValue(value.trimEnd) &&
 		Array.isArray(value.splitPoints) &&
@@ -56,6 +58,9 @@ function isStoredTimelineState(value: unknown): value is VideoTimelineState {
 		try {
 			parseVideoEditSpec({
 				version: 2,
+				...(typeof value.autoCutsInitialized === "boolean"
+					? { autoCutsInitialized: value.autoCutsInitialized }
+					: {}),
 				sourceDuration: value.duration,
 				keepRanges: [{ start: 0, end: value.duration }],
 				manualKeepRanges: [{ start: 0, end: value.duration }],

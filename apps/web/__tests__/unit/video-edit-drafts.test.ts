@@ -69,10 +69,10 @@ describe("video edit draft storage", () => {
 		expect(areTimelineStatesEquivalent(state, parsed)).toBe(true);
 	});
 
-	it("persists named auto-cut layers in revision-bound drafts", () => {
+	it("persists zero-candidate explicit disable in revision-bound drafts", () => {
 		const state = setTimelineAutoCutLayer(createTimelineState(10), "silence", {
-			enabled: true,
-			ranges: [{ start: 2, end: 4 }],
+			enabled: false,
+			ranges: [],
 		});
 		const raw = serializeTimelineDraft(10, state, baseline);
 		const parsedDocument = JSON.parse(raw) as { version: number };
@@ -80,9 +80,10 @@ describe("video edit draft storage", () => {
 
 		expect(parsedDocument.version).toBe(3);
 		expect(parsed?.autoCuts?.silence).toMatchObject({
-			enabled: true,
-			ranges: [{ start: 2, end: 4 }],
+			enabled: false,
+			ranges: [],
 		});
+		expect(parsed?.autoCutsInitialized).toBe(true);
 	});
 
 	it("rejects invalid, stale, or mismatched drafts", () => {

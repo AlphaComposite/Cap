@@ -118,6 +118,7 @@ function renderSidebar(
 	autoCuts: VideoAutoCuts,
 	onSetAutoCutLayer: ReturnType<typeof vi.fn>,
 	onInitializeAutoCuts = vi.fn(),
+	autoCutsInitialized?: boolean,
 ) {
 	return act(async () => {
 		root.render(
@@ -127,6 +128,7 @@ function renderSidebar(
 				videoRef: { current: document.createElement("video") },
 				keepRanges: [{ start: 0, end: 3 }],
 				autoCuts,
+				autoCutsInitialized,
 				onDeleteRanges: vi.fn(),
 				onSetAutoCutLayer,
 				onInitializeAutoCuts,
@@ -235,6 +237,31 @@ describe("TranscriptSidebar automatic cuts", () => {
 		const onInitializeAutoCuts = vi.fn();
 
 		await renderSidebar(root, autoCuts, vi.fn(), onInitializeAutoCuts);
+
+		expect(onInitializeAutoCuts).not.toHaveBeenCalled();
+	});
+
+	it("does not re-enable initialized zero-candidate automatic cuts after reopening", async () => {
+		mocks.getTranscript.mockResolvedValue({
+			status: "ready",
+			transcript: {
+				...transcript,
+				durationMs: 400,
+				words: [
+					{ ...transcript.words[0], startMs: 0, endMs: 200 },
+					{ ...transcript.words[2], startMs: 200, endMs: 400 },
+				],
+			},
+		});
+		const onInitializeAutoCuts = vi.fn();
+
+		await renderSidebar(
+			root,
+			createAutoCuts(),
+			vi.fn(),
+			onInitializeAutoCuts,
+			true,
+		);
 
 		expect(onInitializeAutoCuts).not.toHaveBeenCalled();
 	});

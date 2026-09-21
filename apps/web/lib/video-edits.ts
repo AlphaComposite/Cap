@@ -13,6 +13,7 @@ const MAX_AUTO_CUT_METADATA_MS = MAX_EDIT_DURATION_SECONDS * 1000;
 
 export type VideoTimelineState = {
 	duration: number;
+	autoCutsInitialized?: boolean;
 	trimStart: number;
 	trimEnd: number;
 	splitPoints: number[];
@@ -230,6 +231,9 @@ export function normalizeVideoEditSpec(editSpec: VideoEditSpec): VideoEditSpec {
 	];
 	return {
 		version: 2,
+		...(typeof editSpec.autoCutsInitialized === "boolean"
+			? { autoCutsInitialized: editSpec.autoCutsInitialized }
+			: {}),
 		sourceDuration: duration,
 		manualKeepRanges,
 		autoCuts,
@@ -252,6 +256,12 @@ export function parseVideoEditSpec(value: unknown): VideoEditSpec {
 	if (!keepRanges) throw new Error("Invalid video edit specification");
 	if (value.version === 1) {
 		return normalizeKeepRanges(keepRanges, sourceDuration);
+	}
+	if (
+		value.autoCutsInitialized !== undefined &&
+		typeof value.autoCutsInitialized !== "boolean"
+	) {
+		throw new Error("Invalid video edit specification");
 	}
 
 	const manualKeepRanges = parseEditRanges(
@@ -321,6 +331,9 @@ export function parseVideoEditSpec(value: unknown): VideoEditSpec {
 
 	return normalizeVideoEditSpec({
 		version: 2,
+		...(typeof value.autoCutsInitialized === "boolean"
+			? { autoCutsInitialized: value.autoCutsInitialized }
+			: {}),
 		sourceDuration,
 		keepRanges,
 		manualKeepRanges,
@@ -399,7 +412,8 @@ export function areTimelineStatesEquivalent(
 	if (
 		Math.abs(normalizedLeft.duration - normalizedRight.duration) > EPSILON ||
 		Math.abs(normalizedLeft.trimStart - normalizedRight.trimStart) > EPSILON ||
-		Math.abs(normalizedLeft.trimEnd - normalizedRight.trimEnd) > EPSILON
+		Math.abs(normalizedLeft.trimEnd - normalizedRight.trimEnd) > EPSILON ||
+		normalizedLeft.autoCutsInitialized !== normalizedRight.autoCutsInitialized
 	) {
 		return false;
 	}
@@ -724,6 +738,10 @@ export function createTimelineStateFromEditSpec(
 	);
 	return normalizeTimelineState({
 		duration,
+		...(editSpec.version === 2 &&
+		typeof editSpec.autoCutsInitialized === "boolean"
+			? { autoCutsInitialized: editSpec.autoCutsInitialized }
+			: {}),
 		trimStart: 0,
 		trimEnd: duration,
 		splitPoints: deletedRanges
@@ -787,6 +805,9 @@ export function normalizeTimelineState(
 
 	return {
 		duration,
+		...(typeof state.autoCutsInitialized === "boolean"
+			? { autoCutsInitialized: state.autoCutsInitialized }
+			: {}),
 		trimStart: start,
 		trimEnd: end,
 		splitPoints,
@@ -1243,7 +1264,10 @@ export function setTimelineAutoCutLayer<K extends keyof VideoAutoCuts>(
 	kind: K,
 	update: Partial<VideoAutoCuts[K]> & { enabled: boolean },
 ): VideoTimelineState {
-	const normalized = normalizeTimelineState(state);
+	const normalized = normalizeTimelineState({
+		...state,
+		autoCutsInitialized: true,
+	});
 	const current = normalizeAutoCuts(normalized.autoCuts, normalized.duration);
 	const nextState = normalizeTimelineState({
 		...normalized,
@@ -1462,6 +1486,9 @@ export function getTimelineEditSpec(
 	);
 	return {
 		version: 2,
+		...(typeof normalized.autoCutsInitialized === "boolean"
+			? { autoCutsInitialized: normalized.autoCutsInitialized }
+			: {}),
 		sourceDuration: normalized.duration,
 		manualKeepRanges,
 		keepRanges: getTimelineKeepRanges(normalized),

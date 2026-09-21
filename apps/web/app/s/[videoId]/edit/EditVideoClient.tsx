@@ -2082,6 +2082,7 @@ export function EditVideoClient({
 					videoRef={videoRef}
 					keepRanges={keepRanges}
 					autoCuts={editSpec.autoCuts}
+					autoCutsInitialized={editSpec.autoCutsInitialized}
 					onDeleteRanges={handleTranscriptDelete}
 					onSetAutoCutLayer={handleSetAutoCutLayer}
 					onInitializeAutoCuts={handleInitializeAutoCuts}
