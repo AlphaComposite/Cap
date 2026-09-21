@@ -25,6 +25,14 @@ export async function proxy(request: NextRequest) {
 	const url = new URL(request.url);
 	const path = url.pathname;
 
+	if (
+		path === "/theme-script.js" ||
+		path === "/site.webmanifest" ||
+		path === "/safari-pinned-tab.svg"
+	) {
+		return NextResponse.next();
+	}
+
 	if (path === "/" && request.cookies.has("next-auth.session-token")) {
 		return NextResponse.redirect(new URL("/dashboard/caps", url.origin));
 	}

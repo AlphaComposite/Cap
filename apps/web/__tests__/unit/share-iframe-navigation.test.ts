@@ -46,6 +46,15 @@ describe("share iframe navigation", () => {
 		);
 	});
 
+	it("serves root public assets without custom-domain database routing", async () => {
+		const response = await proxy(
+			new NextRequest("https://recordings.example.com/theme-script.js"),
+		);
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("x-middleware-next")).toBe("1");
+	});
+
 	it("returns the player redirect from the web proxy", async () => {
 		const response = await proxy(
 			new NextRequest("https://cap.so/s/video123?autoplay=true", {
