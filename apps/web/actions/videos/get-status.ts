@@ -1,10 +1,22 @@
 "use server";
 
 import { db } from "@cap/database";
-import { users, videos, videoUploads } from "@cap/database/schema";
+import { getCurrentUser } from "@cap/database/auth/session";
+import {
+	organizations,
+	spaces,
+	spaceVideos,
+	users,
+	videos,
+	videoUploads,
+} from "@cap/database/schema";
 import type { VideoMetadata } from "@cap/database/types";
 import { serverEnv } from "@cap/env";
-import { provideOptionalAuth, VideosPolicy } from "@cap/web-backend";
+import {
+	provideOptionalAuth,
+	resolveEffectiveVideoRules,
+	VideosPolicy,
+} from "@cap/web-backend";
 import { Policy, type Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Exit } from "effect";
@@ -15,6 +27,7 @@ import {
 } from "@/lib/desktop-segments-finalization";
 import { startAiGeneration } from "@/lib/generate-ai";
 import * as EffectRuntime from "@/lib/server";
+import { filterAiDataForViewer } from "@/lib/server-ai-data-visibility";
 import { transcribeVideo } from "../../lib/transcribe";
 import { isAiGenerationEnabled } from "../../utils/flags";
 
@@ -61,6 +74,33 @@ export async function getVideoStatus(
 	if (!video) throw new Error("Video not found");
 
 	const metadata: VideoMetadata = (video.metadata as VideoMetadata) || {};
+	const [user, organizationRows, sharedSpaces] = await Promise.all([
+		getCurrentUser(),
+		db()
+			.select({ settings: organizations.settings })
+			.from(organizations)
+			.where(eq(organizations.id, video.orgId))
+			.limit(1),
+		db()
+			.select({
+				id: spaces.id,
+				name: spaces.name,
+				settings: spaces.settings,
+			})
+			.from(spaceVideos)
+			.innerJoin(spaces, eq(spaceVideos.spaceId, spaces.id))
+			.where(eq(spaceVideos.videoId, videoId)),
+	]);
+	const rules = resolveEffectiveVideoRules({
+		videoSettings: video.settings,
+		organizationSettings: organizationRows[0]?.settings,
+		spaces: sharedSpaces,
+	});
+	const aiData = filterAiDataForViewer(
+		metadata,
+		rules.settings,
+		user?.id === video.ownerId,
+	);
 
 	if (!video.transcriptionStatus && serverEnv().ASSEMBLY_API_KEY) {
 		const activeUpload = await db()
@@ -93,12 +133,11 @@ export async function getVideoStatus(
 
 			return {
 				transcriptionStatus: null,
-				aiGenerationStatus:
-					(metadata.aiGenerationStatus as AiGenerationStatus) || null,
+				aiGenerationStatus: aiData.aiGenerationStatus,
 				name: video.name,
-				aiTitle: metadata.aiTitle || null,
-				summary: metadata.summary || null,
-				chapters: metadata.chapters || null,
+				aiTitle: aiData.title,
+				summary: aiData.summary,
+				chapters: aiData.chapters,
 			};
 		}
 
@@ -115,12 +154,11 @@ export async function getVideoStatus(
 
 			return {
 				transcriptionStatus: "PROCESSING",
-				aiGenerationStatus:
-					(metadata.aiGenerationStatus as AiGenerationStatus) || null,
+				aiGenerationStatus: aiData.aiGenerationStatus,
 				name: video.name,
-				aiTitle: metadata.aiTitle || null,
-				summary: metadata.summary || null,
-				chapters: metadata.chapters || null,
+				aiTitle: aiData.title,
+				summary: aiData.summary,
+				chapters: aiData.chapters,
 			};
 		} catch (error) {
 			console.error(
@@ -129,12 +167,11 @@ export async function getVideoStatus(
 			);
 			return {
 				transcriptionStatus: "ERROR",
-				aiGenerationStatus:
-					(metadata.aiGenerationStatus as AiGenerationStatus) || null,
+				aiGenerationStatus: aiData.aiGenerationStatus,
 				name: video.name,
-				aiTitle: metadata.aiTitle || null,
-				summary: metadata.summary || null,
-				chapters: metadata.chapters || null,
+				aiTitle: aiData.title,
+				summary: aiData.summary,
+				chapters: aiData.chapters,
 				error: "Failed to start transcription",
 			};
 		}
@@ -143,12 +180,11 @@ export async function getVideoStatus(
 	if (video.transcriptionStatus === "ERROR") {
 		return {
 			transcriptionStatus: "ERROR",
-			aiGenerationStatus:
-				(metadata.aiGenerationStatus as AiGenerationStatus) || null,
+			aiGenerationStatus: aiData.aiGenerationStatus,
 			name: video.name,
-			aiTitle: metadata.aiTitle || null,
-			summary: metadata.summary || null,
-			chapters: metadata.chapters || null,
+			aiTitle: aiData.title,
+			summary: aiData.summary,
+			chapters: aiData.chapters,
 			error: "Transcription failed",
 		};
 	}
@@ -188,9 +224,9 @@ export async function getVideoStatus(
 						(video.transcriptionStatus as TranscriptionStatus) || null,
 					aiGenerationStatus: "QUEUED" as AiGenerationStatus,
 					name: video.name,
-					aiTitle: metadata.aiTitle || null,
-					summary: metadata.summary || null,
-					chapters: metadata.chapters || null,
+					aiTitle: aiData.title,
+					summary: aiData.summary,
+					chapters: aiData.chapters,
 				};
 			}
 		} catch (error) {
@@ -204,11 +240,10 @@ export async function getVideoStatus(
 	return {
 		transcriptionStatus:
 			(video.transcriptionStatus as TranscriptionStatus) || null,
-		aiGenerationStatus:
-			(metadata.aiGenerationStatus as AiGenerationStatus) || null,
+		aiGenerationStatus: aiData.aiGenerationStatus,
 		name: video.name,
-		aiTitle: metadata.aiTitle || null,
-		summary: metadata.summary || null,
-		chapters: metadata.chapters || null,
+		aiTitle: aiData.title,
+		summary: aiData.summary,
+		chapters: aiData.chapters,
 	};
 }

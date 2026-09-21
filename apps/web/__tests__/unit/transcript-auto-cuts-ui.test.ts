@@ -117,6 +117,7 @@ function renderSidebar(
 	root: Root,
 	autoCuts: VideoAutoCuts,
 	onSetAutoCutLayer: ReturnType<typeof vi.fn>,
+	onInitializeAutoCuts = vi.fn(),
 ) {
 	return act(async () => {
 		root.render(
@@ -128,6 +129,7 @@ function renderSidebar(
 				autoCuts,
 				onDeleteRanges: vi.fn(),
 				onSetAutoCutLayer,
+				onInitializeAutoCuts,
 			}),
 		);
 		await Promise.resolve();
@@ -192,6 +194,49 @@ describe("TranscriptSidebar automatic cuts", () => {
 				ranges: [{ start: 1.12, end: 1.48 }],
 			}),
 		);
+	});
+
+	it("enables both automatic cut layers together when transcript timing first loads", async () => {
+		const onInitializeAutoCuts = vi.fn();
+		await renderSidebar(root, createAutoCuts(), vi.fn(), onInitializeAutoCuts);
+
+		expect(onInitializeAutoCuts).toHaveBeenCalledOnce();
+		expect(onInitializeAutoCuts).toHaveBeenCalledWith({
+			silence: expect.objectContaining({
+				enabled: true,
+				gapCount: 2,
+				removedMs: 1_400,
+				ranges: [
+					{ start: 0.35, end: 1.05 },
+					{ start: 1.55, end: 2.25 },
+				],
+			}),
+			fillers: expect.objectContaining({
+				enabled: true,
+				removedCount: 1,
+				ranges: [{ start: 1.12, end: 1.48 }],
+			}),
+		});
+	});
+
+	it("does not re-enable explicitly disabled automatic cuts", async () => {
+		const autoCuts = createAutoCuts();
+		autoCuts.silence = {
+			...autoCuts.silence,
+			ranges: [{ start: 0.35, end: 1.05 }],
+			removedMs: 700,
+			gapCount: 1,
+		};
+		autoCuts.fillers = {
+			...autoCuts.fillers,
+			ranges: [{ start: 1.12, end: 1.48 }],
+			removedCount: 1,
+		};
+		const onInitializeAutoCuts = vi.fn();
+
+		await renderSidebar(root, autoCuts, vi.fn(), onInitializeAutoCuts);
+
+		expect(onInitializeAutoCuts).not.toHaveBeenCalled();
 	});
 
 	it("shows live counts, pause chips, and permanent filler strikes", async () => {

@@ -7,10 +7,13 @@ import {
 	faRotateRight,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Edit3 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { type SummaryEditingState, SummaryEditor } from "./SummaryEditor";
+import {
+	type SummaryEditingState,
+	SummaryEditor,
+	type SummarySaveRequest,
+} from "./SummaryEditor";
 
 type AiGenerationStatus =
 	| "QUEUED"
@@ -40,6 +43,7 @@ interface SummaryProps {
 	transcriptionStatus?: string | null;
 	duration?: number | null;
 	onEditingStateChange?: (state: SummaryEditingState) => void;
+	onSaveRequestChange?: (request: SummarySaveRequest | null) => void;
 }
 
 const formatTime = (time: number) => {
@@ -89,10 +93,8 @@ export const Summary: React.FC<SummaryProps> = ({
 	transcriptionStatus,
 	duration,
 	onEditingStateChange,
+	onSaveRequestChange,
 }) => {
-	const [isEditing, setIsEditing] = useState(false);
-	const [saved, setSaved] = useState(false);
-	const editButtonRef = useRef<HTMLButtonElement>(null);
 	const [isRetrying, setIsRetrying] = useState(false);
 	const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -113,21 +115,6 @@ export const Summary: React.FC<SummaryProps> = ({
 		transcriptionStatus !== "PROCESSING" &&
 		aiGenerationStatus !== "QUEUED" &&
 		aiGenerationStatus !== "PROCESSING";
-	const editButton = canEdit ? (
-		<Button
-			ref={editButtonRef}
-			type="button"
-			variant="gray"
-			size="sm"
-			aria-label="Edit summary and chapters"
-			onClick={() => {
-				setSaved(false);
-				setIsEditing(true);
-			}}
-		>
-			<Edit3 className="mr-1.5 size-3.5" /> Edit
-		</Button>
-	) : null;
 
 	const handleSeek = (time: number) => {
 		if (onSeek) {
@@ -160,6 +147,8 @@ export const Summary: React.FC<SummaryProps> = ({
 			setIsRetrying(false);
 		}
 	};
+
+	if (isSummaryDisabled && !isOwner) return null;
 
 	if (!ownerIsPro) {
 		return (
@@ -205,9 +194,7 @@ export const Summary: React.FC<SummaryProps> = ({
 		);
 	}
 
-	if (isSummaryDisabled) return null;
-
-	if (isEditing && isOwner) {
+	if (canEdit) {
 		return (
 			<SummaryEditor
 				videoId={videoId}
@@ -217,11 +204,7 @@ export const Summary: React.FC<SummaryProps> = ({
 				}}
 				duration={duration}
 				onEditingStateChange={onEditingStateChange}
-				onClose={(didSave) => {
-					setIsEditing(false);
-					setSaved(didSave);
-					requestAnimationFrame(() => editButtonRef.current?.focus());
-				}}
+				onSaveRequestChange={onSaveRequestChange}
 			/>
 		);
 	}
@@ -258,9 +241,6 @@ export const Summary: React.FC<SummaryProps> = ({
 								? "The video was too short or had no speech detected."
 								: "AI summary has not been generated for this video yet."}
 					</p>
-					{canEdit && (
-						<div className="flex justify-center pt-4">{editButton}</div>
-					)}
 					{canRetry && (
 						<div className="pt-4">
 							<Button
@@ -289,14 +269,6 @@ export const Summary: React.FC<SummaryProps> = ({
 		<div className="flex flex-col h-full">
 			<div className="overflow-y-auto flex-1">
 				<div className="p-4 space-y-6">
-					{canEdit && (
-						<div className="flex items-center justify-between gap-2">
-							<output className="text-xs text-gray-10">
-								{saved ? "Changes saved" : "Summary and chapters"}
-							</output>
-							{editButton}
-						</div>
-					)}
 					{aiData?.summary && (
 						<div>
 							<h3 className="text-lg font-medium">Summary</h3>

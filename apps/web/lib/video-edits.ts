@@ -500,6 +500,91 @@ export function mapOutputTimeToSourceTime(
 	return null;
 }
 
+export type VideoChapter = { title: string; start: number };
+
+/**
+ * Maps an output chapter cue into source-media time for editor playback.
+ * At an output splice, chapter cues belong to the next playable range rather
+ * than the final frame of the preceding range. The final output boundary has
+ * no range to its right and therefore maps to the source end.
+ */
+export function mapOutputChapterTimeToSourceTime(
+	outputTime: number,
+	editSpec: VideoEditSpec,
+) {
+	if (!isFiniteNumber(outputTime)) return null;
+
+	const normalized = normalizeKeepRanges(
+		editSpec.keepRanges,
+		editSpec.sourceDuration,
+	);
+	let elapsed = 0;
+
+	for (let index = 0; index < normalized.keepRanges.length; index++) {
+		const range = normalized.keepRanges[index];
+		if (!range) continue;
+		const rangeDuration = range.end - range.start;
+		const outputEnd = elapsed + rangeDuration;
+		if (outputTime < outputEnd - EPSILON) {
+			return roundEditTime(
+				range.start + clampEditTime(outputTime - elapsed, 0, rangeDuration),
+			);
+		}
+		if (outputTime <= outputEnd + EPSILON) {
+			return roundEditTime(
+				normalized.keepRanges[index + 1]?.start ?? range.end,
+			);
+		}
+		elapsed = outputEnd;
+	}
+
+	return null;
+}
+
+export function mapOutputChaptersToSource(
+	chapters: readonly VideoChapter[],
+	savedEditSpec: VideoEditSpec,
+): VideoChapter[] {
+	return chapters.flatMap((chapter) => {
+		const sourceTime = mapOutputChapterTimeToSourceTime(
+			chapter.start,
+			savedEditSpec,
+		);
+		return sourceTime === null ? [] : [{ ...chapter, start: sourceTime }];
+	});
+}
+
+/**
+ * Projects immutable source-timeline chapter starts into an edited output.
+ * Chapters removed by a cut snap to the next playable boundary. If no footage
+ * remains after the source timestamp, they deterministically snap to output end.
+ */
+export function projectSourceChaptersToOutput(
+	chapters: readonly VideoChapter[],
+	editSpec: VideoEditSpec,
+): VideoChapter[] {
+	const normalized = normalizeKeepRanges(
+		editSpec.keepRanges,
+		editSpec.sourceDuration,
+	);
+	const outputEnd = getEditSpecOutputDuration(normalized);
+
+	return chapters.flatMap((chapter) => {
+		if (!isFiniteNumber(chapter.start)) return [];
+		const direct = mapSourceTimeToOutputTime(chapter.start, normalized);
+		if (direct !== null) return [{ ...chapter, start: direct }];
+
+		let outputCursor = 0;
+		for (const range of normalized.keepRanges) {
+			if (range.start > chapter.start + EPSILON) {
+				return [{ ...chapter, start: roundEditTime(outputCursor) }];
+			}
+			outputCursor += range.end - range.start;
+		}
+		return [{ ...chapter, start: outputEnd }];
+	});
+}
+
 export function mapOutputRangeToSourceRanges(
 	outputRange: VideoEditRange,
 	editSpec: VideoEditSpec,

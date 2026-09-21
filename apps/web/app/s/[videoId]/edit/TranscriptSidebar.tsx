@@ -57,6 +57,7 @@ type TranscriptSidebarProps = {
 		kind: keyof VideoAutoCuts,
 		layer: VideoAutoCuts[keyof VideoAutoCuts],
 	) => void;
+	onInitializeAutoCuts: (autoCuts: VideoAutoCuts) => void;
 };
 
 const SIDEBAR_CLASS_NAME =
@@ -301,6 +302,7 @@ export function TranscriptSidebar({
 	autoCuts,
 	onDeleteRanges,
 	onSetAutoCutLayer,
+	onInitializeAutoCuts,
 }: TranscriptSidebarProps) {
 	const [response, setResponse] = useState<TranscriptResponse | null>(null);
 	const [isRequesting, setIsRequesting] = useState(false);
@@ -440,6 +442,45 @@ export function TranscriptSidebar({
 				: { ranges: [], gapCount: 0, removedMs: 0 },
 		[autoCuts.silence.padMs, autoCuts.silence.thresholdMs, transcript],
 	);
+	const initializedAutoCutsRef = useRef(false);
+	useEffect(() => {
+		if (!transcript || initializedAutoCutsRef.current) return;
+		const hasPristineSilenceLayer =
+			!autoCuts.silence.enabled &&
+			autoCuts.silence.ranges.length === 0 &&
+			autoCuts.silence.removedMs === 0 &&
+			autoCuts.silence.gapCount === 0;
+		const hasPristineFillerLayer =
+			!autoCuts.fillers.enabled &&
+			autoCuts.fillers.ranges.length === 0 &&
+			autoCuts.fillers.removedCount === 0 &&
+			autoCuts.fillers.skippedCount === 0;
+		if (!hasPristineSilenceLayer || !hasPristineFillerLayer) return;
+		initializedAutoCutsRef.current = true;
+		onInitializeAutoCuts({
+			silence: {
+				...autoCuts.silence,
+				enabled: true,
+				ranges: toVideoRanges(silencePlan.ranges),
+				removedMs: silencePlan.removedMs,
+				gapCount: silencePlan.gapCount,
+			},
+			fillers: {
+				...autoCuts.fillers,
+				enabled: true,
+				ranges: toVideoRanges(fillerPlan.ranges),
+				removedCount: fillerPlan.fillerCount - fillerPlan.skippedCount,
+				skippedCount: fillerPlan.skippedCount,
+			},
+		});
+	}, [
+		autoCuts.fillers,
+		autoCuts.silence,
+		fillerPlan,
+		onInitializeAutoCuts,
+		silencePlan,
+		transcript,
+	]);
 	const searchMatches = useMemo(() => {
 		const query = deferredSearchQuery.trim().toLocaleLowerCase();
 		if (!transcript || !query) return [];

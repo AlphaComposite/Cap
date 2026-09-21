@@ -120,6 +120,7 @@ export default async function EditVideoPage(props: {
 
 	return (
 		<EditVideoClient
+			chapters={video.metadata?.chapters ?? []}
 			hasExistingEdits={hasExistingEdits}
 			initialEditSpec={initialEditSpec}
 			playbackSrc={playbackSrc}

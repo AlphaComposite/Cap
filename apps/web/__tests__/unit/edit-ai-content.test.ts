@@ -244,7 +244,7 @@ describe("editing AI content", () => {
 
 describe("generation preserves manual content", () => {
 	it.each(["summary", "chapters"] as const)(
-		"guards %s using the current row and permits regeneration after content removal",
+		"never overwrites manually edited %s even when the content key is absent",
 		(field) => {
 			const query = new MySqlDialect().sqlToQuery(
 				setGeneratedAiContent(
@@ -253,10 +253,12 @@ describe("generation preserves manual content", () => {
 					field === "summary" ? "Generated" : [],
 				),
 			);
-			expect(query.sql).toContain("JSON_CONTAINS_PATH");
+			expect(query.sql).not.toContain("JSON_CONTAINS_PATH");
 			expect(query.sql).toContain("IF(");
 			expect(query.params).toContain(`$.${field}ManuallyEdited`);
-			expect(query.params).toContain(`$.${field}`);
+			expect(
+				query.params.filter((parameter) => parameter === `$.${field}`),
+			).toHaveLength(1);
 			expect(query.sql).toContain("CAST('false' AS JSON)");
 		},
 	);

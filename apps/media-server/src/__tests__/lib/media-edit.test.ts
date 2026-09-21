@@ -69,6 +69,72 @@ function readStreamEndpointDifference(filePath: string) {
 	return Math.abs(videoEnd - audioEnd);
 }
 
+function readStreamEndpoints(filePath: string) {
+	const result = JSON.parse(
+		execFileSync("ffprobe", [
+			"-hide_banner",
+			"-v",
+			"error",
+			"-show_entries",
+			"stream=codec_type,start_time,duration,nb_frames",
+			"-of",
+			"json",
+			filePath,
+		]).toString(),
+	) as {
+		streams?: Array<{
+			codec_type: "audio" | "video";
+			start_time: string;
+			duration: string;
+			nb_frames?: string;
+		}>;
+	};
+	const video = result.streams?.find((stream) => stream.codec_type === "video");
+	const audio = result.streams?.find((stream) => stream.codec_type === "audio");
+	if (!video || !audio)
+		throw new Error("Edited video must contain A/V streams");
+	return {
+		videoEnd: Number(video.start_time) + Number(video.duration),
+		audioEnd: Number(audio.start_time) + Number(audio.duration),
+		videoFrames: Number(video.nb_frames),
+	};
+}
+
+function assertDecodes(filePath: string, hasAudio: boolean) {
+	execFileSync("ffmpeg", [
+		"-hide_banner",
+		"-v",
+		"error",
+		"-i",
+		filePath,
+		"-map",
+		"0:v:0",
+		"-c:v",
+		"rawvideo",
+		"-f",
+		"rawvideo",
+		"-y",
+		"/dev/null",
+	]);
+	if (hasAudio) {
+		execFileSync("ffmpeg", [
+			"-hide_banner",
+			"-v",
+			"error",
+			"-i",
+			filePath,
+			"-map",
+			"0:a:0",
+			"-c:a",
+			"pcm_s16le",
+			"-f",
+			"s16le",
+			"-y",
+			"/dev/null",
+		]);
+	}
+}
+
 afterAll(() => {
 	for (const file of tempFiles) {
 		if (existsSync(file)) {
@@ -170,15 +236,17 @@ describe("media edit helpers", () => {
 		expect(args.filter((value) => value === "-i")).toHaveLength(3);
 		expect(args.filter((value) => value === "-ss")).toHaveLength(3);
 		expect(filter).toContain("concat=n=3:v=1:a=1[v][a]");
-		expect(filter).toContain("[1:v:0]fps=60,setpts=PTS-STARTPTS[v1]");
 		expect(filter).toContain(
-			"[0:a:0]asetpts=PTS-STARTPTS,afade=t=out:st=0.985:d=0.015[a0]",
+			"[1:v:0]fps=60,trim=duration=0.800,setpts=PTS-STARTPTS[v1]",
 		);
 		expect(filter).toContain(
-			"[1:a:0]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.015,afade=t=out:st=0.785:d=0.015[a1]",
+			"[0:a:0]atrim=duration=1.000,asetpts=PTS-STARTPTS,afade=t=out:st=0.985:d=0.015[a0]",
 		);
 		expect(filter).toContain(
-			"[2:a:0]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.015[a2]",
+			"[1:a:0]atrim=duration=0.800,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.015,afade=t=out:st=0.785:d=0.015[a1]",
+		);
+		expect(filter).toContain(
+			"[2:a:0]atrim=duration=0.700,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.015[a2]",
 		);
 		expect(args[args.indexOf("-enc_time_base:v") + 1]).toBe("1/60");
 	});
@@ -226,6 +294,62 @@ describe("media edit helpers", () => {
 });
 
 describe("renderEditedVideo integration tests", () => {
+	test("keeps production-scale many-range output bounded to the edited timeline", async () => {
+		const sourcePath = join(FIXTURES_DIR, "many-range-source.tmp.mp4");
+		tempFiles.push(sourcePath);
+		execFileSync("ffmpeg", [
+			"-hide_banner",
+			"-v",
+			"error",
+			"-y",
+			"-f",
+			"lavfi",
+			"-i",
+			"testsrc2=size=160x90:rate=30:duration=8",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:sample_rate=48000:duration=8",
+			"-c:v",
+			"libx264",
+			"-preset",
+			"ultrafast",
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			sourcePath,
+		]);
+		const metadata = await probeVideo(`file://${sourcePath}`);
+		const keepRanges = Array.from({ length: 40 }, (_, index) => ({
+			start: index * 0.2 + 0.013,
+			end: index * 0.2 + 0.094,
+		}));
+		const expectedDuration = 40 * 0.081;
+
+		const editedFile = await renderEditedVideo({
+			inputPath: sourcePath,
+			keepRanges,
+			metadata,
+		});
+		tempFiles.push(editedFile.path);
+
+		const outputMetadata = await probeVideo(`file://${editedFile.path}`);
+		const endpoints = readStreamEndpoints(editedFile.path);
+		expect(
+			Math.abs(outputMetadata.duration - expectedDuration),
+		).toBeLessThanOrEqual(0.02);
+		expect(
+			Math.abs(endpoints.videoEnd - endpoints.audioEnd),
+		).toBeLessThanOrEqual(0.02);
+		expect(endpoints.videoFrames).toBe(Math.round(expectedDuration * 30));
+		expect(endpoints.videoEnd).toBeGreaterThanOrEqual(expectedDuration - 0.02);
+		expect(endpoints.audioEnd).toBeGreaterThanOrEqual(expectedDuration - 0.02);
+		assertDecodes(editedFile.path, true);
+
+		await editedFile.cleanup();
+	}, 120000);
+
 	test("renders an edited mp4 with audio using the real ffmpeg path", async () => {
 		const metadata = await probeVideo(`file://${TEST_VIDEO_WITH_AUDIO}`);
 		const progressUpdates: number[] = [];
@@ -233,11 +357,11 @@ describe("renderEditedVideo integration tests", () => {
 		const editedFile = await renderEditedVideo({
 			inputPath: TEST_VIDEO_WITH_AUDIO,
 			keepRanges: [
-				{ start: 0.08, end: 0.16 },
-				{ start: 0.24, end: 0.32 },
-				{ start: 0.4, end: 0.48 },
-				{ start: 0.56, end: 0.64 },
-				{ start: 0.72, end: 0.8 },
+				{ start: 0.013, end: 0.094 },
+				{ start: 0.193, end: 0.274 },
+				{ start: 0.373, end: 0.454 },
+				{ start: 0.553, end: 0.634 },
+				{ start: 0.733, end: 0.814 },
 			],
 			metadata,
 			onProgress: (progress) => {
@@ -247,10 +371,12 @@ describe("renderEditedVideo integration tests", () => {
 		tempFiles.push(editedFile.path);
 
 		const outputMetadata = await probeVideo(`file://${editedFile.path}`);
+		const expectedDuration = 0.405;
 		expect(outputMetadata.videoCodec).toBe("h264");
 		expect(outputMetadata.audioCodec).toBe("aac");
-		expect(outputMetadata.duration).toBeGreaterThan(0.3);
-		expect(outputMetadata.duration).toBeLessThan(metadata.duration + 0.2);
+		expect(
+			Math.abs(outputMetadata.duration - expectedDuration),
+		).toBeLessThanOrEqual(1 / (metadata.fps ?? 30) + 0.01);
 		expect(readStreamEndpointDifference(editedFile.path)).toBeLessThanOrEqual(
 			0.02,
 		);
@@ -259,6 +385,7 @@ describe("renderEditedVideo integration tests", () => {
 		const encoding = readH264Encoding(editedFile.path);
 		expect(encoding.level).toBeLessThanOrEqual(42);
 		expect(encoding.timeBase).not.toBe("1/1000000");
+		assertDecodes(editedFile.path, true);
 
 		await editedFile.cleanup();
 	}, 60000);
@@ -281,6 +408,35 @@ describe("renderEditedVideo integration tests", () => {
 		const encoding = readH264Encoding(editedFile.path);
 		expect(encoding.level).toBeLessThanOrEqual(42);
 		expect(encoding.timeBase).not.toBe("1/1000000");
+		assertDecodes(editedFile.path, false);
+
+		await editedFile.cleanup();
+	}, 60000);
+
+	test("renders multiple no-audio batches without inflating the timeline", async () => {
+		const metadata = await probeVideo(`file://${TEST_VIDEO_NO_AUDIO}`);
+		const keepRanges = Array.from({ length: 5 }, (_, index) => ({
+			start: index * 0.18 + 0.01,
+			end: index * 0.18 + 0.09,
+		}));
+		const expectedDuration = 0.4;
+
+		const editedFile = await renderEditedVideo({
+			inputPath: TEST_VIDEO_NO_AUDIO,
+			keepRanges,
+			metadata,
+		});
+		tempFiles.push(editedFile.path);
+
+		const outputMetadata = await probeVideo(`file://${editedFile.path}`);
+		expect(outputMetadata.audioCodec).toBeNull();
+		expect(outputMetadata.duration).toBeLessThanOrEqual(
+			expectedDuration + 0.001,
+		);
+		expect(outputMetadata.duration).toBeGreaterThanOrEqual(
+			expectedDuration - 1 / (metadata.fps ?? 30) - 0.001,
+		);
+		assertDecodes(editedFile.path, false);
 
 		await editedFile.cleanup();
 	}, 60000);

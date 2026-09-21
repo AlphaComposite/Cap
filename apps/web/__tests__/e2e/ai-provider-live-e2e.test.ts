@@ -278,7 +278,9 @@ describe.skipIf(!enabled)("ai provider live e2e", () => {
 		expect(metadata.aiTitle?.length).toBeGreaterThan(3);
 		expect(metadata.summary?.length).toBeGreaterThan(50);
 		const chapters = metadata.chapters ?? [];
-		expect(chapters.length).toBeGreaterThan(0);
+		// This fixture explicitly changes topic six times over 30 minutes. A
+		// generic single chapter is not useful navigation and must not pass.
+		expect(chapters.length).toBeGreaterThanOrEqual(2);
 		for (const chapter of chapters) {
 			expect(chapter.start).toBeGreaterThanOrEqual(0);
 			expect(chapter.start).toBeLessThan(1800);

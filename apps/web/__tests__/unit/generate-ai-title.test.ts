@@ -35,6 +35,7 @@ vi.mock("workflow", () => ({
 vi.mock("server-only", () => ({}));
 
 import {
+	clampChapters,
 	getAiContentGuidelines,
 	getAiLanguageInstruction,
 	parseAiResponse,
@@ -232,7 +233,28 @@ describe("getAiContentGuidelines", () => {
 			'empty "chapters" array',
 		);
 		expect(getAiContentGuidelines(120).chapters).toContain(
-			"fewest chapters needed",
+			"meaningful topic or phase changes",
 		);
+	});
+
+	it("asks long-video generation for useful coverage instead of the fewest chapters", () => {
+		const chapters = getAiContentGuidelines(33 * 60).chapters;
+		expect(chapters).toContain("6-12 chapters");
+		expect(chapters).toContain("opening chapter");
+		expect(chapters).not.toContain("fewest chapters");
+	});
+
+	it("does not collapse valid long-video topic changes into ten-percent buckets", () => {
+		expect(
+			clampChapters(
+				[
+					{ title: "Intro", start: 0 },
+					{ title: "Context", start: 90 },
+					{ title: "Demo", start: 180 },
+					{ title: "Questions", start: 270 },
+				],
+				33 * 60,
+			),
+		).toHaveLength(4);
 	});
 });
