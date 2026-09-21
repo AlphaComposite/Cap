@@ -470,6 +470,7 @@ describe("timeline editing", () => {
 
 		expect(getTimelineEditSpec(state)).toEqual({
 			version: 2,
+			autoCutsInitialized: true,
 			sourceDuration: 10,
 			manualKeepRanges: [
 				{ start: 0, end: 2 },
@@ -499,6 +500,38 @@ describe("timeline editing", () => {
 				},
 			},
 		});
+	});
+
+	it("persists auto-cut initialization through normalization and timeline conversion", () => {
+		const toggled = setTimelineAutoCutLayer(
+			createTimelineState(10),
+			"silence",
+			{ enabled: false, ranges: [] },
+		);
+		const serialized = getTimelineEditSpec(toggled);
+
+		expect(serialized).toMatchObject({ autoCutsInitialized: true });
+		expect(normalizeVideoEditSpec(serialized)).toMatchObject({
+			autoCutsInitialized: true,
+		});
+		expect(createTimelineStateFromEditSpec(serialized)).toMatchObject({
+			autoCutsInitialized: true,
+		});
+	});
+
+	it("keeps pristine legacy layered documents eligible for auto-cut initialization", () => {
+		const legacy = parseVideoEditSpec({
+			version: 2,
+			sourceDuration: 10,
+			manualKeepRanges: [{ start: 0, end: 10 }],
+			keepRanges: [{ start: 0, end: 10 }],
+			autoCuts: createTimelineState(10).autoCuts,
+		});
+
+		expect(legacy).not.toHaveProperty("autoCutsInitialized");
+		expect(createTimelineStateFromEditSpec(legacy)).not.toHaveProperty(
+			"autoCutsInitialized",
+		);
 	});
 
 	it("migrates a version-one edit mask into the manual source layer", () => {

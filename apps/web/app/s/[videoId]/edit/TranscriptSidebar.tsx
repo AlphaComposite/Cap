@@ -52,6 +52,7 @@ type TranscriptSidebarProps = {
 	videoRef: RefObject<HTMLVideoElement | null>;
 	keepRanges: VideoEditRange[];
 	autoCuts: VideoAutoCuts;
+	autoCutsInitialized?: boolean;
 	onDeleteRanges: (ranges: VideoEditRange[]) => void;
 	onSetAutoCutLayer: (
 		kind: keyof VideoAutoCuts,
@@ -300,6 +301,7 @@ export function TranscriptSidebar({
 	videoRef,
 	keepRanges,
 	autoCuts,
+	autoCutsInitialized,
 	onDeleteRanges,
 	onSetAutoCutLayer,
 	onInitializeAutoCuts,
@@ -444,7 +446,8 @@ export function TranscriptSidebar({
 	);
 	const initializedAutoCutsRef = useRef(false);
 	useEffect(() => {
-		if (!transcript || initializedAutoCutsRef.current) return;
+		if (!transcript || autoCutsInitialized || initializedAutoCutsRef.current)
+			return;
 		const hasPristineSilenceLayer =
 			!autoCuts.silence.enabled &&
 			autoCuts.silence.ranges.length === 0 &&
@@ -475,6 +478,7 @@ export function TranscriptSidebar({
 		});
 	}, [
 		autoCuts.fillers,
+		autoCutsInitialized,
 		autoCuts.silence,
 		fillerPlan,
 		onInitializeAutoCuts,

@@ -141,6 +141,7 @@ export type VideoEditSpecV1 = {
 
 export type VideoEditSpecV2 = {
 	version: 2;
+	autoCutsInitialized?: boolean;
 	sourceDuration: number;
 	keepRanges: VideoEditRange[];
 	manualKeepRanges: VideoEditRange[];
