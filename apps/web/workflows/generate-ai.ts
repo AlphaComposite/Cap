@@ -1066,7 +1066,11 @@ export function parseChapterSynthesis(
 			}
 			return { title: chapter.title.trim(), start: chapter.start };
 		})
-		.sort((a, b) => a.start - b.start);
+		.sort((a, b) => a.start - b.start)
+		.filter(
+			(chapter, index, sorted) =>
+				index === 0 || chapter.start !== sorted[index - 1]?.start,
+		);
 	validateChapterOrder(chapters);
 	if (typeof videoDuration === "number" && transcriptCues.length > 0) {
 		validateChapterStartsInSection(
