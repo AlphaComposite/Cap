@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	rows: [] as unknown[][],
 	where: vi.fn(),
+	set: vi.fn(),
 	write: vi.fn(),
 	getAccess: vi.fn(),
 	get: vi.fn(),
@@ -12,23 +13,36 @@ const mocks = vi.hoisted(() => ({
 	remove: vi.fn(),
 	fetch: vi.fn(),
 	sleep: vi.fn(),
+	transcribe: vi.fn(),
 }));
 
 vi.mock("@cap/database", () => ({
-	db: () => ({
-		select: () => ({
-			from: () => ({
-				where: mocks.where,
-				innerJoin: () => ({ where: mocks.where }),
+	db: () => {
+		const database = {
+			select: () => ({
+				from: () => ({
+					where: mocks.where,
+					innerJoin: () => ({ where: mocks.where }),
+				}),
 			}),
-		}),
-		update: () => ({ set: () => ({ where: mocks.write }) }),
-		delete: () => ({ where: mocks.write }),
-	}),
+			update: () => ({ set: mocks.set }),
+			delete: () => ({ where: mocks.write }),
+		};
+		return Object.assign(database, {
+			transaction: async <T>(run: (tx: typeof database) => Promise<T>) =>
+				run(database),
+		});
+	},
 }));
 vi.mock("@cap/database/schema", () => ({
 	videos: { id: "id" },
-	videoUploads: { videoId: "videoId" },
+	videoUploads: {
+		videoId: "videoId",
+		phase: "phase",
+		rawFileKey: "rawFileKey",
+		recoveryClaimId: "recoveryClaimId",
+		recoveryLeaseExpiresAt: "recoveryLeaseExpiresAt",
+	},
 	users: {},
 	agentApiOperations: {},
 }));
@@ -55,7 +69,7 @@ vi.mock("@/lib/workflow-runtime", () => ({
 vi.mock("@/lib/video-storage", () => ({
 	decodeStorageVideo: (value: unknown) => value,
 }));
-vi.mock("@/lib/transcribe", () => ({ transcribeVideo: vi.fn() }));
+vi.mock("@/lib/transcribe", () => ({ transcribeVideo: mocks.transcribe }));
 vi.mock("@/lib/ai-generation-entitlement", () => ({
 	isAiGenerationEnabledForUser: () => false,
 }));
@@ -89,7 +103,11 @@ describe("media processing workflows", () => {
 		mocks.where
 			.mockReset()
 			.mockImplementation(async () => mocks.rows.shift() ?? []);
-		mocks.write.mockResolvedValue(undefined);
+		mocks.set.mockReset().mockImplementation((values: unknown) => {
+			mocks.write(values);
+			return { where: mocks.write };
+		});
+		mocks.write.mockReset().mockResolvedValue([{ affectedRows: 1 }]);
 		mocks.getAccess.mockImplementation(() =>
 			Effect.succeed([
 				{
@@ -111,6 +129,10 @@ describe("media processing workflows", () => {
 		);
 		mocks.remove.mockImplementation(() => Effect.void);
 		mocks.sleep.mockResolvedValue(undefined);
+		mocks.transcribe.mockResolvedValue({
+			success: true,
+			message: "Transcription workflow started",
+		});
 		vi.stubGlobal("fetch", mocks.fetch);
 		mocks.fetch.mockReset().mockImplementation(async (url: string) => {
 			if (url.startsWith("https://www.loom.com/")) {
@@ -123,7 +145,7 @@ describe("media processing workflows", () => {
 		});
 	});
 
-	it("dispatches an uploaded recording once while completion is delayed", async () => {
+	it("carries a normally requeued upload through media completion toward transcription", async () => {
 		mocks.rows = [
 			[video],
 			[{ ...pending, rawFileKey: payload.rawFileKey }],
@@ -133,7 +155,13 @@ describe("media processing workflows", () => {
 			[],
 			[metadata],
 			[video],
-			[],
+			[
+				{
+					id: "owner",
+					stripeSubscriptionStatus: "active",
+					thirdPartyStripeSubscriptionId: null,
+				},
+			],
 		];
 		await expect(processVideoWorkflow(payload)).resolves.toMatchObject({
 			success: true,
@@ -142,9 +170,33 @@ describe("media processing workflows", () => {
 		expect(mocks.fetch).toHaveBeenCalledOnce();
 		expect(mocks.sleep.mock.calls).toEqual([[5_000], [10_000]]);
 		expect(mocks.remove).toHaveBeenCalledWith(payload.rawFileKey);
+		expect(mocks.transcribe).toHaveBeenCalledWith("video", "owner", false);
 	});
 
-	it("keeps uploaded source data when processing fails", async () => {
+	it("activates a recovery claim and extends its lease before processing", async () => {
+		mocks.rows = [
+			[video],
+			[{ ...pending, rawFileKey: payload.rawFileKey }],
+			[video],
+			[],
+			[metadata],
+			[video],
+			[],
+		];
+
+		await processVideoWorkflow({ ...payload, recoveryClaimId: "claim-1" });
+
+		expect(mocks.set).toHaveBeenCalledWith(
+			expect.objectContaining({
+				phase: "processing",
+				processingError: null,
+				recoveryClaimId: "claim-1",
+				recoveryLeaseExpiresAt: expect.any(Date),
+			}),
+		);
+	});
+
+	it("stops at the bounded media retry budget and keeps the uploaded source", async () => {
 		mocks.rows = [
 			[video],
 			[{ ...pending, rawFileKey: payload.rawFileKey }],
@@ -161,6 +213,32 @@ describe("media processing workflows", () => {
 		expect(mocks.remove).not.toHaveBeenCalled();
 		expect(mocks.fetch).toHaveBeenCalledTimes(3);
 		expect(mocks.sleep.mock.calls).toEqual([[15_000], [30_000]]);
+		expect(mocks.transcribe).not.toHaveBeenCalled();
+	});
+
+	it("clears only its own recovery claim when processing fails", async () => {
+		mocks.rows = [
+			[video],
+			[{ ...pending, rawFileKey: payload.rawFileKey }],
+			[video],
+			[{ ...pending, processingError: "Worker failed" }],
+			[video],
+			[{ ...pending, processingError: "Worker failed" }],
+			[video],
+			[{ ...pending, processingError: "Worker failed" }],
+		];
+
+		await expect(
+			processVideoWorkflow({ ...payload, recoveryClaimId: "claim-1" }),
+		).rejects.toThrow("Worker failed");
+
+		expect(mocks.set).toHaveBeenCalledWith(
+			expect.objectContaining({
+				phase: "error",
+				recoveryClaimId: null,
+				recoveryLeaseExpiresAt: null,
+			}),
+		);
 	});
 
 	it("recovers from a confirmed worker failure with a bounded durable retry", async () => {

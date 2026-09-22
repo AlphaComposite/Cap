@@ -562,6 +562,7 @@ function clearAiMetadata(
 		delete nextMetadata.chapters;
 	}
 	delete nextMetadata.aiGenerationStatus;
+	delete nextMetadata.aiGenerationId;
 	return nextMetadata;
 }
 

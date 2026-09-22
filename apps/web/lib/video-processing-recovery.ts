@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { db } from "@cap/database";
 import { importedVideos, videos, videoUploads } from "@cap/database/schema";
 import type { S3Bucket, Video } from "@cap/web-domain";
@@ -5,22 +6,27 @@ import {
 	and,
 	asc,
 	eq,
+	gte,
 	isNotNull,
 	isNull,
 	like,
+	lt,
 	lte,
 	notLike,
 	or,
 	sql,
 } from "drizzle-orm";
 import { start } from "workflow/api";
-import { setVideoProcessingError } from "@/lib/video-processing";
 import { WORKFLOW_UPGRADE_ERROR_FRAGMENT } from "@/lib/workflow-recovery";
 import { importLoomVideoWorkflow } from "@/workflows/import-loom-video";
 import { processVideoWorkflow } from "@/workflows/process-video";
 
 export const VIDEO_PROCESSING_RECOVERY_BATCH_SIZE = 20;
 export const LOOM_IMPORT_RECOVERY_BATCH_SIZE = 8;
+export const SHUTDOWN_RECOVERY_GRACE_MS = 10 * 60 * 1000;
+export const SHUTDOWN_RECOVERY_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+export const VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS = 3;
+export const VIDEO_PROCESSING_RECOVERY_CLAIM_LEASE_MS = 15 * 60 * 1000;
 
 const LOOM_IMPORT_RECOVERY_MIN_AGE_MS = 10 * 60 * 1000;
 const LOOM_IMPORT_PENDING_MESSAGE = "Importing from Loom...";
@@ -36,6 +42,77 @@ const recoverableProcessingError = () =>
 			"%processVideoOnMediaServer%exceeded max retries%",
 		),
 	);
+
+const shutdownInterruptedError = () =>
+	like(videoUploads.processingError, "%Server shutting down%");
+
+const recoverableWebProcessingError = (staleBefore: Date, recentAfter: Date) =>
+	or(
+		recoverableProcessingError(),
+		and(
+			shutdownInterruptedError(),
+			lte(videoUploads.updatedAt, staleBefore),
+			gte(videoUploads.startedAt, recentAfter),
+		),
+	);
+
+const isShutdownInterruption = (processingError: string | null | undefined) =>
+	processingError?.includes("Server shutting down") === true;
+
+export async function releaseExpiredWebRecoveryClaims(
+	now: Date,
+	database: ReturnType<typeof db> = db(),
+): Promise<void> {
+	const expiredProcessingClaim = () =>
+		and(
+			or(eq(videoUploads.phase, "processing"), eq(videoUploads.phase, "error")),
+			isNotNull(videoUploads.rawFileKey),
+			isNotNull(videoUploads.recoveryClaimId),
+			lte(videoUploads.recoveryLeaseExpiresAt, now),
+		);
+
+	await database
+		.update(videoUploads)
+		.set({
+			phase: "error",
+			processingProgress: 0,
+			processingMessage: "Video processing recovery exhausted",
+			processingError: `Video processing recovery exhausted after ${VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS} attempts`,
+			recoveryClaimId: null,
+			recoveryLeaseExpiresAt: null,
+			updatedAt: now,
+		})
+		.where(
+			and(
+				expiredProcessingClaim(),
+				gte(
+					videoUploads.recoveryAttemptCount,
+					VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+				),
+			),
+		);
+
+	await database
+		.update(videoUploads)
+		.set({
+			phase: "error",
+			processingProgress: 0,
+			processingMessage: "Processing recovery will retry automatically",
+			processingError: `${WORKFLOW_UPGRADE_ERROR_FRAGMENT}; workflow recovery requested after lease expiry`,
+			recoveryClaimId: null,
+			recoveryLeaseExpiresAt: null,
+			updatedAt: now,
+		})
+		.where(
+			and(
+				expiredProcessingClaim(),
+				lt(
+					videoUploads.recoveryAttemptCount,
+					VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+				),
+			),
+		);
+}
 
 export type FailedVideoProcessingRecoveryKind = "webMP4" | "loom";
 
@@ -66,32 +143,47 @@ const getAffectedRows = (result: unknown) => {
 	return (result as { affectedRows?: number } | undefined)?.affectedRows ?? 0;
 };
 
-async function recoverWebCandidate({
+export async function recoverWebCandidate({
 	videoId,
 	userId,
 	rawFileKey,
 	bucketId,
+	staleBefore,
+	recentAfter,
+	now = new Date(),
 }: {
 	videoId: Video.VideoId;
 	userId: string;
 	rawFileKey: string;
 	bucketId: S3Bucket.S3BucketId | null;
+	staleBefore: Date;
+	recentAfter: Date;
+	now?: Date;
 }): Promise<FailedVideoProcessingRecoveryStatus> {
+	const claimId = randomUUID();
 	const claimResult = await db()
 		.update(videoUploads)
 		.set({
-			phase: "processing",
-			processingProgress: 0,
-			processingMessage: "Processing video",
-			processingError: null,
-			updatedAt: new Date(),
+			recoveryAttemptCount: sql`${videoUploads.recoveryAttemptCount} + 1`,
+			recoveryClaimId: claimId,
+			recoveryLeaseExpiresAt: new Date(
+				now.getTime() + VIDEO_PROCESSING_RECOVERY_CLAIM_LEASE_MS,
+			),
 		})
 		.where(
 			and(
 				eq(videoUploads.videoId, videoId),
 				eq(videoUploads.phase, "error"),
 				eq(videoUploads.rawFileKey, rawFileKey),
-				recoverableProcessingError(),
+				recoverableWebProcessingError(staleBefore, recentAfter),
+				lt(
+					videoUploads.recoveryAttemptCount,
+					VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+				),
+				or(
+					isNull(videoUploads.recoveryClaimId),
+					lte(videoUploads.recoveryLeaseExpiresAt, now),
+				),
 			),
 		);
 
@@ -106,18 +198,27 @@ async function recoverWebCandidate({
 				userId,
 				rawFileKey,
 				bucketId,
+				recoveryClaimId: claimId,
 			},
 		]);
 		return "started";
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		await setVideoProcessingError(
-			videoId,
-			"Processing recovery will retry automatically",
-			new Error(
-				`${WORKFLOW_UPGRADE_ERROR_FRAGMENT}; recovery start failed: ${message}`,
-			),
-		);
+		await db()
+			.update(videoUploads)
+			.set({
+				processingMessage: "Processing recovery will retry automatically",
+				processingError: `${WORKFLOW_UPGRADE_ERROR_FRAGMENT}; recovery start failed: ${message}`,
+				updatedAt: now,
+			})
+			.where(
+				and(
+					eq(videoUploads.videoId, videoId),
+					eq(videoUploads.phase, "error"),
+					eq(videoUploads.rawFileKey, rawFileKey),
+					eq(videoUploads.recoveryClaimId, claimId),
+				),
+			);
 		return "retry-scheduled";
 	}
 }
@@ -230,13 +331,23 @@ async function recoverLoomCandidate({
 
 export async function recoverFailedVideoProcessing({
 	limit = VIDEO_PROCESSING_RECOVERY_BATCH_SIZE,
+	now = new Date(),
 }: {
 	limit?: number;
+	now?: Date;
 } = {}): Promise<FailedVideoProcessingRecoverySummary> {
-	const staleLoomBefore = new Date(
-		Date.now() - LOOM_IMPORT_RECOVERY_MIN_AGE_MS,
+	const shutdownStaleBefore = new Date(
+		now.getTime() - SHUTDOWN_RECOVERY_GRACE_MS,
 	);
-	const pendingLoomCandidates = await db()
+	const shutdownRecentAfter = new Date(
+		now.getTime() - SHUTDOWN_RECOVERY_MAX_AGE_MS,
+	);
+	const staleLoomBefore = new Date(
+		now.getTime() - LOOM_IMPORT_RECOVERY_MIN_AGE_MS,
+	);
+	const recoveryDatabase = db();
+	await releaseExpiredWebRecoveryClaims(now, recoveryDatabase);
+	const pendingLoomCandidates = await recoveryDatabase
 		.select({
 			videoId: videos.id,
 			userId: videos.ownerId,
@@ -331,6 +442,9 @@ export async function recoverFailedVideoProcessing({
 			userId: videos.ownerId,
 			bucketId: videos.bucket,
 			rawFileKey: videoUploads.rawFileKey,
+			processingError: videoUploads.processingError,
+			startedAt: videoUploads.startedAt,
+			updatedAt: videoUploads.updatedAt,
 		})
 		.from(videos)
 		.innerJoin(videoUploads, eq(videos.id, videoUploads.videoId))
@@ -340,18 +454,33 @@ export async function recoverFailedVideoProcessing({
 				eq(videoUploads.phase, "error"),
 				isNotNull(videoUploads.rawFileKey),
 				notLike(videoUploads.processingError, "%import-loom-video%"),
-				recoverableProcessingError(),
+				recoverableWebProcessingError(shutdownStaleBefore, shutdownRecentAfter),
+				lt(
+					videoUploads.recoveryAttemptCount,
+					VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+				),
+				or(
+					isNull(videoUploads.recoveryClaimId),
+					lte(videoUploads.recoveryLeaseExpiresAt, now),
+				),
 			),
 		)
 		.orderBy(asc(videoUploads.updatedAt))
 		.limit(Math.max(0, limit - loomCandidates.length));
+
+	const eligibleWebCandidates = webCandidates.filter(
+		(candidate) =>
+			!isShutdownInterruption(candidate.processingError) ||
+			(candidate.updatedAt <= shutdownStaleBefore &&
+				candidate.startedAt >= shutdownRecentAfter),
+	);
 
 	const candidates = [
 		...loomCandidates.map((candidate) => ({
 			...candidate,
 			kind: "loom" as const,
 		})),
-		...webCandidates.map((candidate) => ({
+		...eligibleWebCandidates.map((candidate) => ({
 			...candidate,
 			kind: "webMP4" as const,
 		})),
@@ -391,6 +520,8 @@ export async function recoverFailedVideoProcessing({
 					userId: candidate.userId,
 					rawFileKey: candidate.rawFileKey,
 					bucketId: candidate.bucketId,
+					staleBefore: shutdownStaleBefore,
+					recentAfter: shutdownRecentAfter,
 				});
 			} catch (error) {
 				status = "failed";

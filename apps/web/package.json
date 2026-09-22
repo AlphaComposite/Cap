@@ -8,6 +8,7 @@
 		"build:web": "next build --turbopack",
 		"build:docker": "cd ../.. && docker build -t cap-web-docker . --no-cache --progress=plain",
 		"start": "cross-env NODE_OPTIONS=--disable-warning=DEP0169 next start",
+		"backfill:automatic-chapters": "dotenv -e ../../.env -- bun scripts/backfill-automatic-chapters.ts",
 		"compress-images": "bash tools/compress-images.sh",
 		"test": "vitest run",
 		"test:agent-e2e": "CAP_AGENT_E2E=1 vitest run __tests__/e2e/agent-local-e2e.test.ts",

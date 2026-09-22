@@ -10,11 +10,21 @@ import {
 	type Video,
 } from "@cap/web-domain";
 import { generateText } from "ai";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { FatalError } from "workflow";
 import { isAiConfigured } from "@/lib/ai/provider";
 import { AiUnavailableError, runWithAiProviders } from "@/lib/ai/run";
+import { hasValidChapterState } from "@/lib/ai-chapter-state";
+import {
+	type ChapterTranscriptEvidence,
+	clampChapters,
+	getMinimumUsefulChapterCount,
+	getRequiredChapterSynthesisCount,
+	validateChapterOrder,
+	validateChapterStartsInSection,
+	validateGeneratedChapters,
+} from "@/lib/ai-chapter-validation";
 import { setGeneratedAiContent } from "@/lib/ai-content-metadata";
 import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
 import { decodeStorageVideo } from "@/lib/video-storage";
@@ -23,6 +33,7 @@ import { runWorkflowPromise } from "@/lib/workflow-runtime";
 interface GenerateAiWorkflowPayload {
 	videoId: string;
 	userId: string;
+	generationId: string;
 }
 
 interface VideoData {
@@ -33,6 +44,7 @@ interface VideoData {
 
 interface VttSegment {
 	start: number;
+	end: number;
 	text: string;
 }
 
@@ -43,9 +55,17 @@ interface TranscriptData {
 
 interface AiResult {
 	title?: string;
-	summary?: string;
 	chapters?: { title: string; start: number }[];
 }
+
+// Preserve the pre-existing pure helper imports for callers that still use
+// this workflow module. The validator itself remains available only from the
+// DB-free lib module.
+export {
+	clampChapters,
+	getMinimumUsefulChapterCount,
+	getRequiredChapterSynthesisCount,
+};
 
 const getAffectedRows = (result: unknown) => {
 	if (Array.isArray(result)) {
@@ -59,8 +79,6 @@ const getAffectedRows = (result: unknown) => {
 
 const MAX_CHARS_PER_CHUNK = 24000;
 const LEGACY_AI_TITLE_FALLBACK = "Generated Title";
-const LEGACY_AI_SUMMARY_FALLBACK =
-	"The AI was unable to generate a proper summary for this content.";
 const GENERATED_TITLE_PATTERN =
 	/^(Cap (Recording|Upload) - .+|Cap \d{4}-\d{2}-\d{2} at \d{2}[.:]\d{2}[.:]\d{2}|Untitled|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|.+ \((Display|Window|Area|Camera)\) \d{4}-\d{2}-\d{2} \d{2}:\d{2} [AP]M)$/;
 
@@ -92,24 +110,33 @@ export function shouldReplaceVideoTitle({
 export async function generateAiWorkflow(payload: GenerateAiWorkflowPayload) {
 	"use workflow";
 
-	const { videoId, userId } = payload;
+	const { videoId, userId, generationId } = payload;
 
-	let videoData: VideoData;
+	let videoData: VideoData | null;
 	try {
-		videoData = await validateAndSetProcessing(videoId);
+		videoData = await validateAndSetProcessing(videoId, generationId);
 	} catch (error) {
-		await markError(videoId);
+		await markError(videoId, generationId, "QUEUED");
 		throw error;
+	}
+
+	if (!videoData) {
+		return {
+			success: true,
+			message: "AI generation claim is no longer current",
+		};
 	}
 
 	try {
 		const transcript = await fetchTranscript(videoId, userId, videoData.video);
 
 		if (!transcript) {
-			await markSkipped(videoId);
+			const skipped = await markSkipped(videoId, generationId);
 			return {
 				success: true,
-				message: "Transcript empty or too short - skipped",
+				message: skipped
+					? "Transcript empty or too short - skipped"
+					: "AI generation claim is no longer current",
 			};
 		}
 
@@ -118,21 +145,26 @@ export async function generateAiWorkflow(payload: GenerateAiWorkflowPayload) {
 			videoData.aiGenerationLanguage,
 		);
 
-		await saveResults(videoId, videoData, result);
+		const saved = await saveResults(videoId, generationId, videoData, result);
+		if (!saved) {
+			return {
+				success: true,
+				message: "AI generation claim is no longer current",
+			};
+		}
 	} catch (error) {
-		await markError(videoId);
+		await markError(videoId, generationId, "PROCESSING");
 		throw error;
 	}
 
 	return { success: true, message: "AI generation completed successfully" };
 }
 
-async function validateAndSetProcessing(videoId: string): Promise<VideoData> {
+async function validateAndSetProcessing(
+	videoId: string,
+	generationId: string,
+): Promise<VideoData | null> {
 	"use step";
-
-	if (!isAiConfigured()) {
-		throw new FatalError("No AI provider configured");
-	}
 
 	const query = await db()
 		.select({ video: videos, orgSettings: organizations.settings })
@@ -147,32 +179,62 @@ async function validateAndSetProcessing(videoId: string): Promise<VideoData> {
 	const { video } = query[0];
 	const metadata = (video.metadata as VideoMetadata) || {};
 
-	if (video.transcriptionStatus !== "COMPLETE") {
-		throw new FatalError("Transcription not complete");
+	if (
+		metadata.aiGenerationStatus !== "QUEUED" ||
+		metadata.aiGenerationId !== generationId
+	) {
+		return null;
 	}
 
+	if (video.transcriptionStatus !== "COMPLETE") {
+		await markSkipped(videoId, generationId, "QUEUED");
+		return null;
+	}
+
+	if (!isAiConfigured()) {
+		throw new FatalError("No AI provider configured");
+	}
+
+	const matchingBackfillMarker =
+		metadata.aiChapterBackfillGenerationId === generationId;
 	if (
-		metadata.summary &&
-		metadata.summary !== LEGACY_AI_SUMMARY_FALLBACK &&
-		metadata.chapters
+		hasValidChapterState(
+			metadata.chapters,
+			video.duration,
+			metadata.chaptersManuallyEdited,
+		) &&
+		!matchingBackfillMarker
 	) {
-		throw new FatalError("AI metadata already generated");
+		await markSkipped(videoId, generationId, "QUEUED");
+		return null;
 	}
 
 	let processingMetadata = sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'PROCESSING')`;
-	for (const [metadataPath, fallback] of [
-		["$.aiTitle", LEGACY_AI_TITLE_FALLBACK],
-		["$.summary", LEGACY_AI_SUMMARY_FALLBACK],
-	] as const) {
-		processingMetadata = sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, ${metadataPath})) = ${fallback} AND (${metadataPath} <> '$.summary' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.summaryManuallyEdited')), 'false') <> 'true'), JSON_REMOVE(${processingMetadata}, ${metadataPath}), ${processingMetadata})`;
-	}
+	processingMetadata = sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiTitle')) = ${LEGACY_AI_TITLE_FALLBACK}, JSON_REMOVE(${processingMetadata}, '$.aiTitle'), ${processingMetadata})`;
 
-	await db()
+	const transitionResult = await db()
 		.update(videos)
 		.set({
 			metadata: processingMetadata,
 		})
-		.where(eq(videos.id, videoId as Video.VideoId));
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				eq(videos.transcriptionStatus, "COMPLETE"),
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = 'QUEUED'`,
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
+				...(matchingBackfillMarker
+					? [
+							sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}`,
+						]
+					: []),
+			),
+		);
+
+	if (getAffectedRows(transitionResult) === 0) {
+		await markSkipped(videoId, generationId, "QUEUED");
+		return null;
+	}
 
 	return {
 		video,
@@ -214,35 +276,57 @@ async function fetchTranscript(
 	return { segments, text };
 }
 
-async function markError(videoId: string): Promise<void> {
+async function markError(
+	videoId: string,
+	generationId: string,
+	status: "QUEUED" | "PROCESSING",
+): Promise<boolean> {
 	"use step";
 
-	await db()
+	const result = await db()
 		.update(videos)
 		.set({
-			metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR')`,
+			metadata: clearMatchingBackfillMarker(
+				sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR')`,
+				generationId,
+			),
 		})
 		.where(
 			and(
 				eq(videos.id, videoId as Video.VideoId),
-				sql`NOT (
-					COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')), '') = 'COMPLETE'
-					AND JSON_EXTRACT(${videos.metadata}, '$.summary') IS NOT NULL
-					AND JSON_EXTRACT(${videos.metadata}, '$.chapters') IS NOT NULL
-				)`,
+				eq(videos.transcriptionStatus, "COMPLETE"),
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = ${status}`,
 			),
 		);
+
+	return getAffectedRows(result) > 0;
 }
 
-async function markSkipped(videoId: string): Promise<void> {
+async function markSkipped(
+	videoId: string,
+	generationId: string,
+	status: "QUEUED" | "PROCESSING" = "PROCESSING",
+): Promise<boolean> {
 	"use step";
 
-	await db()
+	const result = await db()
 		.update(videos)
 		.set({
-			metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'SKIPPED')`,
+			metadata: clearMatchingBackfillMarker(
+				sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'SKIPPED')`,
+				generationId,
+			),
 		})
-		.where(eq(videos.id, videoId as Video.VideoId));
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = ${status}`,
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
+			),
+		);
+
+	return getAffectedRows(result) > 0;
 }
 
 async function generateWithAi(
@@ -268,12 +352,15 @@ async function generateWithAi(
 			chunks,
 			videoDuration,
 			languageInstruction,
+			transcript.segments,
 		);
 	}
 
-	if (result.chapters) {
-		result.chapters = clampChapters(result.chapters, videoDuration);
-	}
+	result.chapters = validateGeneratedChapters(
+		result.chapters ?? [],
+		videoDuration,
+		transcript.segments,
+	);
 
 	return result;
 }
@@ -282,10 +369,10 @@ export function getAiLanguageInstruction(
 	language: AiGenerationLanguage,
 ): string {
 	if (language === AI_GENERATION_LANGUAGE_AUTO) {
-		return "Write the title, summary, chapter titles, section summaries, and key points in the same language as the transcript.";
+		return "Write the title, chapter titles, section analyses, and key points in the same language as the transcript.";
 	}
 
-	return `Write the title, summary, chapter titles, section summaries, and key points in ${getAiGenerationLanguageName(language)}.`;
+	return `Write the title, chapter titles, section analyses, and key points in ${getAiGenerationLanguageName(language)}.`;
 }
 
 export function getAiContentGuidelines(videoDuration: number): {
@@ -311,7 +398,7 @@ export function getAiContentGuidelines(videoDuration: number): {
 
 	const chapterGuidance =
 		videoDuration < 120
-			? 'Return an empty "chapters" array because videos shorter than two minutes do not need chapters.'
+			? "Create one opening chapter at the first meaningful transcript timestamp. Add another only for a clear topic or phase change; never return an empty chapters array when the transcript contains speech."
 			: videoDuration < 600
 				? "Create 2-4 chapters when the transcript supports meaningful topic or phase changes. Include an opening chapter near 0 seconds, then mark the major transitions. Do not create chapters for filler or minor UI actions."
 				: videoDuration < 1800
@@ -337,89 +424,63 @@ export function getAiContentGuidelines(videoDuration: number): {
 function getVideoDuration(segments: VttSegment[]): number {
 	if (segments.length === 0) return 0;
 	const lastSegment = segments[segments.length - 1];
-	return lastSegment ? lastSegment.start + 3 : 0;
+	return lastSegment ? lastSegment.end : 0;
 }
 
-export function clampChapters(
-	chapters: { title: string; start: number }[],
+function getChapterCueStarts(
+	segments: readonly ChapterTranscriptEvidence[],
 	videoDuration: number,
-): { title: string; start: number }[] {
-	const filtered = chapters
-		.filter(
-			(ch) =>
-				Number.isFinite(ch.start) && ch.start >= 0 && ch.start < videoDuration,
-		)
-		.sort((a, b) => a.start - b.start);
+): number[] {
+	return [
+		...new Set(
+			segments
+				.filter(
+					(segment) =>
+						Number.isFinite(segment.start) &&
+						segment.start >= 0 &&
+						segment.start < videoDuration,
+				)
+				.map((segment) => segment.start),
+		),
+	].sort((a, b) => a - b);
+}
 
-	if (filtered.length === 0 && chapters.length > 0) {
-		const first = chapters[0];
-		return first ? [{ title: first.title, start: 0 }] : [];
+function clearMatchingBackfillMarker(metadata: SQL, generationId: string): SQL {
+	return sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}, JSON_REMOVE(${metadata}, '$.aiChapterBackfillGenerationId'), ${metadata})`;
+}
+
+function buildGeneratedMetadataUpdate(
+	metadata: SQL,
+	result: AiResult,
+	generationId: string,
+): SQL {
+	if (!Array.isArray(result.chapters)) {
+		throw new Error("Cannot mark AI generation complete without chapters");
 	}
-
-	// A percentage-only gap becomes extremely destructive for long recordings
-	// (33 minutes previously meant a 198-second bucket). Cap it at one minute so
-	// legitimate section changes survive while near-duplicate model output does not.
-	const minGap = Math.max(5, Math.min(60, Math.floor(videoDuration / 20)));
-	const deduped: { title: string; start: number }[] = [];
-	for (const chapter of filtered) {
-		const last = deduped[deduped.length - 1];
-		if (!last || Math.abs(chapter.start - last.start) >= minGap) {
-			deduped.push(chapter);
-		}
+	let metadataUpdate = metadata;
+	const generatedTitle = result.title?.trim();
+	if (generatedTitle) {
+		metadataUpdate = sql`JSON_SET(${metadataUpdate}, '$.aiTitle', ${generatedTitle})`;
 	}
-
-	return deduped;
-}
-
-/**
- * Only enforce a chapter floor when both the recording and the analysis have
- * strong structural evidence. This deliberately does not force chapters onto
- * short recordings or a long transcript that fit in one coherent section.
- */
-export function getMinimumUsefulChapterCount(
-	videoDuration: number,
-	sectionCandidates: { title: string; start: number }[],
-): number {
-	// getVideoDuration estimates from the final cue start (+3s), so a real
-	// 30-minute recording can appear almost one minute shorter here.
-	if (videoDuration < 29 * 60) return 0;
-
-	const distinctTitles = new Set(
-		sectionCandidates
-			.filter(
-				(candidate) =>
-					candidate.title.trim().length > 0 &&
-					Number.isFinite(candidate.start) &&
-					candidate.start >= 0,
-			)
-			.map((candidate) =>
-				candidate.title.trim().replace(/\s+/g, " ").toLocaleLowerCase(),
-			),
+	if (result.chapters) {
+		metadataUpdate = setGeneratedAiContent(
+			metadataUpdate,
+			"chapters",
+			result.chapters,
+		);
+	}
+	return clearMatchingBackfillMarker(
+		sql`JSON_SET(${metadataUpdate}, '$.aiGenerationStatus', 'COMPLETE')`,
+		generationId,
 	);
-
-	return distinctTitles.size >= 2 ? 2 : 0;
-}
-
-export function getRequiredChapterSynthesisCount(
-	videoDuration: number,
-	sectionCandidates: { title: string; start: number }[],
-): number {
-	const minimumChapterCount = getMinimumUsefulChapterCount(
-		videoDuration,
-		sectionCandidates,
-	);
-	if (minimumChapterCount === 0) return 0;
-	return clampChapters(sectionCandidates, videoDuration).length <
-		minimumChapterCount
-		? minimumChapterCount
-		: 0;
 }
 
 async function saveResults(
 	videoId: string,
+	generationId: string,
 	videoData: VideoData,
 	result: AiResult,
-): Promise<void> {
+): Promise<boolean> {
 	"use step";
 
 	const { video, metadata } = videoData;
@@ -430,30 +491,25 @@ async function saveResults(
 		: metadata;
 	const currentTitle = currentVideo?.name ?? video.name;
 
-	let metadataUpdate = sql`COALESCE(${videos.metadata}, JSON_OBJECT())`;
-	if (generatedTitle) {
-		metadataUpdate = sql`JSON_SET(${metadataUpdate}, '$.aiTitle', ${generatedTitle})`;
-	}
-	if (result.summary) {
-		metadataUpdate = setGeneratedAiContent(
-			metadataUpdate,
-			"summary",
-			result.summary,
-		);
-	}
-	if (result.chapters) {
-		metadataUpdate = setGeneratedAiContent(
-			metadataUpdate,
-			"chapters",
-			result.chapters,
-		);
-	}
-	metadataUpdate = sql`JSON_SET(${metadataUpdate}, '$.aiGenerationStatus', 'COMPLETE')`;
+	const metadataUpdate = buildGeneratedMetadataUpdate(
+		sql`COALESCE(${videos.metadata}, JSON_OBJECT())`,
+		result,
+		generationId,
+	);
 
-	await db()
+	const metadataResult = await db()
 		.update(videos)
 		.set({ metadata: metadataUpdate })
-		.where(eq(videos.id, videoId as Video.VideoId));
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				eq(videos.transcriptionStatus, "COMPLETE"),
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = 'PROCESSING'`,
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
+			),
+		);
+
+	if (getAffectedRows(metadataResult) === 0) return false;
 
 	if (
 		generatedTitle &&
@@ -471,7 +527,10 @@ async function saveResults(
 			.where(
 				and(
 					eq(videos.id, videoId as Video.VideoId),
+					eq(videos.transcriptionStatus, "COMPLETE"),
 					eq(videos.name, currentTitle),
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = 'COMPLETE'`,
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
 					sql`COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.titleManuallyEdited')), 'false') <> 'true'`,
 				),
 			);
@@ -479,6 +538,8 @@ async function saveResults(
 			await enqueueVideoStorageNameSync(videoId as Video.VideoId);
 		}
 	}
+
+	return true;
 }
 
 async function getCurrentVideo(
@@ -492,40 +553,60 @@ async function getCurrentVideo(
 	return currentVideo ?? null;
 }
 
+function parseVttTime(value: string): number | null {
+	const match = value.trim().match(/^(\d{2}):(\d{2}):(\d{2})[.,](\d{3})$/);
+	if (!match) return null;
+	return (
+		parseInt(match[1] ?? "0", 10) * 3600 +
+		parseInt(match[2] ?? "0", 10) * 60 +
+		parseInt(match[3] ?? "0", 10) +
+		parseInt(match[4] ?? "0", 10) / 1000
+	);
+}
+
 function parseVttWithTimestamps(vttContent: string): VttSegment[] {
 	const lines = vttContent.split("\n");
 	const segments: VttSegment[] = [];
 	let currentStart = 0;
+	let currentEnd = 3;
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i]?.trim() ?? "";
 		if (line.includes("-->")) {
-			const timeMatch = line.match(/(\d{2}):(\d{2}):(\d{2})[.,](\d{3})/);
-			if (timeMatch) {
-				currentStart =
-					parseInt(timeMatch[1] ?? "0", 10) * 3600 +
-					parseInt(timeMatch[2] ?? "0", 10) * 60 +
-					parseInt(timeMatch[3] ?? "0", 10);
-			}
+			const [startValue, endValue] = line.split("-->");
+			const start = parseVttTime(startValue ?? "");
+			const end = parseVttTime(endValue?.trim().split(/\s+/)[0] ?? "");
+			if (start !== null) currentStart = start;
+			if (end !== null) currentEnd = end;
 		} else if (
 			line &&
 			line !== "WEBVTT" &&
 			!/^\d+$/.test(line) &&
 			!line.includes("-->")
 		) {
-			segments.push({ start: currentStart, text: line });
+			segments.push({ start: currentStart, end: currentEnd, text: line });
 		}
 	}
 
 	return segments;
 }
 
-function chunkTranscriptWithTimestamps(
-	segments: VttSegment[],
-): { text: string; startTime: number; endTime: number }[] {
-	const chunks: { text: string; startTime: number; endTime: number }[] = [];
+function chunkTranscriptWithTimestamps(segments: VttSegment[]): {
+	text: string;
+	segments: VttSegment[];
+	startTime: number;
+	endTime: number;
+}[] {
+	const chunks: {
+		text: string;
+		segments: VttSegment[];
+		startTime: number;
+		endTime: number;
+	}[] = [];
 	let currentChunk: VttSegment[] = [];
 	let currentLength = 0;
+	const formatCue = (segment: VttSegment) =>
+		`[${Math.floor(segment.start / 60)}:${String(Math.floor(segment.start % 60)).padStart(2, "0")}] ${segment.text}`;
 
 	for (const segment of segments) {
 		if (
@@ -533,9 +614,10 @@ function chunkTranscriptWithTimestamps(
 			currentChunk.length > 0
 		) {
 			chunks.push({
-				text: currentChunk.map((s) => s.text).join(" "),
+				text: currentChunk.map(formatCue).join("\n"),
+				segments: currentChunk,
 				startTime: currentChunk[0]?.start ?? 0,
-				endTime: currentChunk[currentChunk.length - 1]?.start ?? 0,
+				endTime: currentChunk[currentChunk.length - 1]?.end ?? 0,
 			});
 			currentChunk = [];
 			currentLength = 0;
@@ -546,9 +628,10 @@ function chunkTranscriptWithTimestamps(
 
 	if (currentChunk.length > 0) {
 		chunks.push({
-			text: currentChunk.map((s) => s.text).join(" "),
+			text: currentChunk.map(formatCue).join("\n"),
+			segments: currentChunk,
 			startTime: currentChunk[0]?.start ?? 0,
-			endTime: currentChunk[currentChunk.length - 1]?.start ?? 0,
+			endTime: currentChunk[currentChunk.length - 1]?.end ?? 0,
 		});
 	}
 
@@ -657,17 +740,13 @@ async function generateSingleChunk(
 		.join("\n");
 	const contentGuidelines = getAiContentGuidelines(videoDuration);
 
-	const prompt = `You are Cap AI, an expert at turning video transcripts into useful, concise summaries.
+	const prompt = `You are Cap AI, an expert at turning video transcripts into useful navigation chapters and a concise title.
 
 The video is ${videoDuration} seconds long (${Math.floor(videoDuration / 60)}:${String(Math.floor(videoDuration % 60)).padStart(2, "0")} total). Analyze this timestamped transcript and provide JSON:
 {
   "title": "string (concise but descriptive title that captures the main topic)",
-  "summary": "string (standalone summary of the subject, intention, essential information, outcome, and next steps)",
   "chapters": [{"title": "string (descriptive chapter title)", "start": number (seconds from start)}]
 }
-
-Summary requirements:
-${contentGuidelines.summary}
 
 Chapter requirements:
 ${contentGuidelines.chapters}
@@ -675,20 +754,37 @@ ${contentGuidelines.chapters}
 Additional requirements:
 - ${languageInstruction}
 - Keep JSON property names exactly as shown.
-- Include specific names, numbers, decisions, and conclusions only when they help someone understand or act on the video.
+- Include specific names, numbers, decisions, and conclusions in chapter titles only when they help someone navigate the video.
 - IMPORTANT: All chapter "start" values MUST be between 0 and ${videoDuration} seconds. Use the timestamps from the transcript to determine accurate chapter start times.
+- Return at least one opening chapter near the first spoken timestamp when the transcript contains meaningful speech.
 
 Return ONLY valid JSON without any markdown formatting or code blocks.
 Transcript:
 ${transcriptWithTimestamps}`;
 
-	return callAiApi(prompt, parseAiResponse);
+	return callAiApi(prompt, (content) => {
+		const parsed = parseAiResponse(content);
+		return {
+			...parsed,
+			chapters: validateGeneratedChapters(
+				parsed.chapters,
+				videoDuration,
+				segments,
+			),
+		};
+	});
 }
 
 async function generateMultipleChunks(
-	chunks: { text: string; startTime: number; endTime: number }[],
+	chunks: {
+		text: string;
+		segments: VttSegment[];
+		startTime: number;
+		endTime: number;
+	}[],
 	videoDuration: number,
 	languageInstruction: string,
+	transcriptSegments: VttSegment[],
 ): Promise<AiResult> {
 	const chunkSummaries: {
 		summary: string;
@@ -718,13 +814,22 @@ Extract only the information needed to understand this section's contribution to
 - ${contentGuidelines.chapters}
 - ${languageInstruction}
 - Keep JSON property names exactly as shown.
-IMPORTANT: All chapter "start" values MUST be between ${chunk.startTime} and ${chunk.endTime} seconds. The total video is only ${videoDuration} seconds long.
+IMPORTANT: All chapter "start" values MUST be at least ${chunk.startTime} and strictly less than ${chunk.endTime} seconds, and each start MUST align within one second of one of the timestamped transcript cues above. The total video is only ${videoDuration} seconds long.
 Return ONLY valid JSON without any markdown formatting or code blocks.
 Transcript section:
 ${chunk.text}`;
 
 		try {
-			const parsed = await callAiApi(chunkPrompt, parseChunkAnalysis);
+			const parsed = await callAiApi(chunkPrompt, (content) => {
+				const parsed = parseChunkAnalysis(content);
+				validateChapterStartsInSection(
+					parsed.chapters,
+					chunk,
+					videoDuration,
+					chunk.segments,
+				);
+				return parsed;
+			});
 			chunkSummaries.push({
 				...parsed,
 				startTime: chunk.startTime,
@@ -737,10 +842,12 @@ ${chunk.text}`;
 		}
 	}
 
+	if (chunkSummaries.length === 0) {
+		throw new Error("No usable chunk analysis was produced");
+	}
+
 	const chapterCandidates = chunkSummaries.flatMap((c) => c.chapters);
 	let allChapters = clampChapters(chapterCandidates, videoDuration);
-
-	const allKeyPoints = chunkSummaries.flatMap((c) => c.keyPoints);
 
 	const sectionDetails = chunkSummaries
 		.map((c, i) => {
@@ -753,13 +860,24 @@ ${chunk.text}`;
 	const minimumChapterCount = getRequiredChapterSynthesisCount(
 		videoDuration,
 		chapterCandidates,
+		transcriptSegments,
 	);
 
 	if (minimumChapterCount > 0) {
+		const chapterCueStarts = getChapterCueStarts(
+			transcriptSegments,
+			videoDuration,
+		);
+		const chapterCueGuidance =
+			chapterCueStarts.length > 0
+				? `Allowed chapter cue starts (seconds): ${chapterCueStarts.join(", ")}`
+				: "No eligible transcript cue starts are available.";
 		const chapterPrompt = `You are Cap AI, creating navigation chapters from timestamped section analyses for a ${videoDuration}-second video.
 
 Section analyses:
 ${sectionDetails}
+
+${chapterCueGuidance}
 
 The analyses contain distinct chapter candidates that indicate multiple meaningful sections. Return at least ${minimumChapterCount} distinct, useful chapters that cover the supported topic or phase changes across the video. Reuse accurate section timestamps and do not invent topics not present in the analyses.
 
@@ -772,53 +890,49 @@ Provide JSON in this format:
 - All chapter starts must be between 0 and ${videoDuration} seconds.
 - Return ONLY valid JSON without markdown formatting or code blocks.`;
 
-		allChapters = await callAiApi(chapterPrompt, (text) =>
-			parseChapterSynthesis(text, minimumChapterCount, videoDuration),
-		);
+		allChapters = await callAiApi(chapterPrompt, (text) => {
+			const chapters = parseChapterSynthesis(
+				text,
+				minimumChapterCount,
+				videoDuration,
+				transcriptSegments,
+			);
+			validateChapterStartsInSection(
+				chapters,
+				{ startTime: 0, endTime: videoDuration },
+				videoDuration,
+				transcriptSegments,
+			);
+			return chapters;
+		});
 	}
 
-	const finalPrompt = `You are Cap AI, an expert at turning video analyses into useful, concise summaries.
-
-Using these section analyses, create a standalone final summary that lets someone understand the video without watching it.
+	const finalPrompt = `You are Cap AI, creating a concise title from timestamped section analyses.
 
 Section analyses:
 ${sectionDetails}
 
-${allKeyPoints.length > 0 ? `All key points identified:\n${allKeyPoints.map((p, i) => `${i + 1}. ${p}`).join("\n")}\n` : ""}
-
 Provide JSON in the following format:
 {
-  "title": "string (concise but descriptive title that captures the main topic/purpose)",
-  "summary": "string (standalone summary of the subject, intention, essential information, outcome, and next steps)"
+  "title": "string (concise but descriptive title that captures the main topic/purpose)"
 }
-
-Summary requirements:
-${contentGuidelines.summary}
 
 Additional requirements:
 - ${languageInstruction}
 - Keep JSON property names exactly as shown.
+- Do not return a summary or any other public content.
 Return ONLY valid JSON without any markdown formatting or code blocks.`;
 
 	try {
-		const parsed = await callAiApi(finalPrompt, parseFinalSummary);
+		const parsed = await callAiApi(finalPrompt, parseFinalTitle);
 		return {
 			title: parsed.title,
-			summary: parsed.summary,
 			chapters: allChapters,
 		};
 	} catch (error) {
 		if (!failedOnInvalidOutput(error)) throw error;
-		const fallbackSummary = chunkSummaries
-			.map((c, i) => `**Part ${i + 1}:** ${c.summary}`)
-			.join("\n\n");
-		const keyPointsSummary =
-			allKeyPoints.length > 0
-				? `\n\n**Key Points:**\n${allKeyPoints.map((p) => `- ${p}`).join("\n")}`
-				: "";
 		return {
 			title: "Video Summary",
-			summary: fallbackSummary + keyPointsSummary,
 			chapters: allChapters,
 		};
 	}
@@ -840,6 +954,28 @@ export function parseChunkAnalysis(content: string): {
 	if (typeof parsed.summary !== "string" || !parsed.summary.trim()) {
 		throw new Error("AI response did not contain a valid section summary");
 	}
+	let chapters: { title: string; start: number }[] = [];
+	if (parsed.chapters !== undefined) {
+		if (!Array.isArray(parsed.chapters)) {
+			throw new Error("AI response did not contain a valid chapters array");
+		}
+		chapters = parsed.chapters.map((chapter, index) => {
+			if (
+				typeof chapter !== "object" ||
+				chapter === null ||
+				typeof chapter.start !== "number" ||
+				!Number.isFinite(chapter.start) ||
+				chapter.start < 0 ||
+				typeof chapter.title !== "string" ||
+				!chapter.title.trim()
+			) {
+				throw new Error(
+					`AI response contained an invalid chapter at index ${index}`,
+				);
+			}
+			return { title: chapter.title.trim(), start: chapter.start };
+		});
+	}
 	return {
 		summary: parsed.summary,
 		keyPoints: Array.isArray(parsed.keyPoints)
@@ -847,56 +983,66 @@ export function parseChunkAnalysis(content: string): {
 					(keyPoint): keyPoint is string => typeof keyPoint === "string",
 				)
 			: [],
-		chapters: Array.isArray(parsed.chapters)
-			? parsed.chapters.filter(
-					(chapter): chapter is { title: string; start: number } =>
-						typeof chapter === "object" &&
-						chapter !== null &&
-						typeof chapter.start === "number" &&
-						chapter.start >= 0 &&
-						typeof chapter.title === "string" &&
-						chapter.title.trim().length > 0,
-				)
-			: [],
+		chapters,
 	};
 }
 
-export function parseFinalSummary(content: string): {
-	title: string;
-	summary: string;
-} {
+export function parseFinalTitle(content: string): { title: string } {
 	const parsed = JSON.parse(extractJsonObject(content)) as {
 		title?: unknown;
-		summary?: unknown;
 	};
 	if (typeof parsed.title !== "string" || !parsed.title.trim()) {
 		throw new Error("AI response did not contain a valid title");
 	}
-	if (typeof parsed.summary !== "string" || !parsed.summary.trim()) {
-		throw new Error("AI response did not contain a valid summary");
-	}
-	return { title: parsed.title, summary: parsed.summary };
+	return { title: parsed.title.trim() };
 }
 
 export function parseChapterSynthesis(
 	content: string,
 	minimumChapterCount: number,
 	videoDuration?: number,
+	transcriptCues: readonly ChapterTranscriptEvidence[] = [],
 ): { title: string; start: number }[] {
 	const parsed = JSON.parse(extractJsonObject(content)) as {
 		chapters?: unknown;
 	};
-	const chapters = Array.isArray(parsed.chapters)
-		? parsed.chapters.filter(
-				(chapter): chapter is { title: string; start: number } =>
-					typeof chapter === "object" &&
-					chapter !== null &&
-					typeof chapter.title === "string" &&
-					chapter.title.trim().length > 0 &&
-					typeof chapter.start === "number" &&
-					chapter.start >= 0,
-			)
-		: [];
+	if (parsed.chapters === undefined) {
+		if (minimumChapterCount > 0) {
+			throw new Error(
+				`AI response did not contain at least ${minimumChapterCount} useful chapters`,
+			);
+		}
+		return [];
+	}
+	if (!Array.isArray(parsed.chapters)) {
+		throw new Error("AI response did not contain a valid chapters array");
+	}
+	const chapters = parsed.chapters.map((chapter, index) => {
+		if (
+			typeof chapter !== "object" ||
+			chapter === null ||
+			typeof chapter.title !== "string" ||
+			!chapter.title.trim() ||
+			typeof chapter.start !== "number" ||
+			!Number.isFinite(chapter.start) ||
+			chapter.start < 0 ||
+			(typeof videoDuration === "number" && chapter.start >= videoDuration)
+		) {
+			throw new Error(
+				`AI response contained an invalid chapter at index ${index}`,
+			);
+		}
+		return { title: chapter.title.trim(), start: chapter.start };
+	});
+	validateChapterOrder(chapters);
+	if (typeof videoDuration === "number" && transcriptCues.length > 0) {
+		validateChapterStartsInSection(
+			chapters,
+			{ startTime: 0, endTime: videoDuration },
+			videoDuration,
+			transcriptCues,
+		);
+	}
 	const usableChapters =
 		typeof videoDuration === "number"
 			? clampChapters(chapters, videoDuration)
@@ -922,33 +1068,34 @@ export function parseChapterSynthesis(
 export function parseAiResponse(content: string): AiResult {
 	const data = JSON.parse(extractJsonObject(content)) as {
 		title?: unknown;
-		summary?: unknown;
 		chapters?: unknown;
 	};
 	if (typeof data.title !== "string" || !data.title.trim()) {
 		throw new Error("AI response did not contain a valid title");
 	}
-	if (typeof data.summary !== "string" || !data.summary.trim()) {
-		throw new Error("AI response did not contain a valid summary");
+	if (!Array.isArray(data.chapters)) {
+		throw new Error("AI response did not contain a valid chapters array");
 	}
 
-	const chapters = Array.isArray(data.chapters)
-		? data.chapters
-				.filter(
-					(ch): ch is { start: number; title: string } =>
-						typeof ch === "object" &&
-						ch !== null &&
-						typeof ch.start === "number" &&
-						ch.start >= 0 &&
-						typeof ch.title === "string" &&
-						ch.title.trim().length > 0,
-				)
-				.sort((a, b) => a.start - b.start)
-		: [];
+	const chapters = data.chapters.map((chapter, index) => {
+		if (
+			typeof chapter !== "object" ||
+			chapter === null ||
+			typeof chapter.start !== "number" ||
+			!Number.isFinite(chapter.start) ||
+			chapter.start < 0 ||
+			typeof chapter.title !== "string" ||
+			!chapter.title.trim()
+		) {
+			throw new Error(
+				`AI response contained an invalid chapter at index ${index}`,
+			);
+		}
+		return { title: chapter.title.trim(), start: chapter.start };
+	});
 
 	return {
 		title: data.title.trim(),
-		summary: data.summary.trim(),
 		chapters,
 	};
 }

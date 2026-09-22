@@ -28,6 +28,10 @@ vi.mock("@cap/database/schema", () => ({
 		processingError: "videoUploads.processingError",
 		processingMessage: "videoUploads.processingMessage",
 		rawFileKey: "videoUploads.rawFileKey",
+		recoveryAttemptCount: "videoUploads.recoveryAttemptCount",
+		recoveryClaimId: "videoUploads.recoveryClaimId",
+		recoveryLeaseExpiresAt: "videoUploads.recoveryLeaseExpiresAt",
+		startedAt: "videoUploads.startedAt",
 		updatedAt: "videoUploads.updatedAt",
 	},
 }));
@@ -36,9 +40,11 @@ vi.mock("drizzle-orm", () => ({
 	and: vi.fn((...conditions: unknown[]) => conditions),
 	asc: vi.fn((value: unknown) => value),
 	eq: vi.fn((left: unknown, right: unknown) => ({ left, right })),
+	gte: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	isNotNull: vi.fn((value: unknown) => value),
 	isNull: vi.fn((value: unknown) => value),
 	like: vi.fn((left: unknown, right: unknown) => ({ left, right })),
+	lt: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	lte: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	notLike: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	or: vi.fn((...conditions: unknown[]) => conditions),
@@ -71,6 +77,8 @@ type Candidate = {
 function makeSelectChain(candidates: unknown[]) {
 	const chain = {
 		select: vi.fn(),
+		update: vi.fn(),
+		set: vi.fn(),
 		from: vi.fn(),
 		innerJoin: vi.fn(),
 		leftJoin: vi.fn(),
@@ -79,6 +87,8 @@ function makeSelectChain(candidates: unknown[]) {
 		limit: vi.fn(),
 	};
 	chain.select.mockReturnValue(chain);
+	chain.update.mockReturnValue(chain);
+	chain.set.mockReturnValue(chain);
 	chain.from.mockReturnValue(chain);
 	chain.innerJoin.mockReturnValue(chain);
 	chain.leftJoin.mockReturnValue(chain);
@@ -106,6 +116,9 @@ const candidate: Candidate = {
 	bucketId: null,
 	rawFileKey: "user-1/video-1/raw.mp4",
 };
+const now = new Date("2026-09-22T12:00:00.000Z");
+const shutdownStartedAt = new Date("2026-09-22T10:00:00.000Z");
+const shutdownFailedAt = new Date("2026-09-22T11:45:00.000Z");
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -114,6 +127,80 @@ beforeEach(() => {
 });
 
 describe("recoverFailedVideoProcessing", () => {
+	it("requeues a shutdown-interrupted web upload through the normal media workflow", async () => {
+		const interrupted = {
+			...candidate,
+			phase: "error",
+			processingProgress: 46,
+			processingMessage: "Video processing failed",
+			processingError: "Server shutting down",
+			startedAt: shutdownStartedAt,
+			updatedAt: shutdownFailedAt,
+		};
+		mockDb
+			.mockReturnValueOnce(makeSelectChain([]))
+			.mockReturnValueOnce(makeSelectChain([]))
+			.mockReturnValueOnce(makeSelectChain([interrupted]))
+			.mockReturnValueOnce(makeUpdateChain(1));
+		const { recoverFailedVideoProcessing } = await import(
+			"@/lib/video-processing-recovery"
+		);
+		const { like } = await import("drizzle-orm");
+
+		const result = await recoverFailedVideoProcessing({ now });
+
+		expect(like).toHaveBeenCalledWith(
+			"videoUploads.processingError",
+			"%Server shutting down%",
+		);
+		expect(mockStart).toHaveBeenCalledWith(expect.any(Function), [
+			expect.objectContaining({
+				videoId: "video-1",
+				rawFileKey: "user-1/video-1/raw.mp4",
+			}),
+		]);
+		expect(result.statuses).toEqual({ started: 1 });
+	});
+
+	it.each([
+		[
+			"still inside the active-workflow grace period",
+			new Date("2026-09-22T11:55:00.000Z"),
+			shutdownStartedAt,
+		],
+		[
+			"outside the bounded recovery window",
+			shutdownFailedAt,
+			new Date("2026-09-19T11:00:00.000Z"),
+		],
+	])(
+		"does not requeue a shutdown error %s",
+		async (_, updatedAt, startedAt) => {
+			mockDb
+				.mockReturnValueOnce(makeSelectChain([]))
+				.mockReturnValueOnce(makeSelectChain([]))
+				.mockReturnValueOnce(
+					makeSelectChain([
+						{
+							...candidate,
+							phase: "error",
+							processingError: "Server shutting down",
+							startedAt,
+							updatedAt,
+						},
+					]),
+				);
+			const { recoverFailedVideoProcessing } = await import(
+				"@/lib/video-processing-recovery"
+			);
+
+			const result = await recoverFailedVideoProcessing({ now });
+
+			expect(mockStart).not.toHaveBeenCalled();
+			expect(result.checked).toBe(0);
+		},
+	);
+
 	it("atomically claims and restarts an affected upload", async () => {
 		mockDb
 			.mockReturnValueOnce(makeSelectChain([]))
@@ -130,12 +217,53 @@ describe("recoverFailedVideoProcessing", () => {
 		expect(result.statuses).toEqual({ started: 1 });
 	});
 
-	it("does not start a duplicate workflow when another run owns the claim", async () => {
+	it.each(["processing", "complete"])(
+		"does not restart after the upload concurrently moves to %s",
+		async (phase) => {
+			mockDb
+				.mockReturnValueOnce(makeSelectChain([]))
+				.mockReturnValueOnce(makeSelectChain([]))
+				.mockReturnValueOnce(
+					makeSelectChain([
+						{
+							...candidate,
+							phase,
+							processingError: "Server shutting down",
+							startedAt: shutdownStartedAt,
+							updatedAt: shutdownFailedAt,
+						},
+					]),
+				)
+				.mockReturnValueOnce(makeUpdateChain(0));
+			const { recoverFailedVideoProcessing } = await import(
+				"@/lib/video-processing-recovery"
+			);
+			const { eq } = await import("drizzle-orm");
+
+			const result = await recoverFailedVideoProcessing();
+
+			expect(eq).toHaveBeenCalledWith("videoUploads.phase", "error");
+			expect(mockStart).not.toHaveBeenCalled();
+			expect(result.statuses).toEqual({ "already-claimed": 1 });
+		},
+	);
+
+	it("does not restart a shutdown error without a persisted source key", async () => {
 		mockDb
 			.mockReturnValueOnce(makeSelectChain([]))
 			.mockReturnValueOnce(makeSelectChain([]))
-			.mockReturnValueOnce(makeSelectChain([candidate]))
-			.mockReturnValueOnce(makeUpdateChain(0));
+			.mockReturnValueOnce(
+				makeSelectChain([
+					{
+						...candidate,
+						rawFileKey: null,
+						phase: "error",
+						processingError: "Server shutting down",
+						startedAt: shutdownStartedAt,
+						updatedAt: shutdownFailedAt,
+					},
+				]),
+			);
 		const { recoverFailedVideoProcessing } = await import(
 			"@/lib/video-processing-recovery"
 		);
@@ -143,15 +271,17 @@ describe("recoverFailedVideoProcessing", () => {
 		const result = await recoverFailedVideoProcessing();
 
 		expect(mockStart).not.toHaveBeenCalled();
-		expect(result.statuses).toEqual({ "already-claimed": 1 });
+		expect(result.statuses).toEqual({ "missing-source": 1 });
 	});
 
-	it("keeps a transient start failure eligible for the next recovery run", async () => {
+	it("keeps a transient start failure scheduled without restoring its attempt budget", async () => {
+		const schedule = makeUpdateChain(1);
 		mockDb
 			.mockReturnValueOnce(makeSelectChain([]))
 			.mockReturnValueOnce(makeSelectChain([]))
 			.mockReturnValueOnce(makeSelectChain([candidate]))
-			.mockReturnValueOnce(makeUpdateChain(1));
+			.mockReturnValueOnce(makeUpdateChain(1))
+			.mockReturnValueOnce(schedule);
 		mockStart.mockRejectedValueOnce(new Error("temporary failure"));
 		const { recoverFailedVideoProcessing } = await import(
 			"@/lib/video-processing-recovery"
@@ -159,11 +289,10 @@ describe("recoverFailedVideoProcessing", () => {
 
 		const result = await recoverFailedVideoProcessing();
 
-		expect(mockSetVideoProcessingError).toHaveBeenCalledWith(
-			"video-1",
-			"Processing recovery will retry automatically",
+		expect(schedule.set).toHaveBeenCalledWith(
 			expect.objectContaining({
-				message: expect.stringContaining("temporary failure"),
+				processingMessage: "Processing recovery will retry automatically",
+				processingError: expect.stringContaining("temporary failure"),
 			}),
 		);
 		expect(result.statuses).toEqual({ "retry-scheduled": 1 });

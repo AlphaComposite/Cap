@@ -290,6 +290,7 @@ describe("desktop reupload publication", () => {
 		video.metadata.completedVideoEdit = { token: "completed-edit" };
 		video.metadata.chapters = [{ title: "old chapter" }];
 		video.metadata.aiGenerationStatus = "complete";
+		video.metadata.aiGenerationId = "old-generation";
 		const before = structuredClone(video);
 		const snapshot = original();
 		const token = tokenFor(snapshot);
@@ -313,6 +314,41 @@ describe("desktop reupload publication", () => {
 		});
 		expect(mocks.head).not.toHaveBeenCalled();
 		expect(mocks.access).not.toHaveBeenCalled();
+	});
+
+	it("preserves manually edited summary and chapters during reupload", async () => {
+		video.metadata = {
+			...video.metadata,
+			summary: "Keep my summary",
+			summaryManuallyEdited: true,
+			chapters: [{ title: "Keep my chapter", start: 2 }],
+			chaptersManuallyEdited: true,
+			aiGenerationStatus: "COMPLETE",
+			aiGenerationId: "old-generation",
+			aiChapterBackfillGenerationId: "old-generation",
+		};
+		const token = tokenFor(original());
+
+		const replacement = await prepareDesktopReupload(
+			transaction(),
+			original(),
+			token,
+		);
+
+		expect(replacement).toMatchObject({
+			metadata: {
+				summary: "Keep my summary",
+				summaryManuallyEdited: true,
+				chapters: [{ title: "Keep my chapter", start: 2 }],
+				chaptersManuallyEdited: true,
+			},
+			transcriptionStatus: null,
+		});
+		expect(replacement?.metadata).not.toHaveProperty("aiGenerationStatus");
+		expect(replacement?.metadata).not.toHaveProperty("aiGenerationId");
+		expect(replacement?.metadata).not.toHaveProperty(
+			"aiChapterBackfillGenerationId",
+		);
 	});
 
 	it.each(["desktopSegments", "webMP4"])(
@@ -541,6 +577,7 @@ describe("edited recording publication", () => {
 			],
 			chaptersManuallyEdited: true,
 			aiGenerationStatus: "complete",
+			aiGenerationId: "old-generation",
 			editProcessing: {
 				...operation,
 				ownerId: video.ownerId,
@@ -572,6 +609,7 @@ describe("edited recording publication", () => {
 			chaptersManuallyEdited: true,
 		});
 		expect(video.metadata).not.toHaveProperty("aiGenerationStatus");
+		expect(video.metadata).not.toHaveProperty("aiGenerationId");
 	});
 
 	it("clears generated AI content while preserving manual-edit flags", async () => {

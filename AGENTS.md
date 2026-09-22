@@ -89,6 +89,21 @@ Additionally, `unused_must_use = "deny"` applies to all Rust code: every `Result
 - macOS note: desktop permissions (screen/mic) apply to the terminal running `bun run dev:desktop`.
 - All other agent-facing rules (comments policy, no editing generated files, clippy/Biome shape, post-edit gates) live in **Pre-Generation Invariants** at the top of this file.
 
+## Beads Task Tracking — Mandatory
+
+This project uses `bd` (Beads) as the single source of truth for task tracking and durable project work.
+
+- Run `bd prime` at the beginning of every session and after context compaction or recovery.
+- Run `bd ready` before choosing work, then `bd show <id>` and `bd update <id> --claim` before implementation.
+- Create a Beads issue before starting any non-trivial code, review, release, investigation, or operational task. Include explicit acceptance criteria and dependencies.
+- Use `bd dep add <issue> <depends-on>` to encode blockers; do not rely on prose ordering.
+- Update the active issue with durable notes when scope, findings, decisions, tests, or blockers change.
+- Close completed work with `bd close <id> --reason="..."` only after its acceptance criteria and verification gates pass.
+- Use `bd remember "insight"` for durable project knowledge and `bd memories <query>` to retrieve it.
+- Do **not** use the assistant `todo` tool, markdown TODO lists, ad-hoc plan files, or chat-only checklists as a substitute for Beads.
+- Before reporting completion, reconcile `bd list --status=in_progress`, close finished issues, run quality gates, and report remaining ready/blocked issue IDs.
+- Never use `bd edit`; it opens an interactive editor. Use `bd update` flags instead.
+
 ## Deep Investigation Default
 When asked to inspect, review, optimize, secure, or fix something, do not stop at the obvious local change. First trace the full path and run a second-pass blast-radius review:
 

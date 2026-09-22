@@ -17,6 +17,7 @@
  * Add AI_PROVIDER=assemblyai (etc.) before `bun` to test an explicit
  * provider; shell env wins over the dotenv file.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
 	DeleteObjectCommand,
@@ -89,6 +90,7 @@ let orgId: string;
 async function seedVideo(options: {
 	vtt?: string;
 	transcriptionStatus?: string;
+	generationId?: string;
 }): Promise<Video.VideoId> {
 	const videoId = Video.VideoId.make(generateNanoId());
 	const seedRow = {
@@ -98,6 +100,14 @@ async function seedVideo(options: {
 		name: `ai-e2e-${videoId}`,
 		public: false,
 		transcriptionStatus: options.transcriptionStatus ?? null,
+		...(options.generationId
+			? {
+					metadata: {
+						aiGenerationStatus: "QUEUED" as const,
+						aiGenerationId: options.generationId,
+					},
+				}
+			: {}),
 	} as unknown as typeof videos.$inferInsert;
 	await db().insert(videos).values(seedRow);
 	createdVideoIds.push(videoId);
@@ -240,20 +250,21 @@ describe.skipIf(!enabled)("ai provider live e2e", () => {
 	});
 
 	it("generates title/summary on a short seeded transcript (single-chunk path)", async () => {
+		const generationId = randomUUID();
 		const videoId = await seedVideo({
 			vtt: SHORT_VTT,
 			transcriptionStatus: "COMPLETE",
+			generationId,
 		});
-		await generateAiWorkflow({ videoId, userId: ownerId });
+		await generateAiWorkflow({ videoId, userId: ownerId, generationId });
 
 		const { row, metadata } = await fetchVideoRow(videoId);
 		console.log("[e2e] short title:", metadata.aiTitle);
-		console.log("[e2e] short summary:", metadata.summary);
+		console.log("[e2e] short chapters:", metadata.chapters);
 		expect(metadata.aiGenerationStatus).toBe("COMPLETE");
 		expect(metadata.aiTitle?.length).toBeGreaterThan(3);
-		expect(metadata.summary?.length).toBeGreaterThan(20);
-		// 50s video: chapters are suppressed under 120s
-		expect(metadata.chapters ?? []).toHaveLength(0);
+		expect(metadata).not.toHaveProperty("summary");
+		expect(metadata.chapters?.length).toBeGreaterThanOrEqual(1);
 		// Custom names are deliberately NOT replaced by the AI title
 		// (shouldReplaceVideoTitle); covered by unit tests.
 		expect(row.name).toBe(`ai-e2e-${videoId}`);
@@ -262,11 +273,13 @@ describe.skipIf(!enabled)("ai provider live e2e", () => {
 	it("generates chapters on a long transcript (map-reduce path)", async () => {
 		const longVtt = buildLongVtt();
 		expect(longVtt.length).toBeGreaterThan(24_000);
+		const generationId = randomUUID();
 		const videoId = await seedVideo({
 			vtt: longVtt,
 			transcriptionStatus: "COMPLETE",
+			generationId,
 		});
-		await generateAiWorkflow({ videoId, userId: ownerId });
+		await generateAiWorkflow({ videoId, userId: ownerId, generationId });
 
 		const { metadata } = await fetchVideoRow(videoId);
 		console.log("[e2e] long title:", metadata.aiTitle);
@@ -276,7 +289,7 @@ describe.skipIf(!enabled)("ai provider live e2e", () => {
 		);
 		expect(metadata.aiGenerationStatus).toBe("COMPLETE");
 		expect(metadata.aiTitle?.length).toBeGreaterThan(3);
-		expect(metadata.summary?.length).toBeGreaterThan(50);
+		expect(metadata).not.toHaveProperty("summary");
 		const chapters = metadata.chapters ?? [];
 		// This fixture explicitly changes topic six times over 30 minutes. A
 		// generic single chapter is not useful navigation and must not pass.
@@ -290,7 +303,8 @@ describe.skipIf(!enabled)("ai provider live e2e", () => {
 	it.skipIf(!mediaPath)(
 		"transcribes a fresh recording end-to-end, then summarizes it",
 		async () => {
-			const videoId = await seedVideo({});
+			const generationId = randomUUID();
+			const videoId = await seedVideo({ generationId });
 			await putObject(
 				`${ownerId}/${videoId}/result.mp4`,
 				readFileSync(mediaPath as string),
@@ -312,13 +326,13 @@ describe.skipIf(!enabled)("ai provider live e2e", () => {
 			expect(vtt).toContain("WEBVTT");
 			expect(vtt.toLowerCase()).toContain("aurora");
 
-			await generateAiWorkflow({ videoId, userId: ownerId });
+			await generateAiWorkflow({ videoId, userId: ownerId, generationId });
 			const { metadata } = await fetchVideoRow(videoId);
 			console.log("[e2e] fresh title:", metadata.aiTitle);
-			console.log("[e2e] fresh summary:", metadata.summary);
+			console.log("[e2e] fresh chapters:", metadata.chapters);
 			expect(metadata.aiGenerationStatus).toBe("COMPLETE");
 			expect(metadata.aiTitle?.length).toBeGreaterThan(3);
-			expect(metadata.summary?.length).toBeGreaterThan(20);
+			expect(metadata).not.toHaveProperty("summary");
 		},
 		420_000,
 	);

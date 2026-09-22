@@ -42,6 +42,9 @@ vi.mock("@cap/database/schema", () => ({
 		rawFileKey: "videoUploads.rawFileKey",
 		startedAt: "videoUploads.startedAt",
 		updatedAt: "videoUploads.updatedAt",
+		recoveryAttemptCount: "videoUploads.recoveryAttemptCount",
+		recoveryClaimId: "videoUploads.recoveryClaimId",
+		recoveryLeaseExpiresAt: "videoUploads.recoveryLeaseExpiresAt",
 	},
 }));
 
@@ -57,6 +60,7 @@ vi.mock("drizzle-orm", () => ({
 	inArray: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	isNotNull: vi.fn((value: unknown) => value),
 	isNull: vi.fn((value: unknown) => value),
+	lt: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	lte: vi.fn((left: unknown, right: unknown) => ({ left, right })),
 	or: vi.fn((...conditions: unknown[]) => conditions),
 	sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
@@ -283,5 +287,65 @@ describe("recoverStalledVideoPipeline", () => {
 
 		expect(mockStartAiGeneration).toHaveBeenCalledWith("video-ai", "user-1");
 		expect(result.ai.statuses).toEqual({ started: 1 });
+	});
+
+	it("does not recover AI work when valid chapters already exist", async () => {
+		const aiCandidate = {
+			videoId: "video-ai",
+			userId: "user-1",
+			metadata: {
+				chapters: [{ title: "Opening", start: 0 }],
+			},
+			duration: 120,
+			updatedAt: staleAt,
+			stripeSubscriptionStatus: "active",
+			thirdPartyStripeSubscriptionId: null,
+		};
+
+		let dbCall = 0;
+		mockDb.mockImplementation(() => {
+			dbCall++;
+			if (dbCall < 3) return makeSelectChain([]);
+			return makeSelectChain([aiCandidate]);
+		});
+
+		const { recoverStalledVideoPipeline } = await import(
+			"@/lib/video-pipeline-recovery"
+		);
+		const result = await recoverStalledVideoPipeline({ now, concurrency: 1 });
+
+		expect(mockStartAiGeneration).not.toHaveBeenCalled();
+		expect(result.ai).toMatchObject({ checked: 0, statuses: {} });
+	});
+
+	it("does not recover AI work when chapters are manually empty", async () => {
+		const aiCandidate = {
+			videoId: "video-ai",
+			userId: "user-1",
+			metadata: {
+				aiGenerationStatus: "COMPLETE",
+				chapters: [],
+				chaptersManuallyEdited: true,
+			},
+			duration: 120,
+			updatedAt: staleAt,
+			stripeSubscriptionStatus: "active",
+			thirdPartyStripeSubscriptionId: null,
+		};
+
+		let dbCall = 0;
+		mockDb.mockImplementation(() => {
+			dbCall++;
+			if (dbCall < 3) return makeSelectChain([]);
+			return makeSelectChain([aiCandidate]);
+		});
+
+		const { recoverStalledVideoPipeline } = await import(
+			"@/lib/video-pipeline-recovery"
+		);
+		const result = await recoverStalledVideoPipeline({ now, concurrency: 1 });
+
+		expect(mockStartAiGeneration).not.toHaveBeenCalled();
+		expect(result.ai).toMatchObject({ checked: 0, statuses: {} });
 	});
 });

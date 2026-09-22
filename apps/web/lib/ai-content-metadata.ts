@@ -1,13 +1,17 @@
 import { videos } from "@cap/database/schema";
 import { type SQL, sql } from "drizzle-orm";
+import type { GeneratedChapter } from "@/lib/ai-chapter-state";
 
 export function setGeneratedAiContent(
 	metadata: SQL,
-	field: "summary" | "chapters",
-	value: string | { title: string; start: number }[],
+	field: "chapters",
+	value: GeneratedChapter[],
 ) {
-	const path = `$.${field}`;
-	const editedPath = `$.${field}ManuallyEdited`;
+	if (field !== "chapters") {
+		throw new Error("Generated AI content only supports chapters");
+	}
+	const path = "$.chapters";
+	const editedPath = "$.chaptersManuallyEdited";
 	// The manual-edit flag is authoritative, including for a deliberate empty
 	// value whose JSON key may be absent. Generation must never race and restore it.
 	return sql`IF(

@@ -74,9 +74,11 @@ export async function prepareDesktopReupload(
 	});
 	const metadata = { ...(locked.metadata ?? {}) };
 	delete metadata.desktopRecordingUpload;
-	delete metadata.summary;
-	delete metadata.chapters;
+	if (metadata.summaryManuallyEdited !== true) delete metadata.summary;
+	if (metadata.chaptersManuallyEdited !== true) delete metadata.chapters;
 	delete metadata.aiGenerationStatus;
+	delete metadata.aiGenerationId;
+	delete metadata.aiChapterBackfillGenerationId;
 	Reflect.deleteProperty(metadata, "editProcessing");
 	Reflect.deleteProperty(metadata, "completedVideoEdit");
 	return {

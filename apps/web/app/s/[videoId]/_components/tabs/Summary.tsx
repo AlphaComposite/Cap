@@ -110,11 +110,7 @@ export const Summary: React.FC<SummaryProps> = ({
 	const canRetry =
 		isOwner &&
 		(aiGenerationStatus === "ERROR" || aiGenerationStatus === "SKIPPED");
-	const canEdit =
-		isOwner &&
-		transcriptionStatus !== "PROCESSING" &&
-		aiGenerationStatus !== "QUEUED" &&
-		aiGenerationStatus !== "PROCESSING";
+	const canEdit = isOwner && transcriptionStatus !== "PROCESSING";
 
 	const handleSeek = (time: number) => {
 		if (onSeek) {
@@ -229,17 +225,17 @@ export const Summary: React.FC<SummaryProps> = ({
 				<div className="space-y-1">
 					<h3 className="text-base font-medium text-gray-12">
 						{aiGenerationStatus === "ERROR"
-							? "AI generation failed"
+							? "Automatic chapter generation failed"
 							: aiGenerationStatus === "SKIPPED"
-								? "AI generation skipped"
-								: "No summary available"}
+								? "Automatic chapter generation skipped"
+								: "No summary or chapters available"}
 					</h3>
 					<p className="text-sm text-gray-10">
 						{aiGenerationStatus === "ERROR"
-							? "There was an error generating the AI summary."
+							? "There was an error generating automatic chapters."
 							: aiGenerationStatus === "SKIPPED"
-								? "The video was too short or had no speech detected."
-								: "AI summary has not been generated for this video yet."}
+								? "No automatic chapters were generated because the video was too short or had no speech detected."
+								: "Automatic chapters have not been generated for this video yet."}
 					</p>
 					{canRetry && (
 						<div className="pt-4">
@@ -253,7 +249,9 @@ export const Summary: React.FC<SummaryProps> = ({
 									icon={faRotateRight}
 									className={`mr-2 ${isRetrying ? "animate-spin" : ""}`}
 								/>
-								{isRetrying ? "Retrying..." : "Retry AI Generation"}
+								{isRetrying
+									? "Retrying chapter generation…"
+									: "Retry chapter generation"}
 							</Button>
 							{retryError && (
 								<p className="mt-2 text-sm text-red-500">{retryError}</p>

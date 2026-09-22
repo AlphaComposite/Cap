@@ -844,6 +844,9 @@ describe("recording storage lifecycle", () => {
 				processingMessage: "Source retained",
 				processingError: "Previous processing attempt failed",
 				rawFileKey: null,
+				recoveryAttemptCount: 0,
+				recoveryClaimId: null,
+				recoveryLeaseExpiresAt: null,
 			});
 			if (state) database.jobs.set(videoId, { state });
 			else database.jobs.delete(videoId);

@@ -5,6 +5,8 @@ import type { Video } from "@cap/web-domain";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as EffectRuntime from "@/lib/server";
 
+const startAiGenerationMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@cap/database/auth/session", () => ({
 	getCurrentUser: vi.fn(),
 }));
@@ -37,14 +39,14 @@ vi.mock("@cap/database", () => ({
 }));
 
 vi.mock("@cap/env", () => ({ serverEnv: () => ({}) }));
-vi.mock("@/lib/ai/provider", () => ({ isAiConfigured: () => false }));
 vi.mock("@/lib/desktop-segments-finalization", () => ({
 	isRetryableDesktopSegmentsFinalizationError: () => false,
 	queueDesktopSegmentsFinalization: vi.fn(),
 }));
-vi.mock("@/lib/generate-ai", () => ({ startAiGeneration: vi.fn() }));
+vi.mock("@/lib/generate-ai", () => ({
+	startAiGeneration: startAiGenerationMock,
+}));
 vi.mock("@/lib/transcribe", () => ({ transcribeVideo: vi.fn() }));
-vi.mock("@/utils/flags", () => ({ isAiGenerationEnabled: vi.fn() }));
 vi.mock("@/lib/server", () => ({ runPromiseExit: vi.fn() }));
 
 const metadata: VideoMetadata = {
@@ -58,6 +60,7 @@ const baseVideo = {
 	ownerId: "owner-1",
 	orgId: "org-1",
 	name: "Video",
+	duration: 120,
 	settings: {},
 	metadata,
 	transcriptionStatus: "COMPLETE",
@@ -71,6 +74,7 @@ async function statusFor({
 	videoSettings = {},
 	organizationSettings = {},
 	spaces = [],
+	videoMetadata = metadata,
 }: {
 	viewerId?: string;
 	videoSettings?: Record<string, boolean>;
@@ -80,15 +84,15 @@ async function statusFor({
 		name: string;
 		settings: Record<string, boolean>;
 	}>;
+	videoMetadata?: VideoMetadata;
 }) {
 	vi.mocked(getCurrentUser).mockResolvedValue({ id: viewerId } as never);
 	vi.mocked(EffectRuntime.runPromiseExit).mockResolvedValue({
 		_tag: "Success",
-		value: [{ ...baseVideo, settings: videoSettings }],
+		value: [{ ...baseVideo, settings: videoSettings, metadata: videoMetadata }],
 	} as never);
 	queryResults.set(organizations, [{ settings: organizationSettings }]);
 	queryResults.set(spaceVideos, spaces);
-
 	return getVideoStatus("video-1" as Video.VideoId);
 }
 
@@ -97,6 +101,7 @@ describe("getVideoStatus AI visibility", () => {
 		queryResults.clear();
 		tablesRead.length = 0;
 		vi.clearAllMocks();
+		startAiGenerationMock.mockResolvedValue({ success: true });
 	});
 
 	it("applies space disables over explicit video and organization enables for a non-owner", async () => {
@@ -161,5 +166,54 @@ describe("getVideoStatus AI visibility", () => {
 		});
 
 		expect(result).toMatchObject({ summary: null, chapters: null });
+	});
+
+	it("reports a pasted summary without triggering viewer-side generation", async () => {
+		const result = await statusFor({
+			videoMetadata: {
+				summary: "Pasted owner summary",
+				summaryManuallyEdited: true,
+			},
+		});
+
+		expect(result).toMatchObject({
+			aiGenerationStatus: null,
+			summary: "Pasted owner summary",
+			chapters: null,
+		});
+		expect(startAiGenerationMock).not.toHaveBeenCalled();
+	});
+
+	it("never triggers generation for a public status read with missing chapters", async () => {
+		const result = await statusFor({
+			videoMetadata: {
+				summary: "Pasted owner summary",
+				aiGenerationStatus: "COMPLETE",
+				chapters: [],
+			},
+		});
+
+		expect(result).toMatchObject({
+			aiGenerationStatus: "COMPLETE",
+			chapters: [],
+		});
+		expect(startAiGenerationMock).not.toHaveBeenCalled();
+	});
+
+	it("does not queue generation for an explicitly manual empty chapter state", async () => {
+		const result = await statusFor({
+			videoMetadata: {
+				summary: "Pasted owner summary",
+				aiGenerationStatus: "COMPLETE",
+				chapters: [],
+				chaptersManuallyEdited: true,
+			},
+		});
+
+		expect(result).toMatchObject({
+			aiGenerationStatus: "COMPLETE",
+			chapters: [],
+		});
+		expect(startAiGenerationMock).not.toHaveBeenCalled();
 	});
 });

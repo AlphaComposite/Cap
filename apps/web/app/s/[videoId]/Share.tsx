@@ -26,6 +26,7 @@ import {
 } from "@/actions/videos/get-status";
 import type { OrganizationSettings } from "@/app/(org)/dashboard/dashboard-data";
 import { SignedImageUrl } from "@/components/SignedImageUrl";
+import { shouldContinueVideoStatusPolling } from "@/lib/video-status-polling";
 import { CaptionProvider } from "./_components/CaptionContext";
 import { PlaybackProvider } from "./_components/playback/PlaybackContext";
 import { ShareVideo } from "./_components/ShareVideo";
@@ -261,58 +262,12 @@ const useVideoStatus = (
 			const data = query.state.data;
 			if (!data) return 2000;
 
-			const shouldContinuePolling = () => {
-				if (!data.transcriptionStatus) {
-					return availability.transcriptionGeneration;
-				}
+			const shouldContinuePolling = shouldContinueVideoStatusPolling(
+				data,
+				availability,
+			);
 
-				if (data.transcriptionStatus === "PROCESSING") {
-					return true;
-				}
-
-				if (
-					data.transcriptionStatus === "ERROR" ||
-					data.transcriptionStatus === "SKIPPED" ||
-					data.transcriptionStatus === "NO_AUDIO"
-				) {
-					return false;
-				}
-
-				if (data.transcriptionStatus === "COMPLETE") {
-					if (!availability.aiGeneration) {
-						return false;
-					}
-
-					if (
-						data.aiGenerationStatus === "SKIPPED" ||
-						data.aiGenerationStatus === "ERROR" ||
-						data.aiGenerationStatus === "COMPLETE"
-					) {
-						return false;
-					}
-
-					if (
-						data.aiGenerationStatus === "QUEUED" ||
-						data.aiGenerationStatus === "PROCESSING"
-					) {
-						return true;
-					}
-
-					if (
-						!data.aiGenerationStatus &&
-						!data.summary &&
-						!data.chapters?.length
-					) {
-						return true;
-					}
-
-					return false;
-				}
-
-				return false;
-			};
-
-			return shouldContinuePolling() ? 2000 : false;
+			return shouldContinuePolling ? 2000 : false;
 		},
 		refetchIntervalInBackground: false,
 		staleTime: 1000,

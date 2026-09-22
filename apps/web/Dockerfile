@@ -9,12 +9,12 @@ WORKDIR /app
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY . .
 
-RUN --mount=type=cache,id=bun-1.4.0,target=/root/.bun/install/cache bun install --frozen-lockfile
+RUN --mount=type=cache,id=bun-1.4.0,target=/root/.bun/install/cache --mount=type=secret,id=build_env,target=/app/.env bun install --frozen-lockfile
 
 ARG NEXT_PUBLIC_DOCKER_BUILD=true
 ENV NEXT_PUBLIC_WEB_URL=http://localhost:3000
 
-RUN bun run build:web
+RUN --mount=type=secret,id=build_env,target=/app/.env --mount=type=secret,id=build_env,target=/app/apps/web/.env bun run build:web
 
 
 # 3. Production image, copy all the files and run next
