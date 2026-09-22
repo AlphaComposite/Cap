@@ -251,7 +251,7 @@ export function getMinimumUsefulChapterCount(
 		meaningfulSegments.some((segment) => segment.start >= videoDuration * 0.6);
 	const onlyTitle = [...distinctTitles][0] ?? "";
 	const genericTitle =
-		/^(?:(?:full|complete|entire|overall)\s+)?(?:(?:video|recording|discussion|presentation|meeting|session)\s+)?(?:overview|summary|introduction|intro|discussion|main topic|content)$/i.test(
+		/^(?:(?:full|complete|entire|overall)\s+)?(?:(?:video|recording|discussion|presentation|meeting|session)\s+)?(?:overview|summary|introduction(?: and background)?|intro|discussion|main topic|content)$/i.test(
 			onlyTitle,
 		);
 	if (
