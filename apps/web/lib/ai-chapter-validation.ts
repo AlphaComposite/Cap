@@ -167,10 +167,22 @@ export function validateGeneratedChapters(
 				Math.abs(segment.start - start) <= CHAPTER_START_TOLERANCE_SECONDS,
 		);
 
-	let normalized = uniqueStarts;
+	let normalized = uniqueStarts
+		.map((chapter, index) =>
+			index === 0 &&
+			chapter.start === 0 &&
+			firstMeaningfulStart !== undefined &&
+			firstMeaningfulStart > 0
+				? { ...chapter, start: firstMeaningfulStart }
+				: chapter,
+		)
+		.filter(
+			(chapter, index, chapters) =>
+				index === 0 || chapter.start !== chapters[index - 1]?.start,
+		);
 	if (
 		firstMeaningfulStart !== undefined &&
-		!uniqueStarts.some(
+		!normalized.some(
 			(chapter) =>
 				Math.abs(chapter.start - firstMeaningfulStart) <=
 				CHAPTER_START_TOLERANCE_SECONDS,

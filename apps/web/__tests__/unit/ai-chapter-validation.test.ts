@@ -73,6 +73,25 @@ describe("AI chapter validation", () => {
 		]);
 	});
 
+	it("aligns a zero-second opening to the first delayed speech cue", () => {
+		expect(
+			validateGeneratedChapters(
+				[
+					{ title: "Opening", start: 0 },
+					{ title: "Main topic", start: 60 },
+				],
+				120,
+				[
+					{ start: 15, text: "Opening cue" },
+					{ start: 60, text: "Main topic cue" },
+				],
+			),
+		).toEqual([
+			{ title: "Opening", start: 15 },
+			{ title: "Main topic", start: 60 },
+		]);
+	});
+
 	it("uses the existing minimum-gap clamp deterministically for near duplicates", () => {
 		expect(
 			clampChapters(
