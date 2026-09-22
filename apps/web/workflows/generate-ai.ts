@@ -1048,23 +1048,25 @@ export function parseChapterSynthesis(
 	if (!Array.isArray(parsed.chapters)) {
 		throw new Error("AI response did not contain a valid chapters array");
 	}
-	const chapters = parsed.chapters.map((chapter, index) => {
-		if (
-			typeof chapter !== "object" ||
-			chapter === null ||
-			typeof chapter.title !== "string" ||
-			!chapter.title.trim() ||
-			typeof chapter.start !== "number" ||
-			!Number.isFinite(chapter.start) ||
-			chapter.start < 0 ||
-			(typeof videoDuration === "number" && chapter.start >= videoDuration)
-		) {
-			throw new Error(
-				`AI response contained an invalid chapter at index ${index}`,
-			);
-		}
-		return { title: chapter.title.trim(), start: chapter.start };
-	});
+	const chapters = parsed.chapters
+		.map((chapter, index) => {
+			if (
+				typeof chapter !== "object" ||
+				chapter === null ||
+				typeof chapter.title !== "string" ||
+				!chapter.title.trim() ||
+				typeof chapter.start !== "number" ||
+				!Number.isFinite(chapter.start) ||
+				chapter.start < 0 ||
+				(typeof videoDuration === "number" && chapter.start >= videoDuration)
+			) {
+				throw new Error(
+					`AI response contained an invalid chapter at index ${index}`,
+				);
+			}
+			return { title: chapter.title.trim(), start: chapter.start };
+		})
+		.sort((a, b) => a.start - b.start);
 	validateChapterOrder(chapters);
 	if (typeof videoDuration === "number" && transcriptCues.length > 0) {
 		validateChapterStartsInSection(
