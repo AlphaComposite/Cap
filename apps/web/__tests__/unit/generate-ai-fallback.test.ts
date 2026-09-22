@@ -456,6 +456,23 @@ describe("useful chapter coverage", () => {
 		]);
 	});
 
+	it("collapses exact duplicate synthesized starts before validation", () => {
+		expect(
+			parseChapterSynthesis(
+				'{"chapters":[{"title":"Opening","start":0},{"title":"Duplicate opening","start":0},{"title":"Second","start":60}]}',
+				2,
+				120,
+				[
+					{ start: 0, text: "Opening cue" },
+					{ start: 60, text: "Second cue" },
+				],
+			),
+		).toEqual([
+			{ title: "Opening", start: 0 },
+			{ title: "Second", start: 60 },
+		]);
+	});
+
 	it("does not force chapters when the transcript lacks multi-section evidence", () => {
 		expect(parseChapterSynthesis('{"chapters":[]}', 0)).toEqual([]);
 	});
