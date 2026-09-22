@@ -34,12 +34,13 @@ describe("AI chapter validation", () => {
 		).toThrow("outside the video duration");
 	});
 
-	it("rejects generated chapters with equal starts", () => {
-		expect(() =>
+	it("collapses generated chapters with exact duplicate starts", () => {
+		expect(
 			validateGeneratedChapters(
 				[
 					{ title: "Opening", start: 0 },
 					{ title: "Duplicate opening", start: 0 },
+					{ title: "Main topic", start: 60 },
 				],
 				120,
 				[
@@ -47,7 +48,10 @@ describe("AI chapter validation", () => {
 					{ start: 60, text: "The main topic." },
 				],
 			),
-		).toThrow("strictly increasing");
+		).toEqual([
+			{ title: "Opening", start: 0 },
+			{ title: "Main topic", start: 60 },
+		]);
 	});
 
 	it("sorts valid generated chapters before timestamp validation", () => {
