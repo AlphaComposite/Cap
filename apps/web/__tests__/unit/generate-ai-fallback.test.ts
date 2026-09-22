@@ -439,6 +439,23 @@ describe("useful chapter coverage", () => {
 		).toThrow("invalid chapter");
 	});
 
+	it("sorts valid synthesized chapters by timestamp before validation", () => {
+		expect(
+			parseChapterSynthesis(
+				'{"chapters":[{"title":"Second","start":60},{"title":"Opening","start":0}]}',
+				2,
+				120,
+				[
+					{ start: 0, text: "Opening cue" },
+					{ start: 60, text: "Second cue" },
+				],
+			),
+		).toEqual([
+			{ title: "Opening", start: 0 },
+			{ title: "Second", start: 60 },
+		]);
+	});
+
 	it("does not force chapters when the transcript lacks multi-section evidence", () => {
 		expect(parseChapterSynthesis('{"chapters":[]}', 0)).toEqual([]);
 	});
