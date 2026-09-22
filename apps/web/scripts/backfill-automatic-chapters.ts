@@ -4,6 +4,11 @@ import type { Video } from "@cap/web-domain";
 import { asc, eq } from "drizzle-orm";
 import { executeAutomaticChapterBackfillCli } from "../lib/automatic-chapter-backfill-cli";
 import { startAiGeneration } from "../lib/generate-ai";
+import { generateAiWorkflow } from "../workflows/generate-ai";
+
+Object.assign(generateAiWorkflow, {
+	workflowId: "workflow//./workflows/generate-ai//generateAiWorkflow",
+});
 
 const selectFields = {
 	id: videos.id,
