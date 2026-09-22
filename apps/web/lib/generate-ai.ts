@@ -179,7 +179,7 @@ export async function startAiGeneration(
 		await db()
 			.update(videos)
 			.set({
-				metadata: sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}, JSON_REMOVE(JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR'), '$.aiChapterBackfillGenerationId'), JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR'))`,
+				metadata: sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}, JSON_REMOVE(JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'COMPLETE'), '$.aiChapterBackfillGenerationId', '$.aiGenerationId'), JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR'))`,
 			})
 			.where(
 				and(

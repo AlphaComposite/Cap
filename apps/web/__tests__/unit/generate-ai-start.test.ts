@@ -476,5 +476,11 @@ describe("startAiGeneration", () => {
 		expect(cleanup.set.mock.calls[0]?.[0].metadata.strings.join("")).toContain(
 			"$.aiChapterBackfillGenerationId",
 		);
+		expect(cleanup.set.mock.calls[0]?.[0].metadata.strings.join("")).toContain(
+			"$.aiGenerationId",
+		);
+		expect(cleanup.set.mock.calls[0]?.[0].metadata.strings.join("")).toContain(
+			"COMPLETE",
+		);
 	});
 });

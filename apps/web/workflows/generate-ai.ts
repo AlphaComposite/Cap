@@ -286,7 +286,7 @@ async function markError(
 	const result = await db()
 		.update(videos)
 		.set({
-			metadata: clearMatchingBackfillMarker(
+			metadata: restoreMatchingBackfillState(
 				sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR')`,
 				generationId,
 			),
@@ -313,7 +313,7 @@ async function markSkipped(
 	const result = await db()
 		.update(videos)
 		.set({
-			metadata: clearMatchingBackfillMarker(
+			metadata: restoreMatchingBackfillState(
 				sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'SKIPPED')`,
 				generationId,
 			),
@@ -447,6 +447,13 @@ function getChapterCueStarts(
 
 function clearMatchingBackfillMarker(metadata: SQL, generationId: string): SQL {
 	return sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}, JSON_REMOVE(${metadata}, '$.aiChapterBackfillGenerationId'), ${metadata})`;
+}
+
+function restoreMatchingBackfillState(
+	metadata: SQL,
+	generationId: string,
+): SQL {
+	return sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}, JSON_REMOVE(JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'COMPLETE'), '$.aiChapterBackfillGenerationId', '$.aiGenerationId'), ${metadata})`;
 }
 
 function buildGeneratedMetadataUpdate(

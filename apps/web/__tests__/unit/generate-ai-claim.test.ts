@@ -324,7 +324,7 @@ describe("AI generation claim fencing", () => {
 		["SKIPPED", null],
 		["ERROR", SHORT_VTT],
 	] as const)(
-		"removes a matching marker when the workflow reaches %s",
+		"restores retryable legacy provenance when a backfill reaches %s",
 		async (terminal, transcript) => {
 			prepare({
 				metadata: {
@@ -349,6 +349,10 @@ describe("AI generation claim fencing", () => {
 			expect(JSON.stringify(state.updates.at(-1))).toContain(
 				"$.aiChapterBackfillGenerationId",
 			);
+			expect(JSON.stringify(state.updates.at(-1))).toContain(
+				"$.aiGenerationId",
+			);
+			expect(JSON.stringify(state.updates.at(-1))).toContain("COMPLETE");
 		},
 	);
 
