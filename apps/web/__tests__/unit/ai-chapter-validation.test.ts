@@ -50,6 +50,25 @@ describe("AI chapter validation", () => {
 		).toThrow("strictly increasing");
 	});
 
+	it("sorts valid generated chapters before timestamp validation", () => {
+		expect(
+			validateGeneratedChapters(
+				[
+					{ title: "Second", start: 60 },
+					{ title: "Opening", start: 0 },
+				],
+				120,
+				[
+					{ start: 0, text: "Opening cue" },
+					{ start: 60, text: "Second cue" },
+				],
+			),
+		).toEqual([
+			{ title: "Opening", start: 0 },
+			{ title: "Second", start: 60 },
+		]);
+	});
+
 	it("uses the existing minimum-gap clamp deterministically for near duplicates", () => {
 		expect(
 			clampChapters(
