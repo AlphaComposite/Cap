@@ -43,9 +43,12 @@ async function main() {
 	);
 }
 
-main().catch(() => {
-	console.error(
-		JSON.stringify({ status: "fatal", reason: "backfill-command-failed" }),
-	);
-	process.exitCode = 1;
-});
+main().then(
+	() => process.exit(0),
+	() => {
+		console.error(
+			JSON.stringify({ status: "fatal", reason: "backfill-command-failed" }),
+		);
+		process.exit(1);
+	},
+);
