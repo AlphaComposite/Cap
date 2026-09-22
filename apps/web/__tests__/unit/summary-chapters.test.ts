@@ -87,6 +87,40 @@ describe("SummaryChapters", () => {
 		expect(handleSeek).toHaveBeenCalledWith(65);
 	});
 
+	it("makes only the blue timestamp clickable and keeps the title plain", async () => {
+		const handleSeek = vi.fn();
+		await render({ handleSeek });
+
+		const chapters = container.querySelector('[data-testid="public-chapters"]');
+		const buttons = Array.from(chapters?.querySelectorAll("button") ?? []);
+		expect(buttons).toHaveLength(2);
+		expect(buttons.map((button) => button.textContent)).toEqual([
+			"00:05",
+			"01:05",
+		]);
+		expect(buttons[0]?.className).toContain("text-blue");
+		expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Seek to 00:05",
+			"Seek to 01:05",
+		]);
+		expect(
+			buttons.every(
+				(button) => button.closest("[data-testid=chapter-title]") === null,
+			),
+		).toBe(true);
+		const title = chapters?.querySelector('[data-testid="chapter-title"]');
+		expect(title?.tagName).toBe("SPAN");
+		expect(title?.closest("button")).toBeNull();
+		expect(title?.className).not.toContain("font-medium");
+
+		await act(async () =>
+			title?.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+		);
+		expect(handleSeek).not.toHaveBeenCalled();
+		await act(async () => buttons[0]?.click());
+		expect(handleSeek).toHaveBeenCalledWith(5);
+	});
+
 	it("uses a flat readable layout with Summary before Chapters", async () => {
 		await render();
 
@@ -101,6 +135,12 @@ describe("SummaryChapters", () => {
 		expect(layout?.className).not.toContain("bg-white");
 		expect(summary?.querySelector("h2")?.textContent).toBe("Summary");
 		expect(chapters?.querySelector("h2")?.textContent).toBe("Chapters");
+		expect(chapters?.querySelector("h2")?.className).toContain("mb-2");
+		expect(
+			Array.from(chapters?.querySelectorAll("div") ?? []).some((element) =>
+				element.className.includes("space-y-1.5"),
+			),
+		).toBe(true);
 		if (!chapters) throw new Error("Missing public chapters section");
 		expect(
 			Boolean(

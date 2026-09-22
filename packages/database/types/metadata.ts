@@ -89,6 +89,15 @@ export interface VideoMetadata {
 		| "ERROR"
 		| "SKIPPED";
 	/**
+	 * Unique claim for the currently queued or running AI generation.
+	 */
+	aiGenerationId?: string;
+	/**
+	 * Generation-scoped request to replace a known legacy automatic chapter.
+	 * It is removed whenever that generation reaches a terminal state.
+	 */
+	aiChapterBackfillGenerationId?: string;
+	/**
 	 * Progress of the provisional live transcription that runs while an
 	 * instant-mode recording is still uploading. The transcript content lives
 	 * in `transcription.live.json` next to the video; this only gates UI/queue

@@ -25,8 +25,9 @@ export async function GET(request: Request) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 
-	const [summary, stalledPipeline, expiredBudgetsDeleted] = await Promise.all([
-		recoverFailedVideoProcessing(),
+	// Finalize expired claims before the stalled scan inspects the same rows.
+	const summary = await recoverFailedVideoProcessing();
+	const [stalledPipeline, expiredBudgetsDeleted] = await Promise.all([
 		recoverStalledVideoPipeline(),
 		cleanupExpiredMediaProcessingBudgets().catch((error: unknown) => {
 			console.error("Processing budget cleanup failed", error);

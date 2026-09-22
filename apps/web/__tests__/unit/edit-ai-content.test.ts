@@ -165,6 +165,8 @@ describe("editing AI content", () => {
 			},
 		});
 		expect(writeSql).toContain("CAST(? AS JSON)");
+		expect(writeSql).toContain("JSON_REMOVE");
+		expect(writeSql).toContain("$.aiChapterBackfillGenerationId");
 		expect(writeSql).not.toContain("summaryManuallyEdited");
 		expect(writeParams).toContain('[{"title":"Changed","start":20}]');
 	});
@@ -181,17 +183,37 @@ describe("editing AI content", () => {
 		expect(mocks.write).not.toHaveBeenCalled();
 	});
 	it.each(["QUEUED", "PROCESSING"])(
-		"rejects edits while %s",
+		"allows summary-only edits while %s",
 		async (status) => {
 			metadata.aiGenerationStatus = status;
-			expect(
-				(
-					await editAiContent(videoId, {
-						expected,
-						value: { ...expected, summary: "Edited" },
-					})
-				).success,
-			).toBe(false);
+			const result = await editAiContent(videoId, {
+				expected,
+				value: { ...expected, summary: "Edited while chapters generate" },
+			});
+			expect(result).toEqual({
+				success: true,
+				data: { ...expected, summary: "Edited while chapters generate" },
+			});
+			expect(writeSql).toContain("summaryManuallyEdited");
+		},
+	);
+	it.each(["QUEUED", "PROCESSING"])(
+		"rejects chapter edits while %s with chapter-generation copy",
+		async (status) => {
+			metadata.aiGenerationStatus = status;
+			const result = await editAiContent(videoId, {
+				expected,
+				value: {
+					...expected,
+					chapters: [{ title: "Edited chapter", start: 10 }],
+				},
+			});
+
+			expect(result).toEqual({
+				success: false,
+				message:
+					"Wait for chapter generation to finish before editing chapters.",
+			});
 			expect(mocks.write).not.toHaveBeenCalled();
 		},
 	);
@@ -226,6 +248,8 @@ describe("editing AI content", () => {
 		).toEqual({ success: true, data: { summary: "", chapters: [] } });
 		expect(writeSql).toContain("summaryManuallyEdited");
 		expect(writeSql).toContain("chaptersManuallyEdited");
+		expect(writeSql).toContain("JSON_REMOVE");
+		expect(writeSql).toContain("$.aiChapterBackfillGenerationId");
 	});
 	it("reports storage failures without pretending the draft was saved", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
@@ -243,23 +267,26 @@ describe("editing AI content", () => {
 });
 
 describe("generation preserves manual content", () => {
-	it.each(["summary", "chapters"] as const)(
-		"never overwrites manually edited %s even when the content key is absent",
-		(field) => {
-			const query = new MySqlDialect().sqlToQuery(
-				setGeneratedAiContent(
-					sql`JSON_OBJECT()`,
-					field,
-					field === "summary" ? "Generated" : [],
-				),
-			);
-			expect(query.sql).not.toContain("JSON_CONTAINS_PATH");
-			expect(query.sql).toContain("IF(");
-			expect(query.params).toContain(`$.${field}ManuallyEdited`);
-			expect(
-				query.params.filter((parameter) => parameter === `$.${field}`),
-			).toHaveLength(1);
-			expect(query.sql).toContain("CAST('false' AS JSON)");
-		},
-	);
+	it("rejects generated summary metadata instead of offering a summary write path", () => {
+		expect(() =>
+			setGeneratedAiContent(
+				sql`JSON_OBJECT()`,
+				"summary" as never,
+				"Generated" as never,
+			),
+		).toThrow("Generated AI content only supports chapters");
+	});
+
+	it("never overwrites manually edited chapters even when the content key is absent", () => {
+		const query = new MySqlDialect().sqlToQuery(
+			setGeneratedAiContent(sql`JSON_OBJECT()`, "chapters", []),
+		);
+		expect(query.sql).not.toContain("JSON_CONTAINS_PATH");
+		expect(query.sql).toContain("IF(");
+		expect(query.params).toContain("$.chaptersManuallyEdited");
+		expect(
+			query.params.filter((parameter) => parameter === "$.chapters"),
+		).toHaveLength(1);
+		expect(query.sql).toContain("CAST('false' AS JSON)");
+	});
 });

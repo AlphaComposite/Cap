@@ -80,14 +80,20 @@ export async function editAiContent(
 				};
 			}
 			const metadata = video.metadata ?? {};
-			if (
-				video.transcriptionStatus === "PROCESSING" ||
-				metadata.aiGenerationStatus === "QUEUED" ||
-				metadata.aiGenerationStatus === "PROCESSING"
-			) {
+			if (video.transcriptionStatus === "PROCESSING") {
 				return {
 					success: false,
-					message: "Wait for AI generation to finish before editing.",
+					message: "Wait for transcription to finish before editing.",
+				};
+			}
+			const generationBusy =
+				metadata.aiGenerationStatus === "QUEUED" ||
+				metadata.aiGenerationStatus === "PROCESSING";
+			if (generationBusy && chaptersChanged) {
+				return {
+					success: false,
+					message:
+						"Wait for chapter generation to finish before editing chapters.",
 				};
 			}
 			const current = {
@@ -115,7 +121,7 @@ export async function editAiContent(
 				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.summary', ${next.summary}, '$.summaryManuallyEdited', CAST('true' AS JSON))`;
 			}
 			if (chaptersChanged) {
-				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.chapters', CAST(${JSON.stringify(next.chapters)} AS JSON), '$.chaptersManuallyEdited', CAST('true' AS JSON))`;
+				updatedMetadata = sql`JSON_REMOVE(JSON_SET(${updatedMetadata}, '$.chapters', CAST(${JSON.stringify(next.chapters)} AS JSON), '$.chaptersManuallyEdited', CAST('true' AS JSON)), '$.aiChapterBackfillGenerationId')`;
 			}
 			if (summaryChanged || chaptersChanged) {
 				await tx

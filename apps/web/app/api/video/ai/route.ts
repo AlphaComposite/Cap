@@ -7,6 +7,7 @@ import { Policy, type Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Exit } from "effect";
 import type { NextRequest } from "next/server";
+import { hasValidChapterState } from "@/lib/ai-chapter-state";
 import { startAiGeneration } from "@/lib/generate-ai";
 import * as EffectRuntime from "@/lib/server";
 import { isAiGenerationEnabled } from "@/utils/flags";
@@ -56,7 +57,13 @@ export async function GET(request: NextRequest) {
 		const video = result[0];
 		const metadata: VideoMetadata = (video.metadata as VideoMetadata) || {};
 
-		if (metadata.summary || metadata.chapters) {
+		if (
+			hasValidChapterState(
+				metadata.chapters,
+				video.duration,
+				metadata.chaptersManuallyEdited,
+			)
+		) {
 			console.log(
 				`[AI API] Returning existing AI metadata for video ${videoId}`,
 			);
@@ -90,8 +97,15 @@ export async function GET(request: NextRequest) {
 		}
 
 		const canRetry =
+			!metadata.aiGenerationStatus ||
 			metadata.aiGenerationStatus === "ERROR" ||
-			metadata.aiGenerationStatus === "SKIPPED";
+			metadata.aiGenerationStatus === "SKIPPED" ||
+			(metadata.aiGenerationStatus === "COMPLETE" &&
+				!hasValidChapterState(
+					metadata.chapters,
+					video.duration,
+					metadata.chaptersManuallyEdited,
+				));
 
 		if (!canRetry) {
 			return Response.json(

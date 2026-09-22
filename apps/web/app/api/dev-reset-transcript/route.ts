@@ -75,9 +75,11 @@ export async function POST(request: NextRequest) {
 	const metadata = {
 		...((video.metadata as Record<string, unknown> | null) ?? {}),
 	};
-	delete metadata.summary;
-	delete metadata.chapters;
+	if (metadata.summaryManuallyEdited !== true) delete metadata.summary;
+	if (metadata.chaptersManuallyEdited !== true) delete metadata.chapters;
 	delete metadata.aiGenerationStatus;
+	delete metadata.aiGenerationId;
+	delete metadata.aiChapterBackfillGenerationId;
 	delete metadata.editTranscriptBackfill;
 
 	await db()

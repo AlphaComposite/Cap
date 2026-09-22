@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { db } from "@cap/database";
 import {
 	importedVideos,
@@ -16,14 +17,21 @@ import {
 	inArray,
 	isNotNull,
 	isNull,
+	lt,
 	lte,
 	or,
 	sql,
 } from "drizzle-orm";
 import { start } from "workflow/api";
+import { hasValidChapterState } from "@/lib/ai-chapter-state";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
 import { startAiGeneration } from "@/lib/generate-ai";
 import { transcribeVideo } from "@/lib/transcribe";
+import {
+	VIDEO_PROCESSING_RECOVERY_CLAIM_LEASE_MS,
+	VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+} from "@/lib/video-processing-recovery";
+import { WORKFLOW_UPGRADE_ERROR_FRAGMENT } from "@/lib/workflow-recovery";
 import { importLoomVideoWorkflow } from "@/workflows/import-loom-video";
 import { processVideoWorkflow } from "@/workflows/process-video";
 
@@ -134,14 +142,30 @@ type MediaCandidate = {
 
 async function recoverMediaCandidate(
 	candidate: MediaCandidate,
+	now: Date,
 ): Promise<PipelineRecoveryStatus> {
+	const recoveryClaimId = candidate.loomVideoId ? undefined : randomUUID();
 	const claimResult = await db()
 		.update(videoUploads)
 		.set({
+			...(recoveryClaimId
+				? {
+						phase: "error" as const,
+						recoveryAttemptCount: sql`${videoUploads.recoveryAttemptCount} + 1`,
+						recoveryClaimId,
+						recoveryLeaseExpiresAt: new Date(
+							now.getTime() + VIDEO_PROCESSING_RECOVERY_CLAIM_LEASE_MS,
+						),
+					}
+				: {}),
 			processingProgress: 0,
-			processingMessage: "Restarting video processing",
-			processingError: null,
-			updatedAt: new Date(),
+			processingMessage: recoveryClaimId
+				? "Processing recovery will retry automatically"
+				: "Restarting video processing",
+			processingError: recoveryClaimId
+				? `${WORKFLOW_UPGRADE_ERROR_FRAGMENT}; stalled pipeline recovery requested`
+				: null,
+			updatedAt: now,
 		})
 		.where(
 			and(
@@ -151,6 +175,14 @@ async function recoverMediaCandidate(
 				eq(videoUploads.processingMessage, candidate.processingMessage),
 				eq(videoUploads.rawFileKey, candidate.rawFileKey),
 				eq(videoUploads.updatedAt, candidate.updatedAt),
+				lt(
+					videoUploads.recoveryAttemptCount,
+					VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+				),
+				or(
+					isNull(videoUploads.recoveryClaimId),
+					lte(videoUploads.recoveryLeaseExpiresAt, now),
+				),
 			),
 		);
 
@@ -175,22 +207,35 @@ async function recoverMediaCandidate(
 					userId: candidate.userId,
 					rawFileKey: candidate.rawFileKey,
 					bucketId: candidate.bucketId,
+					recoveryClaimId,
 				},
 			]);
 		}
 
 		return "started";
-	} catch {
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
 		await db()
 			.update(videoUploads)
 			.set({
 				processingMessage: "Processing recovery will retry automatically",
-				updatedAt: new Date(),
+				...(recoveryClaimId
+					? {
+							processingError: `${WORKFLOW_UPGRADE_ERROR_FRAGMENT}; recovery start failed: ${message}`,
+						}
+					: {}),
+				updatedAt: now,
 			})
 			.where(
 				and(
 					eq(videoUploads.videoId, candidate.videoId),
-					eq(videoUploads.phase, "processing"),
+					eq(videoUploads.phase, recoveryClaimId ? "error" : "processing"),
+					...(recoveryClaimId
+						? [
+								eq(videoUploads.rawFileKey, candidate.rawFileKey),
+								eq(videoUploads.recoveryClaimId, recoveryClaimId),
+							]
+						: []),
 				),
 			);
 		return "retry-scheduled";
@@ -240,6 +285,7 @@ type AiCandidate = {
 	videoId: Video.VideoId;
 	userId: string;
 	metadata: VideoMetadata | null;
+	duration: number | null;
 	updatedAt: Date;
 	stripeSubscriptionStatus: string | null;
 	thirdPartyStripeSubscriptionId: string | null;
@@ -324,6 +370,14 @@ export async function recoverStalledVideoPipeline({
 				isNotNull(videoUploads.rawFileKey),
 				lte(videoUploads.updatedAt, staleBefore),
 				gte(videoUploads.startedAt, recentBefore),
+				lt(
+					videoUploads.recoveryAttemptCount,
+					VIDEO_PROCESSING_RECOVERY_MAX_ATTEMPTS,
+				),
+				or(
+					isNull(videoUploads.recoveryClaimId),
+					lte(videoUploads.recoveryLeaseExpiresAt, now),
+				),
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.source}, '$.type')) = 'webMP4'`,
 			),
 		)
@@ -364,6 +418,7 @@ export async function recoverStalledVideoPipeline({
 				videoId: videos.id,
 				userId: videos.ownerId,
 				metadata: videos.metadata,
+				duration: videos.duration,
 				updatedAt: videos.updatedAt,
 				stripeSubscriptionStatus: users.stripeSubscriptionStatus,
 				thirdPartyStripeSubscriptionId: users.thirdPartyStripeSubscriptionId,
@@ -384,23 +439,30 @@ export async function recoverStalledVideoPipeline({
 						),
 						inArray(
 							sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus'))`,
-							["QUEUED", "PROCESSING"],
+							["QUEUED", "PROCESSING", "COMPLETE"],
 						),
 					),
-					sql`(${videos.metadata} IS NULL OR JSON_EXTRACT(${videos.metadata}, '$.summary') IS NULL OR JSON_EXTRACT(${videos.metadata}, '$.chapters') IS NULL)`,
 				),
 			)
 			.orderBy(asc(videos.updatedAt))
 			.limit(aiScanLimit)
 	)
 		.filter(isAiGenerationEnabledForUser)
+		.filter(
+			(candidate) =>
+				!hasValidChapterState(
+					candidate.metadata?.chapters,
+					candidate.duration,
+					candidate.metadata?.chaptersManuallyEdited,
+				),
+		)
 		.slice(0, aiLimit) as AiCandidate[];
 
 	const [media, transcription, ai] = await Promise.all([
 		recoverConcurrently(
 			mediaCandidates as MediaCandidate[],
 			concurrency,
-			recoverMediaCandidate,
+			(candidate) => recoverMediaCandidate(candidate, now),
 		),
 		recoverConcurrently(
 			transcriptionCandidates as TranscriptionCandidate[],

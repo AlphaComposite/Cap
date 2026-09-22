@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	eq: vi.fn((field: unknown, value: unknown) => ({ field, value })),
 	getAccessForVideo: vi.fn(),
 	getCurrentUser: vi.fn(),
+	runPromise: vi.fn(),
 	where: vi.fn(),
 }));
 
@@ -45,7 +46,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 vi.mock("@/lib/server", () => ({
-	runPromise: vi.fn(),
+	runPromise: mocks.runPromise,
 }));
 
 vi.mock("@/lib/video-storage", () => ({
@@ -63,6 +64,9 @@ beforeEach(() => {
 		}),
 	});
 	mocks.where.mockResolvedValue([]);
+	mocks.runPromise.mockImplementation((effect: { value: unknown }) =>
+		Promise.resolve(effect.value),
+	);
 });
 
 describe("development transcript reset", () => {
@@ -120,5 +124,68 @@ describe("development transcript reset", () => {
 			{ field: schema.videos.ownerId, value: "owner-1" },
 		);
 		expect(mocks.getAccessForVideo).not.toHaveBeenCalled();
+	});
+
+	it("preserves manually edited summary and chapters while resetting generated state", async () => {
+		mocks.getCurrentUser.mockResolvedValue({ id: "owner-1" });
+		const video = {
+			id: "video-1",
+			ownerId: "owner-1",
+			metadata: {
+				summary: "Keep my summary",
+				summaryManuallyEdited: true,
+				chapters: [{ title: "Keep my chapter", start: 2 }],
+				chaptersManuallyEdited: true,
+				aiGenerationStatus: "COMPLETE",
+				aiGenerationId: "old-generation",
+				aiChapterBackfillGenerationId: "old-generation",
+			},
+			source: { type: "desktopMP4" },
+		};
+		const bucket = {
+			bucketName: "test-bucket",
+			listObjects: vi.fn(() => ({
+				pipe: (runner: (effect: { value: unknown }) => unknown) =>
+					runner({ value: { Contents: [] } }),
+			})),
+		};
+		mocks.where.mockResolvedValueOnce([video]).mockResolvedValueOnce([]);
+		mocks.getAccessForVideo.mockReturnValue({
+			pipe: (runner: (effect: { value: unknown }) => unknown) =>
+				runner({ value: [bucket] }),
+		});
+		const updateWhere = vi.fn().mockResolvedValue([]);
+		const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+		const deleteWhere = vi.fn().mockResolvedValue([]);
+		mocks.db.mockReturnValue({
+			select: () => ({ from: () => ({ where: mocks.where }) }),
+			update: () => ({ set: updateSet }),
+			delete: () => ({ where: deleteWhere }),
+		});
+
+		const { POST } = await import("@/app/api/dev-reset-transcript/route");
+		const request = new NextRequest(
+			"http://localhost:3000/api/dev-reset-transcript?videoId=video-1",
+			{
+				method: "POST",
+				headers: { origin: "http://localhost:3000" },
+			},
+		);
+
+		const response = await POST(request);
+
+		expect(response.status).toBe(200);
+		expect(updateSet).toHaveBeenCalledWith({
+			transcriptionStatus: null,
+			metadata: {
+				summary: "Keep my summary",
+				summaryManuallyEdited: true,
+				chapters: [{ title: "Keep my chapter", start: 2 }],
+				chaptersManuallyEdited: true,
+			},
+		});
+		expect(updateSet.mock.calls[0]?.[0].metadata).not.toHaveProperty(
+			"aiChapterBackfillGenerationId",
+		);
 	});
 });

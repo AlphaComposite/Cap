@@ -6,7 +6,6 @@ import {
 	organizations,
 	spaces,
 	spaceVideos,
-	users,
 	videos,
 	videoUploads,
 } from "@cap/database/schema";
@@ -20,16 +19,13 @@ import {
 import { Policy, type Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Exit } from "effect";
-import { isAiConfigured } from "@/lib/ai/provider";
 import {
 	isRetryableDesktopSegmentsFinalizationError,
 	queueDesktopSegmentsFinalization,
 } from "@/lib/desktop-segments-finalization";
-import { startAiGeneration } from "@/lib/generate-ai";
 import * as EffectRuntime from "@/lib/server";
 import { filterAiDataForViewer } from "@/lib/server-ai-data-visibility";
 import { transcribeVideo } from "../../lib/transcribe";
-import { isAiGenerationEnabled } from "../../utils/flags";
 
 type TranscriptionStatus =
 	| "PROCESSING"
@@ -187,54 +183,6 @@ export async function getVideoStatus(
 			chapters: aiData.chapters,
 			error: "Transcription failed",
 		};
-	}
-
-	const shouldTriggerAiGeneration =
-		video.transcriptionStatus === "COMPLETE" &&
-		!metadata.aiGenerationStatus &&
-		!metadata.summary &&
-		isAiConfigured();
-
-	if (shouldTriggerAiGeneration) {
-		try {
-			const ownerQuery = await db()
-				.select({
-					email: users.email,
-					stripeSubscriptionStatus: users.stripeSubscriptionStatus,
-					thirdPartyStripeSubscriptionId: users.thirdPartyStripeSubscriptionId,
-				})
-				.from(users)
-				.where(eq(users.id, video.ownerId))
-				.limit(1);
-
-			const owner = ownerQuery[0];
-			if (owner && (await isAiGenerationEnabled(owner))) {
-				console.log(
-					`[Get Status] AI generation not started for video ${videoId}, triggering generation`,
-				);
-				startAiGeneration(videoId, video.ownerId).catch((error) => {
-					console.error(
-						`[Get Status] Error starting AI generation for video ${videoId}:`,
-						error,
-					);
-				});
-
-				return {
-					transcriptionStatus:
-						(video.transcriptionStatus as TranscriptionStatus) || null,
-					aiGenerationStatus: "QUEUED" as AiGenerationStatus,
-					name: video.name,
-					aiTitle: aiData.title,
-					summary: aiData.summary,
-					chapters: aiData.chapters,
-				};
-			}
-		} catch (error) {
-			console.error(
-				`[Get Status] Error checking AI generation eligibility for video ${videoId}:`,
-				error,
-			);
-		}
 	}
 
 	return {

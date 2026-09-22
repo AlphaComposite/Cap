@@ -5,11 +5,9 @@ import type { VideoMetadata } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { hasValidChapterState } from "@/lib/ai-chapter-state";
 import { startAiGeneration } from "@/lib/generate-ai";
 import { isAiGenerationEnabled } from "@/utils/flags";
-
-const LEGACY_AI_SUMMARY_FALLBACK =
-	"The AI was unable to generate a proper summary for this content.";
 
 export async function POST(
 	_request: Request,
@@ -58,7 +56,11 @@ export async function POST(
 			metadata.aiGenerationStatus === "ERROR" ||
 			metadata.aiGenerationStatus === "SKIPPED" ||
 			(metadata.aiGenerationStatus === "COMPLETE" &&
-				metadata.summary === LEGACY_AI_SUMMARY_FALLBACK);
+				!hasValidChapterState(
+					metadata.chapters,
+					video.duration,
+					metadata.chaptersManuallyEdited,
+				));
 
 		if (!canRetry) {
 			return Response.json(

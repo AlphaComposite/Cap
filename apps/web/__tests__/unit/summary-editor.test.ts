@@ -442,18 +442,41 @@ describe("summary permissions", () => {
 		expect(container.textContent).toBe("");
 	});
 
-	it.each([
-		{ isOwner: false },
-		{ ownerIsPro: false },
-		{
-			initialAiData: {
-				...initialContent,
-				aiGenerationStatus: "PROCESSING" as const,
-			},
+	it.each([{ isOwner: false }, { ownerIsPro: false }])(
+		"does not expose editing when unavailable",
+		async (overrides) => {
+			await render(createElement(Summary, { ...props, ...overrides }));
+			expect(container.querySelector("textarea")).toBeNull();
 		},
-	])("does not expose editing when unavailable", async (overrides) => {
-		await render(createElement(Summary, { ...props, ...overrides }));
-		expect(container.querySelector("textarea")).toBeNull();
+	);
+
+	it("keeps the manual summary editor available while chapters generate", async () => {
+		await render(
+			createElement(Summary, {
+				...props,
+				initialAiData: {
+					...initialContent,
+					aiGenerationStatus: "PROCESSING",
+				},
+			}),
+		);
+		expect(summary().value).toBe(initialContent.summary);
+	});
+
+	it("uses chapter-generation copy for an unavailable automatic result", async () => {
+		await render(
+			createElement(Summary, {
+				...props,
+				isOwner: false,
+				initialAiData: {
+					summary: null,
+					chapters: [],
+					aiGenerationStatus: "ERROR",
+				},
+			}),
+		);
+		expect(container.textContent).toContain("automatic chapters");
+		expect(container.textContent).not.toContain("AI summary");
 	});
 
 	it("keeps viewer chapter controls keyboard accessible", async () => {

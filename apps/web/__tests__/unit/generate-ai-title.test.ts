@@ -34,8 +34,8 @@ vi.mock("workflow", () => ({
 
 vi.mock("server-only", () => ({}));
 
+import { clampChapters } from "@/lib/ai-chapter-validation";
 import {
-	clampChapters,
 	getAiContentGuidelines,
 	getAiLanguageInstruction,
 	parseAiResponse,
@@ -43,6 +43,17 @@ import {
 } from "@/workflows/generate-ai";
 
 describe("parseAiResponse", () => {
+	it("parses a single-chunk title and chapters without a summary", () => {
+		expect(
+			parseAiResponse(
+				'{"title":"Workflow review","chapters":[{"title":"Opening","start":0}]}',
+			),
+		).toEqual({
+			title: "Workflow review",
+			chapters: [{ title: "Opening", start: 0 }],
+		});
+	});
+
 	it("parses JSON wrapped in model prose", () => {
 		expect(
 			parseAiResponse(
@@ -50,7 +61,6 @@ describe("parseAiResponse", () => {
 			),
 		).toEqual({
 			title: "Workflow review",
-			summary: "I explain the workflow.",
 			chapters: [],
 		});
 	});
@@ -62,9 +72,12 @@ describe("parseAiResponse", () => {
 		).toThrow();
 	});
 
-	it("rejects empty required fields instead of inventing fallbacks", () => {
+	it("rejects malformed chapter output instead of inventing fallbacks", () => {
+		expect(() => parseAiResponse('{"title":"","chapters":[]}')).toThrow();
 		expect(() =>
-			parseAiResponse('{"title":"Generated Title","summary":"","chapters":[]}'),
+			parseAiResponse(
+				'{"title":"Generated Title","chapters":[{"title":"","start":0}]}',
+			),
 		).toThrow();
 	});
 });
@@ -228,8 +241,9 @@ describe("getAiContentGuidelines", () => {
 		);
 	});
 
-	it("omits chapters for videos shorter than two minutes", () => {
-		expect(getAiContentGuidelines(119).chapters).toContain(
+	it("asks short clips for an opening chapter when speech exists", () => {
+		expect(getAiContentGuidelines(119).chapters).toContain("opening chapter");
+		expect(getAiContentGuidelines(119).chapters).not.toContain(
 			'empty "chapters" array',
 		);
 		expect(getAiContentGuidelines(120).chapters).toContain(
@@ -256,5 +270,11 @@ describe("getAiContentGuidelines", () => {
 				33 * 60,
 			),
 		).toHaveLength(4);
+	});
+
+	it("does not fabricate an opening chapter from an out-of-duration candidate", () => {
+		expect(
+			clampChapters([{ title: "After the video", start: 120 }], 120),
+		).toEqual([]);
 	});
 });

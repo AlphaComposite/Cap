@@ -1456,8 +1456,18 @@ export const videoUploads = mysqlTable(
 		processingMessage: varchar("processing_message", { length: 255 }),
 		processingError: text("processing_error"),
 		rawFileKey: varchar("raw_file_key", { length: 512 }),
+		recoveryAttemptCount: int("recovery_attempt_count").notNull().default(0),
+		recoveryClaimId: varchar("recovery_claim_id", { length: 64 }),
+		recoveryLeaseExpiresAt: datetime("recovery_lease_expires_at", { fsp: 3 }),
 	},
 	(table) => [
+		index("phase_recovery_lease_updated_video_idx").on(
+			table.phase,
+			table.recoveryAttemptCount,
+			table.recoveryLeaseExpiresAt,
+			table.updatedAt,
+			table.videoId,
+		),
 		index("phase_updated_at_video_id_idx").on(
 			table.phase,
 			table.updatedAt,

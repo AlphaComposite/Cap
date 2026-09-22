@@ -2,3 +2,15 @@ target
 crates
 **/node_modules
 **/.next
+.git
+.github
+.hermes
+.beads
+.env
+.env.*
+!.env.example
+!.env.*.example
+cap-ai.env.template
+apps/web/.well-known
+**/RECOVERY*.md
+**/SESSION*.md
