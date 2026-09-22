@@ -73,11 +73,11 @@ describe("AI chapter validation", () => {
 		]);
 	});
 
-	it("aligns a zero-second opening to the first delayed speech cue", () => {
+	it("aligns an approximate opening to the first delayed speech cue", () => {
 		expect(
 			validateGeneratedChapters(
 				[
-					{ title: "Opening", start: 0 },
+					{ title: "Opening", start: 3.18 },
 					{ title: "Main topic", start: 60 },
 				],
 				120,

@@ -20,6 +20,30 @@ export class InvalidChapterTimestampError extends Error {
 	}
 }
 
+export function snapChapterStartsToTranscriptCues(
+	chapters: readonly GeneratedChapter[],
+	transcriptCues: readonly ChapterTranscriptEvidence[],
+): GeneratedChapter[] {
+	return chapters.map((chapter, index) => {
+		const nearest = transcriptCues.reduce<ChapterTranscriptEvidence | null>(
+			(best, cue) =>
+				!best ||
+				Math.abs(cue.start - chapter.start) <
+					Math.abs(best.start - chapter.start)
+					? cue
+					: best,
+			null,
+		);
+		if (!nearest) return chapter;
+		const difference = Math.abs(nearest.start - chapter.start);
+		if (difference <= CHAPTER_START_TOLERANCE_SECONDS) return chapter;
+		const snapLimit = index === 0 && chapter.start <= 30 ? 30 : 5;
+		return difference <= snapLimit
+			? { ...chapter, start: nearest.start }
+			: chapter;
+	});
+}
+
 export function validateChapterOrder(
 	chapters: readonly GeneratedChapter[],
 ): void {
@@ -135,13 +159,6 @@ export function validateGeneratedChapters(
 		}
 		return { title: chapter.title.trim(), start: chapter.start };
 	});
-	parsed.sort((a, b) => a.start - b.start);
-	const uniqueStarts = parsed.filter(
-		(chapter, index, sorted) =>
-			index === 0 || chapter.start !== sorted[index - 1]?.start,
-	);
-
-	validateChapterOrder(uniqueStarts);
 
 	const meaningfulSegments = transcriptSegments
 		.filter(
@@ -159,6 +176,13 @@ export function validateGeneratedChapters(
 		if (parsed.length === 0) return [];
 		throw new Error("AI chapters cannot be validated without transcript cues");
 	}
+	const snapped = snapChapterStartsToTranscriptCues(parsed, meaningfulSegments);
+	snapped.sort((a, b) => a.start - b.start);
+	const uniqueStarts = snapped.filter(
+		(chapter, index, sorted) =>
+			index === 0 || chapter.start !== sorted[index - 1]?.start,
+	);
+	validateChapterOrder(uniqueStarts);
 
 	const firstMeaningfulStart = meaningfulSegments[0]?.start;
 	const matchesTranscriptCue = (start: number) =>
