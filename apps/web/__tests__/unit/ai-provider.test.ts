@@ -95,6 +95,22 @@ describe("getConfiguredAiProviders", () => {
 		});
 	});
 
+	it("uses provider defaults when compose supplies blank model overrides", () => {
+		envWith({
+			AI_PROVIDER: "openai",
+			OPENAI_API_KEY: fallbackOpenAiKey,
+			AI_MODEL: "",
+			AI_CHAT_MODEL: "",
+			AI_STREAM_MODEL: "",
+		});
+
+		expect(getAiModel("generation")).toMatchObject({
+			provider: "openai",
+			modelId: "gpt-4o-mini",
+		});
+		expect(isAiConfigured("generation")).toBe(true);
+	});
+
 	it("does not replace a validated provider with an invalid runtime provider", () => {
 		envWith({
 			AI_PROVIDER: "openai",

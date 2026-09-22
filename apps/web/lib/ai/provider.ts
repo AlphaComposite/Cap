@@ -210,14 +210,19 @@ export function isAiConfigured(role: AiModelRole = "generation"): boolean {
 
 function envModelOverride(role: AiModelRole): string | undefined {
 	const env = aiEnv();
+	let model: string | undefined;
 	switch (role) {
 		case "generation":
-			return env.AI_MODEL;
+			model = env.AI_MODEL;
+			break;
 		case "chat":
-			return env.AI_CHAT_MODEL;
+			model = env.AI_CHAT_MODEL;
+			break;
 		case "chat-streaming":
-			return env.AI_STREAM_MODEL;
+			model = env.AI_STREAM_MODEL;
+			break;
 	}
+	return model?.trim() || undefined;
 }
 
 function openAiCompatibleModelId(role: AiModelRole): string | undefined {
