@@ -135,6 +135,7 @@ export function validateGeneratedChapters(
 		}
 		return { title: chapter.title.trim(), start: chapter.start };
 	});
+	parsed.sort((a, b) => a.start - b.start);
 
 	validateChapterOrder(parsed);
 
