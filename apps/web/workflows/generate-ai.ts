@@ -769,17 +769,41 @@ Return ONLY valid JSON without any markdown formatting or code blocks.
 Transcript:
 ${transcriptWithTimestamps}`;
 
-	return callAiApi(prompt, (content) => {
-		const parsed = parseAiResponse(content);
-		return {
-			...parsed,
-			chapters: validateGeneratedChapters(
-				parsed.chapters,
-				videoDuration,
-				segments,
-			),
-		};
-	});
+	const parsed = await callAiApi(prompt, parseAiResponse);
+	let chapters = parsed.chapters ?? [];
+	const minimumChapterCount = getRequiredChapterSynthesisCount(
+		videoDuration,
+		chapters,
+		segments,
+	);
+
+	if (minimumChapterCount > 0) {
+		const chapterCueStarts = getChapterCueStarts(segments, videoDuration);
+		const chapterPrompt = `You are Cap AI, creating navigation chapters from a timestamped transcript for a ${videoDuration}-second video.
+
+Allowed chapter cue starts (seconds): ${chapterCueStarts.join(", ")}
+
+The first analysis returned only a generic opening chapter. Return at least ${minimumChapterCount} distinct, useful chapters that cover supported topic or phase changes across the full recording. Use only the allowed cue starts and do not invent topics.
+
+Provide JSON in this format:
+{
+  "chapters": [{"title": "string (specific descriptive title)", "start": number (seconds from video start)}]
+}
+
+- ${contentGuidelines.chapters}
+- Return ONLY valid JSON without markdown.
+Transcript:
+${transcriptWithTimestamps}`;
+
+		chapters = await callAiApi(chapterPrompt, (text) =>
+			parseChapterSynthesis(text, minimumChapterCount, videoDuration, segments),
+		);
+	}
+
+	return {
+		...parsed,
+		chapters: validateGeneratedChapters(chapters, videoDuration, segments),
+	};
 }
 
 async function generateMultipleChunks(

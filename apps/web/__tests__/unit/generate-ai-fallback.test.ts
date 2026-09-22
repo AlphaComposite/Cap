@@ -350,6 +350,14 @@ describe("useful chapter coverage", () => {
 		).toBe(2);
 	});
 
+	it("recognizes an introduction and background singleton as generic coverage", () => {
+		expect(
+			getMinimumUsefulChapterCount(32 * 60, [
+				{ title: "Introduction and Background", start: 0 },
+			]),
+		).toBe(2);
+	});
+
 	it("does not complete a long transcript with only an injected opening chapter", () => {
 		expect(() =>
 			validateGeneratedChapters([], 32 * 60, [
