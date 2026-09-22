@@ -136,8 +136,12 @@ export function validateGeneratedChapters(
 		return { title: chapter.title.trim(), start: chapter.start };
 	});
 	parsed.sort((a, b) => a.start - b.start);
+	const uniqueStarts = parsed.filter(
+		(chapter, index, sorted) =>
+			index === 0 || chapter.start !== sorted[index - 1]?.start,
+	);
 
-	validateChapterOrder(parsed);
+	validateChapterOrder(uniqueStarts);
 
 	const meaningfulSegments = transcriptSegments
 		.filter(
@@ -163,10 +167,10 @@ export function validateGeneratedChapters(
 				Math.abs(segment.start - start) <= CHAPTER_START_TOLERANCE_SECONDS,
 		);
 
-	let normalized = parsed;
+	let normalized = uniqueStarts;
 	if (
 		firstMeaningfulStart !== undefined &&
-		!parsed.some(
+		!uniqueStarts.some(
 			(chapter) =>
 				Math.abs(chapter.start - firstMeaningfulStart) <=
 				CHAPTER_START_TOLERANCE_SECONDS,
