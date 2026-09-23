@@ -150,6 +150,75 @@ describe("SummaryChapters", () => {
 		).toBe(true);
 	});
 
+	it("shows an empty Summary above Chapters for viewers without editing", async () => {
+		await render({ aiData: { ...aiData, summary: null } });
+		const summary = container.querySelector('[data-testid="public-summary"]');
+		const chapters = container.querySelector('[data-testid="public-chapters"]');
+		expect(summary?.querySelector("h2")?.textContent).toBe("Summary");
+		expect(summary?.textContent).toContain("No summary yet");
+		expect(summary?.querySelector("button")).toBeNull();
+		expect(
+			(summary?.compareDocumentPosition(chapters as Node) ?? 0) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
+	it("shows an empty Summary without chapters", async () => {
+		await render({ aiData: { ...aiData, summary: "", chapters: [] } });
+		expect(
+			container.querySelector('[data-testid="public-summary"]')?.textContent,
+		).toContain("No summary yet");
+		expect(
+			container.querySelector('[data-testid="public-chapters"]'),
+		).toBeNull();
+	});
+
+	it("keeps an empty Summary and owner paste action visible while AI loads", async () => {
+		const onPasteSummary = vi.fn();
+		await render({
+			aiData: { ...aiData, summary: null, chapters: [] },
+			aiLoading: true,
+			isOwner: true,
+			onPasteSummary,
+		});
+		const summary = container.querySelector('[data-testid="public-summary"]');
+		expect(summary?.textContent).toContain("No summary yet");
+		const paste = Array.from(summary?.querySelectorAll("button") ?? []).find(
+			(button) => button.textContent === "Paste a summary",
+		);
+		expect(paste).toBeDefined();
+		await act(async () => paste?.click());
+		expect(onPasteSummary).toHaveBeenCalledOnce();
+	});
+
+	it("offers the owner a paste action that requests the existing editor", async () => {
+		const onPasteSummary = vi.fn();
+		await render({
+			aiData: { ...aiData, summary: null, chapters: [] },
+			isOwner: true,
+			onPasteSummary,
+		});
+		const paste = Array.from(container.querySelectorAll("button")).find(
+			(button) => button.textContent === "Paste a summary",
+		);
+		expect(paste).toBeDefined();
+		await act(async () => paste?.click());
+		expect(onPasteSummary).toHaveBeenCalledOnce();
+	});
+
+	it("hides empty Summary for disabled viewers", async () => {
+		await render({
+			aiData: { ...aiData, summary: null },
+			isSummaryDisabled: true,
+		});
+		expect(
+			container.querySelector('[data-testid="public-summary"]'),
+		).toBeNull();
+		expect(
+			container.querySelector('[data-testid="public-chapters"]'),
+		).not.toBeNull();
+	});
+
 	it("omits explicitly disabled sections even when data is present", async () => {
 		await render({
 			isSummaryDisabled: true,

@@ -42,9 +42,8 @@ import type { VideoData } from "./types";
 const importTimelineView = () => import("./_components/timeline/TimelineView");
 const TimelineView = dynamic(importTimelineView, { ssr: false });
 
-// Carries react-markdown; split out and only rendered once AI data actually
-// exists, so videos without a summary never download it. SSR still renders
-// the summary into the initial HTML when the data is already there.
+// Carries react-markdown; split out so the summary placeholder and chapters
+// can load independently of the player. SSR still renders existing AI data.
 const SummaryChapters = dynamic(() => import("./_components/SummaryChapters"));
 
 /** Whether the viewer last left the comments rail collapsed. */
@@ -703,6 +702,17 @@ export const Share = ({
 		}
 	}, [railCollapsed]);
 
+	const [openSummaryRequest, setOpenSummaryRequest] = useState(0);
+	const openSummaryEditor = () => {
+		setRailCollapsed(false);
+		try {
+			window.localStorage.setItem(RAIL_COLLAPSED_KEY, "false");
+		} catch {
+			/* private mode */
+		}
+		setOpenSummaryRequest((request) => request + 1);
+	};
+
 	return (
 		<CaptionProvider
 			videoId={data.id}
@@ -1068,14 +1078,21 @@ export const Share = ({
 													</div>
 												)}
 
-												{/* Mirrors the component's own empty-state bail-out so the
-												    chunk is never fetched for a video with nothing to show. */}
+												{/* Keep the empty Summary visible for manual paste. */}
 												{!isScreenshot &&
-													!aiLoading &&
-													((!isSummaryDisabled && Boolean(aiData.summary)) ||
+													(!isSummaryDisabled ||
+														viewerIsOwner ||
 														(!areChaptersDisabled &&
 															(aiData.chapters?.length ?? 0) > 0)) && (
 														<SummaryChapters
+															isOwner={viewerIsOwner}
+															onPasteSummary={
+																viewerIsOwner &&
+																data.owner.isPro &&
+																transcriptionStatus !== "PROCESSING"
+																	? openSummaryEditor
+																	: undefined
+															}
 															isSummaryDisabled={isSummaryDisabled}
 															areChaptersDisabled={areChaptersDisabled}
 															handleSeek={handleSeek}
@@ -1132,6 +1149,7 @@ export const Share = ({
 									videoId={data.id}
 									aiData={aiData}
 									aiGenerationEnabled={aiGenerationAvailable}
+									openSummaryRequest={openSummaryRequest}
 									recordingStopped={recordingStopped}
 									canRecordMedia={canRecordMedia}
 									onCollapse={toggleRail}

@@ -103,6 +103,30 @@ const chapterInputs = () => ({
 });
 
 describe("summary autosave editor", () => {
+	it("refocuses only for a new paste request while already mounted", async () => {
+		const editor = (focusRequest: number) =>
+			createElement(SummaryEditor, {
+				videoId,
+				initialContent,
+				duration: 120,
+				focusRequest,
+			});
+		await render(editor(0));
+		const field = summary();
+		const other = document.createElement("button");
+		container.append(other);
+		await act(async () => other.focus());
+		await render(editor(0));
+		expect(document.activeElement).toBe(other);
+		await render(editor(1));
+		expect(document.activeElement).toBe(field);
+		await act(async () => other.focus());
+		await render(editor(1));
+		expect(document.activeElement).toBe(other);
+		await render(editor(2));
+		expect(document.activeElement).toBe(field);
+	});
+
 	it("starts clean with a useful vertically resizable Markdown field", async () => {
 		await render();
 		expect(document.activeElement).toBe(summary());
