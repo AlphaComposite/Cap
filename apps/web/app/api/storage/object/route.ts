@@ -1,4 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
+import { db } from "@cap/database";
+import { videoEdits, videoUploads } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
 import {
 	provideOptionalAuth,
@@ -10,6 +12,7 @@ import {
 import { getRecordingObjectIdentity } from "@cap/web-backend/src/Storage/recording-object-identity";
 import { isInternalRecordingKey } from "@cap/web-backend/src/Storage/recording-output";
 import { Storage as StorageDomain, Video } from "@cap/web-domain";
+import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { NextRequest } from "next/server";
 import { isPrivateEditTranscriptObjectKey } from "@/lib/edit-transcript";
@@ -123,6 +126,37 @@ const getPolicyVideo = (videoId: Video.VideoId) =>
 		return maybeVideo[0];
 	});
 
+/** Never expose pre-edit media bytes through the viewable-object proxy. */
+async function isEditedSourceObject(
+	video: Video.Video,
+	key: string,
+): Promise<boolean> {
+	const [edit] = await db()
+		.select({ sourceKey: videoEdits.sourceKey })
+		.from(videoEdits)
+		.where(eq(videoEdits.videoId, video.id));
+	const pending =
+		Option.isSome(video.metadata) &&
+		Boolean(video.metadata.value.editProcessing);
+	if (!edit && !pending) return false;
+
+	const prefix = `${video.ownerId}/${video.id}/`;
+	if (
+		key === edit?.sourceKey ||
+		key === `${prefix}source/original.mp4` ||
+		key === `${prefix}raw-upload.mp4` ||
+		key === `${prefix}raw-upload.webm` ||
+		key.startsWith(`${prefix}segments/`)
+	)
+		return true;
+
+	const [upload] = await db()
+		.select({ rawFileKey: videoUploads.rawFileKey })
+		.from(videoUploads)
+		.where(eq(videoUploads.videoId, video.id));
+	return Boolean(upload?.rawFileKey && key === upload.rawFileKey);
+}
+
 export async function GET(request: NextRequest) {
 	const internalDownload =
 		request.headers.get("x-cap-internal-download") === "1";
@@ -159,6 +193,12 @@ export async function GET(request: NextRequest) {
 				: yield* getPolicyVideo(videoId);
 
 		if (!key.startsWith(`${video.ownerId}/${video.id}/`)) {
+			return yield* Effect.fail("not-found" as const);
+		}
+		if (
+			!internalDownload &&
+			(yield* Effect.promise(() => isEditedSourceObject(video, key)))
+		) {
 			return yield* Effect.fail("not-found" as const);
 		}
 		if (
