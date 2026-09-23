@@ -192,14 +192,14 @@ export function validateGeneratedChapters(
 		);
 
 	let normalized = uniqueStarts
-		.map((chapter, index) =>
-			index === 0 &&
-			chapter.start === 0 &&
+		.map((chapter) =>
 			firstMeaningfulStart !== undefined &&
-			firstMeaningfulStart > 0
+			chapter.start < firstMeaningfulStart &&
+			firstMeaningfulStart - chapter.start <= 30
 				? { ...chapter, start: firstMeaningfulStart }
 				: chapter,
 		)
+		.sort((a, b) => a.start - b.start)
 		.filter(
 			(chapter, index, chapters) =>
 				index === 0 || chapter.start !== chapters[index - 1]?.start,
