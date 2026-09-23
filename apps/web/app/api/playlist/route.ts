@@ -169,16 +169,36 @@ const getPlaylistResponse = (
 	publicOrigin: string,
 ) =>
 	Effect.gen(function* () {
-		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 		const isMp4Source =
 			video.source.type === "desktopMP4" || video.source.type === "webMP4";
 
 		if (urlParams.videoType === "raw-preview") {
+			if (
+				Option.isSome(video.metadata) &&
+				video.metadata.value.editProcessing
+			) {
+				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
+
+			const db = yield* Database;
+			const [videoEdit] = yield* db.use((db) =>
+				db
+					.select({ videoId: Db.videoEdits.videoId })
+					.from(Db.videoEdits)
+					.where(eq(Db.videoEdits.videoId, video.id)),
+			);
+			if (videoEdit) {
+				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
+
+			const [bucket] = yield* Storage.getAccessForVideo(video);
 			const rawFileKey = yield* resolveRawPreviewKey(video);
 			return yield* bucket
 				.getSignedObjectUrl(rawFileKey)
 				.pipe(Effect.map(HttpServerResponse.redirect));
 		}
+
+		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 
 		if (
 			urlParams.videoType === "segments-master" ||

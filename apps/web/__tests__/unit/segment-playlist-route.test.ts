@@ -7,7 +7,13 @@ const mocks = vi.hoisted(() => ({
 	audioInitExists: false,
 	storageUnavailable: false,
 	denied: false,
+	sourceType: "desktopSegments" as "desktopSegments" | "webMP4",
+	metadata: null as Record<string, unknown> | null,
+	videoEditExists: false,
+	rawFileKey: null as string | null,
+	rawObjectExists: false,
 	sign: vi.fn(),
+	head: vi.fn(),
 	read: vi.fn(),
 	dispose: async () => {},
 }));
@@ -22,6 +28,7 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@cap/web-backend")>();
 	const { Context, Effect, Option } = await import("effect");
 	const { Policy, Storage: StorageDomain } = await import("@cap/web-domain");
+	const schema = await import("@cap/database/schema");
 	const bucket = {
 		getObject: () =>
 			Effect.sync(() => {
@@ -33,6 +40,12 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 				mocks.sign(key);
 				return `https://media.example.com/${key}`;
 			}),
+		headObject: (key: string) => {
+			mocks.head(key);
+			return mocks.rawObjectExists
+				? Effect.succeed({ ContentLength: 764 })
+				: Effect.fail(new Error("Not found"));
+		},
 		listObjects: ({ prefix }: { prefix: string }) =>
 			mocks.storageUnavailable
 				? Effect.fail(
@@ -42,8 +55,28 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 						Contents: mocks.audioInitExists ? [{ Key: prefix, Size: 764 }] : [],
 					}),
 	};
+	const fakeDb = {
+		select: () => ({
+			from: (table: unknown) => ({
+				where: () =>
+					Promise.resolve(
+						table === schema.videoEdits && mocks.videoEditExists
+							? [{ videoId: "recording" }]
+							: table === schema.videoUploads && mocks.rawFileKey
+								? [{ rawFileKey: mocks.rawFileKey }]
+								: [],
+					),
+			}),
+		}),
+	};
 	return {
 		...actual,
+		Database: Object.assign(Context.GenericTag("PlaylistTestDatabase"), {
+			testService: {
+				use: <T>(callback: (db: typeof fakeDb) => Promise<T>) =>
+					Effect.tryPromise(() => callback(fakeDb)),
+			},
+		}),
 		provideOptionalAuth: <A, E, R>(
 			effect: import("effect").Effect.Effect<A, E, R>,
 		) => effect,
@@ -60,7 +93,8 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 									{
 										id: "recording",
 										ownerId: "owner",
-										source: { type: "desktopSegments" },
+										source: { type: mocks.sourceType },
+										metadata: Option.fromNullable(mocks.metadata),
 									},
 								]),
 							),
@@ -70,7 +104,7 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 });
 
 vi.mock("@/lib/server", async () => {
-	const { Storage, Videos } = await import("@cap/web-backend");
+	const { Database, Storage, Videos } = await import("@cap/web-backend");
 	const { HttpApiBuilder, HttpServer } = await import("@effect/platform");
 	const { Layer } = await import("effect");
 	return {
@@ -85,11 +119,15 @@ vi.mock("@/lib/server", async () => {
 			const videos = Videos as unknown as {
 				testService: Context.Tag.Service<typeof Videos>;
 			};
+			const database = Database as unknown as {
+				testService: Context.Tag.Service<typeof Database>;
+			};
 			const handler = api.pipe(
 				Layer.provideMerge(
 					Layer.succeed(Storage, {} as Context.Tag.Service<typeof Storage>),
 				),
 				Layer.provideMerge(Layer.succeed(Videos, videos.testService)),
+				Layer.provideMerge(Layer.succeed(Database, database.testService)),
 				Layer.merge(HttpServer.layerContext),
 				HttpApiBuilder.toWebHandler,
 			);
@@ -108,6 +146,8 @@ const request = (type = "segments-status", suffix = "&requireComplete=1") =>
 		),
 	);
 
+const rawPreviewRequest = () => request("raw-preview", "");
+
 describe("Instant playlist readiness API", () => {
 	beforeEach(() => {
 		mocks.manifest = {
@@ -121,6 +161,14 @@ describe("Instant playlist readiness API", () => {
 		mocks.audioInitExists = false;
 		mocks.storageUnavailable = false;
 		mocks.denied = false;
+		mocks.sourceType = "desktopSegments";
+		mocks.metadata = null;
+		mocks.videoEditExists = false;
+		mocks.rawFileKey = null;
+		mocks.rawObjectExists = false;
+		mocks.sign.mockClear();
+		mocks.head.mockClear();
+		mocks.read.mockClear();
 	});
 	afterAll(() => mocks.dispose());
 
@@ -169,5 +217,44 @@ describe("Instant playlist readiness API", () => {
 		mocks.denied = true;
 		expect((await request()).status).toBe(401);
 		expect(mocks.read).not.toHaveBeenCalled();
+	});
+
+	it("rejects raw previews for videos with a saved edit before using rawFileKey", async () => {
+		mocks.sourceType = "webMP4";
+		mocks.videoEditExists = true;
+		mocks.rawFileKey = "owner/recording/raw-upload.mp4";
+
+		const response = await rawPreviewRequest();
+
+		expect(response.status).toBe(404);
+		expect(mocks.sign).not.toHaveBeenCalled();
+		expect(mocks.head).not.toHaveBeenCalled();
+		expect(await response.text()).not.toContain(mocks.rawFileKey);
+	});
+
+	it("rejects raw previews during a pending edit before probing fallback keys", async () => {
+		mocks.sourceType = "webMP4";
+		mocks.metadata = { editProcessing: { dispatch: "pending" } };
+		mocks.rawObjectExists = true;
+
+		const response = await rawPreviewRequest();
+
+		expect(response.status).toBe(404);
+		expect(mocks.sign).not.toHaveBeenCalled();
+		expect(mocks.head).not.toHaveBeenCalled();
+		expect(await response.text()).not.toContain("raw-upload");
+	});
+
+	it("keeps raw preview access for an unedited webMP4 video", async () => {
+		mocks.sourceType = "webMP4";
+		mocks.rawFileKey = "owner/recording/raw-upload.mp4";
+
+		const response = await rawPreviewRequest();
+
+		expect(response.status).toBe(302);
+		expect(response.headers.get("location")).toBe(
+			"https://media.example.com/owner/recording/raw-upload.mp4",
+		);
+		expect(mocks.sign).toHaveBeenCalledWith(mocks.rawFileKey);
 	});
 });
