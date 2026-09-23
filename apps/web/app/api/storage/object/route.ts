@@ -144,8 +144,7 @@ async function isEditedSourceObject(
 	if (
 		key === edit?.sourceKey ||
 		key === `${prefix}source/original.mp4` ||
-		key === `${prefix}raw-upload.mp4` ||
-		key === `${prefix}raw-upload.webm` ||
+		key.startsWith(`${prefix}raw-upload.`) ||
 		key.startsWith(`${prefix}segments/`)
 	)
 		return true;

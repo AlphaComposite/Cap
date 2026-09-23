@@ -120,6 +120,7 @@ describe("recording verification object reads", () => {
 		"owner/video/source/original.mp4",
 		"owner/video/raw-upload.mp4",
 		"owner/video/raw-upload.webm",
+		"owner/video/raw-upload.mov",
 		"owner/video/segments/video/segment_001.m4s",
 		"owner/video/segments/audio/init.mp4",
 	])("denies edited public source object before storage: %s", async (key) => {
