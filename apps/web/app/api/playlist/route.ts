@@ -122,6 +122,22 @@ const ApiLive = HttpApiBuilder.api(Api).pipe(
 	),
 );
 
+const isVideoEdited = (video: Video.Video) =>
+	Effect.gen(function* () {
+		if (Option.isSome(video.metadata) && video.metadata.value.editProcessing) {
+			return true;
+		}
+
+		const db = yield* Database;
+		const [videoEdit] = yield* db.use((db) =>
+			db
+				.select({ videoId: Db.videoEdits.videoId })
+				.from(Db.videoEdits)
+				.where(eq(Db.videoEdits.videoId, video.id)),
+		);
+		return videoEdit !== undefined;
+	});
+
 const resolveRawPreviewKey = (video: Video.Video) =>
 	Effect.gen(function* () {
 		const db = yield* Database;
@@ -171,26 +187,19 @@ const getPlaylistResponse = (
 	Effect.gen(function* () {
 		const isMp4Source =
 			video.source.type === "desktopMP4" || video.source.type === "webMP4";
+		const isSegmentsRequest =
+			urlParams.videoType === "segments-master" ||
+			urlParams.videoType === "segments-video" ||
+			urlParams.videoType === "segments-audio" ||
+			urlParams.videoType === "segments-status";
+
+		if (urlParams.videoType === "raw-preview" || isSegmentsRequest) {
+			if (yield* isVideoEdited(video)) {
+				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
+		}
 
 		if (urlParams.videoType === "raw-preview") {
-			if (
-				Option.isSome(video.metadata) &&
-				video.metadata.value.editProcessing
-			) {
-				return yield* Effect.fail(new HttpApiError.NotFound());
-			}
-
-			const db = yield* Database;
-			const [videoEdit] = yield* db.use((db) =>
-				db
-					.select({ videoId: Db.videoEdits.videoId })
-					.from(Db.videoEdits)
-					.where(eq(Db.videoEdits.videoId, video.id)),
-			);
-			if (videoEdit) {
-				return yield* Effect.fail(new HttpApiError.NotFound());
-			}
-
 			const [bucket] = yield* Storage.getAccessForVideo(video);
 			const rawFileKey = yield* resolveRawPreviewKey(video);
 			return yield* bucket
@@ -200,12 +209,7 @@ const getPlaylistResponse = (
 
 		const [bucket, customBucket] = yield* Storage.getAccessForVideo(video);
 
-		if (
-			urlParams.videoType === "segments-master" ||
-			urlParams.videoType === "segments-video" ||
-			urlParams.videoType === "segments-audio" ||
-			urlParams.videoType === "segments-status"
-		) {
+		if (isSegmentsRequest) {
 			const segSource = new Video.SegmentsSource({
 				videoId: video.id,
 				ownerId: video.ownerId,

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	videoEditExists: false,
 	rawFileKey: null as string | null,
 	rawObjectExists: false,
+	getAccess: vi.fn(),
 	sign: vi.fn(),
 	head: vi.fn(),
 	read: vi.fn(),
@@ -81,7 +82,10 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 			effect: import("effect").Effect.Effect<A, E, R>,
 		) => effect,
 		Storage: Object.assign(Context.GenericTag("PlaylistTestStorage"), {
-			getAccessForVideo: () => Effect.succeed([bucket, false] as const),
+			getAccessForVideo: () => {
+				mocks.getAccess();
+				return Effect.succeed([bucket, false] as const);
+			},
 		}),
 		Videos: Object.assign(Context.GenericTag("PlaylistTestVideos"), {
 			testService: {
@@ -166,6 +170,7 @@ describe("Instant playlist readiness API", () => {
 		mocks.videoEditExists = false;
 		mocks.rawFileKey = null;
 		mocks.rawObjectExists = false;
+		mocks.getAccess.mockClear();
 		mocks.sign.mockClear();
 		mocks.head.mockClear();
 		mocks.read.mockClear();
@@ -186,6 +191,51 @@ describe("Instant playlist readiness API", () => {
 		mocks.manifest.audio_init_uploaded = false;
 		expect((await request(type)).status).toBe(409);
 		expect(mocks.sign).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ type: "segments-master", editState: "saved" },
+		{ type: "segments-video", editState: "saved" },
+		{ type: "segments-audio", editState: "saved" },
+		{ type: "segments-status", editState: "saved" },
+		{ type: "segments-master", editState: "pending" },
+		{ type: "segments-video", editState: "pending" },
+		{ type: "segments-audio", editState: "pending" },
+		{ type: "segments-status", editState: "pending" },
+	] as const)(
+		"rejects $type for an edited video ($editState edit)",
+		async ({ type, editState }) => {
+			if (editState === "saved") mocks.videoEditExists = true;
+			else mocks.metadata = { editProcessing: { dispatch: "pending" } };
+
+			const response = await request(type);
+
+			expect(response.status).toBe(404);
+			expect(mocks.getAccess).not.toHaveBeenCalled();
+			expect(mocks.read).not.toHaveBeenCalled();
+			expect(mocks.sign).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps unedited segment playlists available", async () => {
+		const response = await request("segments-video", "");
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("https://media.example.com/");
+		expect(mocks.sign).toHaveBeenCalled();
+	});
+
+	it("keeps the rendered MP4 available for an edited webMP4 video", async () => {
+		mocks.sourceType = "webMP4";
+		mocks.videoEditExists = true;
+
+		const response = await request("mp4", "");
+
+		expect(response.status).toBe(302);
+		expect(response.headers.get("location")).toBe(
+			"https://media.example.com/owner/recording/result.mp4",
+		);
+		expect(mocks.sign).toHaveBeenCalledWith("owner/recording/result.mp4");
 	});
 
 	it("does not expose a partial video as ready while its last segments upload", async () => {
