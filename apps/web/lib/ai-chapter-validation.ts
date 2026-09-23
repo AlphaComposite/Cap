@@ -192,6 +192,13 @@ export function validateGeneratedChapters(
 		);
 
 	let normalized = uniqueStarts
+		// A provider's opening in a long silent lead-in has no transcript support.
+		// Drop it rather than move it beyond the bounded opening alignment window.
+		.filter(
+			(chapter) =>
+				firstMeaningfulStart === undefined ||
+				chapter.start >= firstMeaningfulStart - 30,
+		)
 		.map((chapter) =>
 			firstMeaningfulStart !== undefined &&
 			chapter.start < firstMeaningfulStart &&
