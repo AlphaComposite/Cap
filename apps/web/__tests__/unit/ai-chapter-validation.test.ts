@@ -129,8 +129,27 @@ describe("AI chapter validation", () => {
 		).toThrow("unsorted chapter timestamps");
 	});
 
+	it("drops an unsupported pre-speech candidate and retains cue-grounded chapters", () => {
+		expect(
+			validateGeneratedChapters(
+				[
+					{ title: "Unsupported opening", start: 1 },
+					{ title: "Later", start: 120 },
+				],
+				180,
+				[
+					{ start: 69.309, text: "First spoken words." },
+					{ start: 120, text: "Later topic." },
+				],
+			),
+		).toEqual([
+			{ title: "Opening", start: 69.309 },
+			{ title: "Later", start: 120 },
+		]);
+	});
+
 	it("does not fabricate alignment across more than 30 seconds of silence", () => {
-		expect(() =>
+		expect(
 			validateGeneratedChapters(
 				[
 					{ title: "Opening", start: 0 },
@@ -142,7 +161,55 @@ describe("AI chapter validation", () => {
 					{ start: 90, text: "Main topic cue." },
 				],
 			),
-		).toThrow();
+		).toEqual([
+			{ title: "Opening", start: 31 },
+			{ title: "Main topic", start: 90 },
+		]);
+	});
+
+	it("discards multiple unsupported pre-speech candidates", () => {
+		expect(
+			validateGeneratedChapters(
+				[
+					{ title: "Unsupported first", start: 1 },
+					{ title: "Unsupported second", start: 20 },
+					{ title: "Later", start: 120 },
+				],
+				180,
+				[
+					{ start: 69.309, text: "First spoken words." },
+					{ start: 120, text: "Later topic." },
+				],
+			),
+		).toEqual([
+			{ title: "Opening", start: 69.309 },
+			{ title: "Later", start: 120 },
+		]);
+	});
+
+	it("does not accept provider chapters without a meaningful cue", () => {
+		expect(() =>
+			validateGeneratedChapters([{ title: "Unsupported", start: 1 }], 180, [
+				{ start: 69.309, text: "  " },
+			]),
+		).toThrow("without transcript cues");
+	});
+
+	it("still rejects unsupported mid-video candidate starts", () => {
+		expect(() =>
+			validateGeneratedChapters(
+				[
+					{ title: "Unsupported opening", start: 1 },
+					{ title: "Unsupported middle", start: 100 },
+					{ title: "Later", start: 120 },
+				],
+				180,
+				[
+					{ start: 69.309, text: "First spoken words." },
+					{ start: 120, text: "Later topic." },
+				],
+			),
+		).toThrow("AI chapter start 100 does not align with a transcript cue");
 	});
 
 	it("preserves later cue-aligned chapters after opening normalization", () => {
