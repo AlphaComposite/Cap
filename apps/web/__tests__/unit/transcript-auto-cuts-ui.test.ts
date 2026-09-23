@@ -123,6 +123,7 @@ function renderSidebar(
 		current: document.createElement("video"),
 	},
 	keepRanges: VideoEditRange[] = [{ start: 0, end: 3 }],
+	onDeleteRanges = vi.fn(),
 ) {
 	return act(async () => {
 		root.render(
@@ -133,7 +134,7 @@ function renderSidebar(
 				keepRanges,
 				autoCuts,
 				autoCutsInitialized,
-				onDeleteRanges: vi.fn(),
+				onDeleteRanges,
 				onSetAutoCutLayer,
 				onInitializeAutoCuts,
 			}),
@@ -417,5 +418,99 @@ describe("TranscriptSidebar automatic cuts", () => {
 
 		expect(container.textContent).not.toContain("1s");
 		expect(container.textContent).toContain("0s of no-speech pauses removed");
+	});
+
+	it.each(["Backspace", "Delete"] as const)(
+		"deletes the focused transcript word with %s",
+		async (key) => {
+			const onDeleteRanges = vi.fn();
+			await renderSidebar(
+				root,
+				createAutoCuts(),
+				vi.fn(),
+				vi.fn(),
+				true,
+				undefined,
+				undefined,
+				onDeleteRanges,
+			);
+
+			const word = container.querySelector<HTMLButtonElement>(
+				'button[data-word-index="0"]',
+			);
+			expect(word).not.toBeNull();
+			if (!word) return;
+
+			word.focus();
+			const keyEvent = new KeyboardEvent("keydown", {
+				key,
+				bubbles: true,
+				cancelable: true,
+			});
+			await act(async () => word.dispatchEvent(keyEvent));
+
+			expect(keyEvent.defaultPrevented).toBe(true);
+			expect(onDeleteRanges).toHaveBeenCalledWith([{ start: 0, end: 0.28 }]);
+		},
+	);
+
+	it("extends a dragged selection to the next word across the interword gap", async () => {
+		await renderSidebar(root, createAutoCuts(), vi.fn(), vi.fn(), true);
+		const firstWord = container.querySelector<HTMLButtonElement>(
+			'button[data-word-index="0"]',
+		);
+		const nextWord = container.querySelector<HTMLButtonElement>(
+			'button[data-word-index="1"]',
+		);
+		expect(firstWord).not.toBeNull();
+		expect(nextWord).not.toBeNull();
+		if (!firstWord || !nextWord) return;
+
+		await act(async () => {
+			firstWord.dispatchEvent(
+				new MouseEvent("pointerdown", {
+					bubbles: true,
+					button: 0,
+					buttons: 1,
+				}),
+			);
+		});
+		await act(async () => {
+			nextWord.dispatchEvent(
+				new MouseEvent("pointerover", {
+					bubbles: true,
+					button: 0,
+					buttons: 0,
+				}),
+			);
+		});
+
+		expect(nextWord.className).toContain("bg-blue-500 text-white");
+	});
+
+	it("ends a drag when the browser loses focus", async () => {
+		await renderSidebar(root, createAutoCuts(), vi.fn(), vi.fn(), true);
+		const words = [
+			...container.querySelectorAll<HTMLButtonElement>(
+				"button[data-word-index]",
+			),
+		];
+		expect(words.length).toBeGreaterThan(2);
+		await act(async () => {
+			words[0]?.dispatchEvent(
+				new MouseEvent("pointerdown", { bubbles: true, button: 0, buttons: 1 }),
+			);
+			words[1]?.dispatchEvent(
+				new MouseEvent("pointerover", { bubbles: true, buttons: 0 }),
+			);
+		});
+		window.dispatchEvent(new Event("blur"));
+		await act(async () => {
+			words[2]?.dispatchEvent(
+				new MouseEvent("pointerover", { bubbles: true, buttons: 0 }),
+			);
+		});
+		expect(words[1]?.className).toContain("bg-blue-500 text-white");
+		expect(words[2]?.className).not.toContain("bg-blue-500 text-white");
 	});
 });

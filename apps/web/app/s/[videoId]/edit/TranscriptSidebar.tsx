@@ -62,7 +62,7 @@ type TranscriptSidebarProps = {
 };
 
 const SIDEBAR_CLASS_NAME =
-	"mx-3 mb-4 flex min-h-[36rem] flex-col overflow-hidden rounded-2xl border border-gray-4 bg-gray-1 shadow-[0_16px_44px_-32px_rgba(15,23,42,0.28)] sm:mx-5 xl:fixed xl:top-20 xl:right-5 xl:mx-0 xl:mb-0 xl:h-[calc(100vh-6rem)] xl:w-[360px] min-[1540px]:right-[calc((100vw-1500px)/2+20px)]";
+	"mx-3 mb-4 flex min-h-[36rem] flex-col overflow-hidden rounded-2xl border border-gray-4 bg-gray-1 shadow-[0_16px_44px_-32px_rgba(15,23,42,0.28)] sm:mx-5 xl:fixed xl:top-20 xl:right-5 xl:mx-0 xl:mb-0 xl:h-[calc(100vh-6rem)] xl:w-[clamp(520px,42vw,600px)] min-[1540px]:right-[calc((100vw-1500px)/2+20px)]";
 
 const SKELETON_LINE_WIDTHS = [
 	["w-full", "w-4/5"],
@@ -193,7 +193,7 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 			className="flex items-baseline gap-2.5"
 			style={{
 				contentVisibility: "auto",
-				containIntrinsicSize: "0 96px",
+				containIntrinsicSize: "0 156px",
 			}}
 		>
 			<button
@@ -204,7 +204,7 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 			>
 				{formatTimestamp(group.startMs)}
 			</button>
-			<p className="min-w-0 flex-1 select-none text-[13.5px] leading-[26px] text-gray-11">
+			<p className="min-w-0 flex-1 select-none text-[15.5px] leading-[30px] text-gray-11">
 				{words
 					.slice(group.startIndex, group.endIndex + 1)
 					.map((word, groupWordIndex) => {
@@ -271,7 +271,7 @@ const TranscriptGroupRow = memo(function TranscriptGroupRow({
 									onPointerDown={(event) => onWordPointerDown(index, event)}
 									onPointerEnter={(event) => onWordPointerEnter(index, event)}
 									className={[
-										"inline py-[3px] pr-[5px] text-left leading-5 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50",
+										"inline py-[3px] pr-[5px] text-left leading-[30px] transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50",
 										stateClassName,
 										isDeleted && !isSelected
 											? "text-gray-7 line-through decoration-gray-6"
@@ -367,9 +367,11 @@ export function TranscriptSidebar({
 		};
 		window.addEventListener("pointerup", handlePointerUp);
 		window.addEventListener("pointercancel", handlePointerUp);
+		window.addEventListener("blur", handlePointerUp);
 		return () => {
 			window.removeEventListener("pointerup", handlePointerUp);
 			window.removeEventListener("pointercancel", handlePointerUp);
+			window.removeEventListener("blur", handlePointerUp);
 		};
 	}, []);
 
@@ -496,7 +498,7 @@ export function TranscriptSidebar({
 	const groupVirtualizer = useVirtualizer({
 		count: groups.length,
 		getScrollElement: () => transcriptScrollRef.current,
-		estimateSize: () => 116,
+		estimateSize: () => 156,
 		getItemKey: (index) => groups[index]?.id ?? index,
 		overscan: 6,
 	});
@@ -548,36 +550,40 @@ export function TranscriptSidebar({
 	);
 
 	const handleWordPointerEnter = useCallback(
-		(index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
-			if (dragAnchorRef.current === null || event.buttons !== 1) return;
+		(index: number) => {
+			if (dragAnchorRef.current === null) return;
 			updateSelection(dragAnchorRef.current, index);
 		},
 		[updateSelection],
 	);
 
-	const deleteSelection = useCallback(() => {
-		if (!transcript || !selection) return;
-		const plan = planTranscriptCut(
-			transcript.words,
-			selection.startIndex,
-			selection.endIndex,
-			transcript.durationMs,
-		);
-		if (!plan) return;
-		if (!plan.safe) {
-			toast.error(
-				plan.reason === "overlapping-speech"
-					? "This selection overlaps other speech and cannot be cut safely."
-					: "An edit must keep some playable video.",
+	const deleteSelection = useCallback(
+		(focusedSelection?: { startIndex: number; endIndex: number }) => {
+			const currentSelection = focusedSelection ?? selection;
+			if (!transcript || !currentSelection) return;
+			const plan = planTranscriptCut(
+				transcript.words,
+				currentSelection.startIndex,
+				currentSelection.endIndex,
+				transcript.durationMs,
 			);
-			return;
-		}
+			if (!plan) return;
+			if (!plan.safe) {
+				toast.error(
+					plan.reason === "overlapping-speech"
+						? "This selection overlaps other speech and cannot be cut safely."
+						: "An edit must keep some playable video.",
+				);
+				return;
+			}
 
-		onDeleteRanges(toVideoRanges([plan]));
-		clearSelection();
-		const nextWord = transcript.words[selection.endIndex + 1];
-		if (nextWord) seekToWord(selection.endIndex + 1);
-	}, [clearSelection, onDeleteRanges, seekToWord, selection, transcript]);
+			onDeleteRanges(toVideoRanges([plan]));
+			clearSelection();
+			const nextWord = transcript.words[currentSelection.endIndex + 1];
+			if (nextWord) seekToWord(currentSelection.endIndex + 1);
+		},
+		[clearSelection, onDeleteRanges, seekToWord, selection, transcript],
+	);
 
 	const toggleFillers = useCallback(
 		(enabled: boolean) => {
@@ -766,19 +772,35 @@ export function TranscriptSidebar({
 				const target = event.target;
 				if (
 					target instanceof HTMLElement &&
-					(target.matches("input, textarea, select, button, [role='switch']") ||
+					(target.matches("input, textarea, select, [role='switch']") ||
+						(target.matches("button") &&
+							!target.hasAttribute("data-word-index")) ||
 						target.isContentEditable)
 				) {
 					return;
 				}
-				if (!selection) return;
 				if (event.key === "Backspace" || event.key === "Delete") {
+					const wordIndex =
+						target instanceof HTMLElement &&
+						target.matches("button[data-word-index]")
+							? Number(target.dataset.wordIndex)
+							: null;
+					const focusedSelection =
+						wordIndex !== null &&
+						Number.isInteger(wordIndex) &&
+						wordIndex >= 0 &&
+						wordIndex < (transcript?.words.length ?? 0)
+							? { startIndex: wordIndex, endIndex: wordIndex }
+							: null;
+					if (!selection && !focusedSelection) return;
 					event.preventDefault();
 					event.stopPropagation();
-					deleteSelection();
+					deleteSelection(
+						selection ? undefined : (focusedSelection ?? undefined),
+					);
 					return;
 				}
-				if (event.key === "Escape") {
+				if (selection && event.key === "Escape") {
 					event.preventDefault();
 					clearSelection();
 				}
@@ -956,7 +978,7 @@ export function TranscriptSidebar({
 					<div className="flex animate-fadeIn items-center gap-1.5">
 						<button
 							type="button"
-							onClick={deleteSelection}
+							onClick={() => deleteSelection()}
 							className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-gray-12 px-4 text-xs font-semibold text-white transition hover:bg-gray-11 active:bg-gray-10"
 						>
 							<Trash2 className="size-3.5" aria-hidden />
