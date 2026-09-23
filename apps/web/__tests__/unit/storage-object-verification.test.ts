@@ -8,10 +8,16 @@ const mocks = vi.hoisted(() => ({
 	head: vi.fn(),
 	read: vi.fn(),
 	download: vi.fn(),
+	signed: vi.fn(),
+	edit: null as { sourceKey: string } | null,
+	upload: null as { rawFileKey: string } | null,
 	token: null as { videoId: string; key: string } | null,
 	video: {
 		id: "video",
 		ownerId: "owner",
+		metadata: { _tag: "None" } as
+			| { _tag: "None" }
+			| { _tag: "Some"; value: { editProcessing: object } },
 		source: { type: "desktopMP4" } as {
 			type: string;
 			outputKey?: string;
@@ -34,6 +40,7 @@ vi.mock("@cap/web-backend", async () => {
 						headObject: mocks.head,
 						getObjectResponse: mocks.read,
 						getInternalDownload: mocks.download,
+						getSignedObjectUrl: mocks.signed,
 					},
 				]),
 		},
@@ -44,6 +51,25 @@ vi.mock("@cap/web-backend", async () => {
 			getById: () => Effect.succeed(Option.some([mocks.video])),
 		}),
 		verifyStorageObjectToken: () => mocks.token,
+	};
+});
+vi.mock("@cap/database", async () => {
+	const schema = await import("@cap/database/schema");
+	return {
+		db: () => ({
+			select: () => ({
+				from: (table: unknown) => ({
+					where: async () =>
+						table === schema.videoEdits
+							? mocks.edit
+								? [mocks.edit]
+								: []
+							: mocks.upload
+								? [mocks.upload]
+								: [],
+				}),
+			}),
+		}),
 	};
 });
 vi.mock("@cap/env", () => ({
@@ -72,6 +98,10 @@ function request(
 describe("recording verification object reads", () => {
 	beforeEach(() => {
 		mocks.token = { videoId: "video", key: "owner/video/result.mp4" };
+		mocks.edit = null;
+		mocks.upload = null;
+		mocks.signed.mockReset();
+		mocks.video.metadata = { _tag: "None" };
 		mocks.video.source = { type: "desktopMP4" };
 		mocks.head.mockReturnValue(
 			Effect.succeed({ ETag: '"drive-file:42"', ContentLength: 100 }),
@@ -84,6 +114,95 @@ describe("recording verification object reads", () => {
 				}),
 			),
 		);
+	});
+
+	it.each([
+		"owner/video/source/original.mp4",
+		"owner/video/raw-upload.mp4",
+		"owner/video/raw-upload.webm",
+		"owner/video/segments/video/segment_001.m4s",
+		"owner/video/segments/audio/init.mp4",
+	])("denies edited public source object before storage: %s", async (key) => {
+		mocks.token = null;
+		mocks.edit = { sourceKey: "owner/video/source/original.mp4" };
+		const response = await request({}, key);
+		expect(response.status).toBe(404);
+		expect(mocks.read).not.toHaveBeenCalled();
+		expect(mocks.signed).not.toHaveBeenCalled();
+	});
+
+	it("denies the DB-recorded raw upload even when its filename is custom", async () => {
+		mocks.token = null;
+		mocks.edit = { sourceKey: "owner/video/source/original.mp4" };
+		mocks.upload = { rawFileKey: "owner/video/custom-input.mov" };
+		expect((await request({}, "owner/video/custom-input.mov")).status).toBe(
+			404,
+		);
+		expect(mocks.read).not.toHaveBeenCalled();
+	});
+
+	it("denies pending edit source even before a videoEdits row exists", async () => {
+		mocks.token = null;
+		mocks.video.metadata = {
+			_tag: "Some",
+			value: { editProcessing: { operationId: "pending" } },
+		};
+		expect((await request({}, "owner/video/source/original.mp4")).status).toBe(
+			404,
+		);
+		expect(mocks.read).not.toHaveBeenCalled();
+	});
+
+	it("does not treat an exact object token as an edited-source exception", async () => {
+		const key = "owner/video/source/original.mp4";
+		mocks.token = { videoId: "video", key };
+		mocks.edit = { sourceKey: key };
+		expect((await request({}, key)).status).toBe(404);
+		expect(mocks.read).not.toHaveBeenCalled();
+	});
+
+	it("denies HEAD metadata for edited original", async () => {
+		mocks.token = null;
+		mocks.edit = { sourceKey: "owner/video/source/original.mp4" };
+		const response = await HEAD(
+			new NextRequest(
+				"https://cap.test/api/storage/object?videoId=video&key=owner%2Fvideo%2Fsource%2Foriginal.mp4",
+				{ method: "HEAD" },
+			),
+		);
+		expect(response.status).toBe(404);
+		expect(mocks.head).not.toHaveBeenCalled();
+	});
+
+	it("preserves authenticated internal edited-source descriptor", async () => {
+		const key = "owner/video/source/original.mp4";
+		mocks.token = { videoId: "video", key };
+		mocks.edit = { sourceKey: key };
+		mocks.download.mockReturnValue(
+			Effect.succeed({ version: 1, url: "https://example.test/media" }),
+		);
+		const response = await request(
+			{
+				"x-cap-internal-download": "1",
+				"x-media-server-secret": "test-media-secret",
+			},
+			key,
+		);
+		expect(response.status).toBe(200);
+		expect(mocks.download).toHaveBeenCalledWith(
+			key,
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
+	it("keeps edited published MP4 and unedited segment playback available", async () => {
+		mocks.token = null;
+		mocks.edit = { sourceKey: "owner/video/source/original.mp4" };
+		expect((await request({}, "owner/video/result.mp4")).status).toBe(206);
+		mocks.edit = null;
+		expect(
+			(await request({}, "owner/video/segments/video/init.mp4")).status,
+		).toBe(206);
 	});
 
 	it("does not expose Drive credentials to ordinary clients", async () => {
