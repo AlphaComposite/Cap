@@ -808,6 +808,7 @@ export function EditVideoClient({
 		() => getEditSpecOutputDuration(editSpec),
 		[editSpec],
 	);
+	const hasOutputEdits = outputDuration < state.duration;
 	const { chaptersUrl, projectedChapters } = useEditorChapterPreview({
 		chapters,
 		initialEditSpec,
@@ -2024,6 +2025,9 @@ export function EditVideoClient({
 										: "text-gray-10"
 								}
 							>
+								<span className="font-sans text-[9px] font-medium">
+									{hasOutputEdits ? "Edited" : "Original"}
+								</span>{" "}
 								{formatTime(outputDuration)}
 							</span>
 						</div>
