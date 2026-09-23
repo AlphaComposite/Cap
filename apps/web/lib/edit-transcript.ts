@@ -437,7 +437,6 @@ export function groupEditTranscriptWords(
 		if (!word) continue;
 
 		const reachedLimit = index - startIndex + 1 >= maxWords;
-		const punctuationBreak = /[.!?]$/.test(word.text);
 		const silenceBreak = nextWord ? nextWord.startMs - word.endMs >= 800 : true;
 		const speakerBreak =
 			nextWord !== undefined &&
@@ -445,13 +444,7 @@ export function groupEditTranscriptWords(
 			nextWord.speaker !== null &&
 			word.speaker !== nextWord.speaker;
 
-		if (
-			nextWord &&
-			!reachedLimit &&
-			!punctuationBreak &&
-			!silenceBreak &&
-			!speakerBreak
-		) {
+		if (nextWord && !reachedLimit && !silenceBreak && !speakerBreak) {
 			continue;
 		}
 

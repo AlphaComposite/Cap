@@ -300,15 +300,49 @@ describe("edit transcript", () => {
 		});
 	});
 
-	it("groups words linearly and finds the active word with binary search", () => {
+	it("groups consecutive sentences into speaker-preserving paragraphs", () => {
+		const transcript = createEditTranscript(
+			{
+				speech_model_used: "universal-2",
+				words: [
+					{ text: "Hello.", start: 0, end: 180, speaker: "A" },
+					{ text: "How", start: 250, end: 400, speaker: "A" },
+					{ text: "are", start: 450, end: 550, speaker: "A" },
+					{ text: "you?", start: 600, end: 750, speaker: "B" },
+					{ text: "I", start: 800, end: 900, speaker: "B" },
+					{ text: "agree.", start: 950, end: 1_100, speaker: "B" },
+				],
+			},
+			1_200,
+		);
+		const groups = groupEditTranscriptWords(transcript.words, 48);
+
+		expect(groups.map((group) => [group.startIndex, group.endIndex])).toEqual([
+			[0, 2],
+			[3, 5],
+		]);
+		expect(transcript.words.map((word) => word.text)).toEqual([
+			"Hello.",
+			"How",
+			"are",
+			"you?",
+			"I",
+			"agree.",
+		]);
+	});
+
+	it("groups flowing words by size and silence, and finds the active word", () => {
 		const transcript = createEditTranscript(assemblyAIEditResponse, 4_000);
 		const groups = groupEditTranscriptWords(transcript.words, 4);
 
 		expect(groups.map((group) => [group.startIndex, group.endIndex])).toEqual([
 			[0, 3],
-			[4, 5],
-			[6, 8],
+			[4, 7],
+			[8, 8],
 		]);
+		expect(
+			groups.every((group) => group.endIndex - group.startIndex + 1 <= 4),
+		).toBe(true);
 		expect(findActiveTranscriptWordIndex(transcript.words, 750)).toBe(2);
 		expect(findActiveTranscriptWordIndex(transcript.words, 2_000)).toBe(-1);
 	});

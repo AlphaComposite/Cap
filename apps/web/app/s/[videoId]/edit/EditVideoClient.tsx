@@ -1705,7 +1705,7 @@ export function EditVideoClient({
 				className={[
 					"mx-auto flex w-full flex-1 flex-col px-3 pt-3 pb-4 sm:px-5 sm:pt-4 sm:pb-5",
 					video.transcriptionStatus === "COMPLETE"
-						? "max-w-[1500px] xl:pr-[400px]"
+						? "max-w-[1500px] xl:pr-[640px]"
 						: "max-w-6xl",
 				].join(" ")}
 			>
