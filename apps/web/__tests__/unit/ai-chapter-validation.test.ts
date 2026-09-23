@@ -92,6 +92,82 @@ describe("AI chapter validation", () => {
 		]);
 	});
 
+	it("collapses opening candidates that converge on the delayed cue", () => {
+		expect(
+			validateGeneratedChapters(
+				[
+					{ title: "Opening", start: 0 },
+					{ title: "Alternate opening", start: 3.18 },
+					{ title: "Main topic", start: 90 },
+				],
+				180,
+				[
+					{ start: 27, text: "First spoken words." },
+					{ start: 90, text: "Main topic cue." },
+				],
+			),
+		).toEqual([
+			{ title: "Alternate opening", start: 27 },
+			{ title: "Main topic", start: 90 },
+		]);
+	});
+
+	it("rejects unsorted provider starts during section validation", () => {
+		expect(() =>
+			validateChapterStartsInSection(
+				[
+					{ title: "Later", start: 90 },
+					{ title: "Earlier", start: 27 },
+				],
+				{ startTime: 0, endTime: 120 },
+				180,
+				[
+					{ start: 27, text: "Opening cue." },
+					{ start: 90, text: "Later cue." },
+				],
+			),
+		).toThrow("unsorted chapter timestamps");
+	});
+
+	it("does not fabricate alignment across more than 30 seconds of silence", () => {
+		expect(() =>
+			validateGeneratedChapters(
+				[
+					{ title: "Opening", start: 0 },
+					{ title: "Main topic", start: 90 },
+				],
+				180,
+				[
+					{ start: 31, text: "First spoken words." },
+					{ start: 90, text: "Main topic cue." },
+				],
+			),
+		).toThrow();
+	});
+
+	it("preserves later cue-aligned chapters after opening normalization", () => {
+		expect(
+			validateGeneratedChapters(
+				[
+					{ title: "Opening", start: 0 },
+					{ title: "Alternate opening", start: 3.18 },
+					{ title: "First topic", start: 50 },
+					{ title: "Main topic", start: 100 },
+				],
+				180,
+				[
+					{ start: 27, text: "First spoken words." },
+					{ start: 50, text: "First topic cue." },
+					{ start: 100, text: "Main topic cue." },
+				],
+			),
+		).toEqual([
+			{ title: "Alternate opening", start: 27 },
+			{ title: "First topic", start: 50 },
+			{ title: "Main topic", start: 100 },
+		]);
+	});
+
 	it("uses the existing minimum-gap clamp deterministically for near duplicates", () => {
 		expect(
 			clampChapters(
