@@ -62,7 +62,7 @@ type TranscriptSidebarProps = {
 };
 
 const SIDEBAR_CLASS_NAME =
-	"mx-3 mb-4 flex min-h-[36rem] flex-col overflow-hidden rounded-2xl border border-gray-4 bg-gray-1 shadow-[0_16px_44px_-32px_rgba(15,23,42,0.28)] sm:mx-5 xl:fixed xl:top-20 xl:right-5 xl:mx-0 xl:mb-0 xl:h-[calc(100vh-6rem)] xl:w-[clamp(520px,42vw,600px)] min-[1540px]:right-[calc((100vw-1500px)/2+20px)]";
+	"mx-3 mb-4 flex h-[min(70svh,42rem)] min-h-[36rem] flex-col overflow-hidden rounded-2xl border border-gray-4 bg-gray-1 shadow-[0_16px_44px_-32px_rgba(15,23,42,0.28)] sm:mx-5 xl:fixed xl:top-20 xl:right-5 xl:mx-0 xl:mb-0 xl:h-[calc(100vh-6rem)] xl:w-[clamp(520px,42vw,600px)] min-[1540px]:right-[calc((100vw-1500px)/2+20px)]";
 
 const SKELETON_LINE_WIDTHS = [
 	["w-full", "w-4/5"],

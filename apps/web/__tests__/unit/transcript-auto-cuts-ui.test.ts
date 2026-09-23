@@ -165,6 +165,13 @@ describe("TranscriptSidebar automatic cuts", () => {
 		vi.clearAllMocks();
 	});
 
+	it("bounds the narrow-screen transcript viewport for internal scrolling", async () => {
+		await renderSidebar(root, createAutoCuts(), vi.fn());
+		expect(container.querySelector("aside")?.className).toContain(
+			"h-[min(70svh,42rem)]",
+		);
+	});
+
 	it("labels the original transcript duration and keeps word seeks on source time", async () => {
 		const sourceTranscript = {
 			...transcript,
