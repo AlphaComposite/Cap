@@ -4,7 +4,7 @@ import type { ImageUpload, Video } from "@cap/web-domain";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "motion/react";
 import dynamic from "next/dynamic";
-import { forwardRef, Suspense, useRef, useState } from "react";
+import { forwardRef, Suspense, useEffect, useRef, useState } from "react";
 import type { OrganizationSettings } from "@/app/(org)/dashboard/dashboard-data";
 import { useCurrentUser } from "@/app/Layout/AuthContext";
 import type { VideoData } from "../types";
@@ -74,6 +74,8 @@ interface SidebarProps {
 	canRecordMedia?: boolean;
 	/** Supplied on desktop, where the rail can be folded away. */
 	onCollapse?: () => void;
+	/** Incremented by the under-player paste action. */
+	openSummaryRequest?: number;
 }
 
 const TabContent = motion.div;
@@ -118,6 +120,7 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 			recordingStopped = false,
 			canRecordMedia = false,
 			onCollapse,
+			openSummaryRequest = 0,
 		},
 		ref,
 	) => {
@@ -175,6 +178,11 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 
 		const [activeTab, setActiveTab] = useState<TabType>(defaultTab);
 		const [[_page, direction], setPage] = useState([0, 0]);
+		useEffect(() => {
+			if (openSummaryRequest > 0 && isOwner && !isScreenshot) {
+				setActiveTab("summary");
+			}
+		}, [openSummaryRequest, isOwner, isScreenshot]);
 
 		const tabs = [
 			{
@@ -254,6 +262,7 @@ export const Sidebar = forwardRef<{ scrollToBottom: () => void }, SidebarProps>(
 							onSaveRequestChange={(request) => {
 								summarySaveRequestRef.current = request;
 							}}
+							focusRequest={openSummaryRequest}
 							onSeek={onSeek}
 							isSummaryDisabled={summaryDisabled}
 							initialAiData={aiData || undefined}

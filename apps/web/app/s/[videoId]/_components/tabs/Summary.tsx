@@ -44,6 +44,7 @@ interface SummaryProps {
 	duration?: number | null;
 	onEditingStateChange?: (state: SummaryEditingState) => void;
 	onSaveRequestChange?: (request: SummarySaveRequest | null) => void;
+	focusRequest?: number;
 }
 
 const formatTime = (time: number) => {
@@ -94,6 +95,7 @@ export const Summary: React.FC<SummaryProps> = ({
 	duration,
 	onEditingStateChange,
 	onSaveRequestChange,
+	focusRequest,
 }) => {
 	const [isRetrying, setIsRetrying] = useState(false);
 	const [retryError, setRetryError] = useState<string | null>(null);
@@ -201,6 +203,7 @@ export const Summary: React.FC<SummaryProps> = ({
 				duration={duration}
 				onEditingStateChange={onEditingStateChange}
 				onSaveRequestChange={onSaveRequestChange}
+				focusRequest={focusRequest}
 			/>
 		);
 	}

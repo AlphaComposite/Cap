@@ -24,6 +24,8 @@ interface SummaryChaptersProps {
 		aiGenerationStatus: AiGenerationStatus | null;
 	};
 	aiLoading: boolean;
+	isOwner?: boolean;
+	onPasteSummary?: () => void;
 }
 
 const SummaryChapters = ({
@@ -32,32 +34,50 @@ const SummaryChapters = ({
 	handleSeek,
 	aiData,
 	aiLoading,
+	isOwner = false,
+	onPasteSummary,
 }: SummaryChaptersProps) => {
-	const hasSummary = !isSummaryDisabled && !!aiData?.summary;
+	const showSummary = !isSummaryDisabled || isOwner;
+	const hasSummary = showSummary && !!aiData?.summary;
 	const hasChapters =
 		!areChaptersDisabled &&
 		Array.isArray(aiData?.chapters) &&
 		aiData.chapters.length > 0;
 
-	if (aiLoading || (!hasSummary && !hasChapters)) return null;
+	if (!showSummary && (aiLoading || !hasChapters)) return null;
 
 	return (
 		<div className="mx-auto w-full max-w-3xl px-1 py-4 sm:px-4 sm:py-6 lg:px-8">
-			{hasSummary && (
+			{showSummary && (
 				<section data-testid="public-summary" className="space-y-2">
 					<h2 className="text-base font-semibold leading-6 tracking-tight text-gray-12">
 						Summary
 					</h2>
-					<div className="prose prose-sm prose-gray max-w-none text-[15px] leading-6 text-gray-11 prose-p:my-2 prose-ul:my-2 prose-li:my-0 prose-strong:text-gray-12">
-						<ReactMarkdown>{aiData.summary}</ReactMarkdown>
-					</div>
+					{hasSummary ? (
+						<div className="prose prose-sm prose-gray max-w-none text-[15px] leading-6 text-gray-11 prose-p:my-2 prose-ul:my-2 prose-li:my-0 prose-strong:text-gray-12">
+							<ReactMarkdown>{aiData.summary}</ReactMarkdown>
+						</div>
+					) : (
+						<div className="text-sm text-gray-10">
+							<p>No summary yet.</p>
+							{isOwner && onPasteSummary && (
+								<button
+									type="button"
+									onClick={onPasteSummary}
+									className="mt-2 text-blue-10 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-9"
+								>
+									Paste a summary
+								</button>
+							)}
+						</div>
+					)}
 				</section>
 			)}
 
 			{hasChapters && (
 				<section
 					data-testid="public-chapters"
-					className={hasSummary ? "mt-6" : ""}
+					className={showSummary ? "mt-6" : ""}
 				>
 					<h2 className="mb-2 text-base font-semibold leading-6 tracking-tight text-gray-12">
 						Chapters

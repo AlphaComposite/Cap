@@ -137,12 +137,14 @@ export function SummaryEditor({
 	duration,
 	onEditingStateChange,
 	onSaveRequestChange,
+	focusRequest = 0,
 }: {
 	videoId: Video.VideoId;
 	initialContent: AiContent;
 	duration?: number | null;
 	onEditingStateChange?: (state: SummaryEditingState) => void;
 	onSaveRequestChange?: (request: SummarySaveRequest | null) => void;
+	focusRequest?: number;
 }) {
 	const queryClient = useQueryClient();
 	const id = useId();
@@ -197,6 +199,10 @@ export function SummaryEditor({
 	useEffect(() => {
 		summaryRef.current?.focus();
 	}, []);
+
+	useEffect(() => {
+		if (focusRequest > 0) summaryRef.current?.focus();
+	}, [focusRequest]);
 
 	useEffect(() => {
 		onEditingStateChange?.(isSaving ? "saving" : dirty ? "dirty" : "clean");

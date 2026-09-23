@@ -52,8 +52,24 @@ vi.mock("motion/react", async () => {
 
 vi.mock("next/dynamic", async () => {
 	const { createElement } = await import("react");
+	let call = 0;
 	return {
-		default: () => () => createElement("div", { "data-timeline-view": "" }),
+		default: () => {
+			call += 1;
+			if (call === 2)
+				return ({ onPasteSummary }: { onPasteSummary?: () => void }) =>
+					createElement(
+						"div",
+						{ "data-summary": "" },
+						onPasteSummary &&
+							createElement(
+								"button",
+								{ onClick: onPasteSummary },
+								"Paste a summary",
+							),
+					);
+			return () => createElement("div", { "data-timeline-view": "" });
+		},
 	};
 });
 
@@ -69,9 +85,18 @@ vi.mock("next/navigation", () => ({
 	useRouter: () => ({ refresh: () => undefined }),
 }));
 
+const polledStatus = vi.hoisted(() => ({
+	transcriptionStatus: null as string | null,
+}));
+
 vi.mock("@tanstack/react-query", () => ({
-	useQuery: ({ initialData }: { initialData?: unknown }) => ({
-		data: initialData,
+	useQuery: ({ initialData }: { initialData?: Record<string, unknown> }) => ({
+		data: polledStatus.transcriptionStatus
+			? {
+					...initialData,
+					transcriptionStatus: polledStatus.transcriptionStatus,
+				}
+			: initialData,
 	}),
 }));
 
@@ -93,7 +118,13 @@ vi.mock("@/app/s/[videoId]/_components/ShareVideo", async () => {
 
 vi.mock("@/app/s/[videoId]/_components/Sidebar", async () => {
 	const { createElement } = await import("react");
-	return { Sidebar: () => createElement("div", { "data-sidebar": "" }) };
+	return {
+		Sidebar: ({ openSummaryRequest }: { openSummaryRequest?: number }) =>
+			createElement("div", {
+				"data-sidebar": "",
+				"data-open-summary-request": openSummaryRequest,
+			}),
+	};
 });
 
 vi.mock("@/app/s/[videoId]/_components/Toolbar", async () => {
@@ -156,6 +187,7 @@ describe("Share view toggle", () => {
 	});
 
 	afterEach(() => {
+		polledStatus.transcriptionStatus = null;
 		document.body.replaceChildren();
 		window.history.replaceState(window.history.state, "", "/s/video-id");
 	});
@@ -207,6 +239,110 @@ describe("Share view toggle", () => {
 		});
 	});
 
+	it("routes an empty owner's paste action to the rail and opens it", async () => {
+		window.localStorage.setItem("cap_share_rail_collapsed", "true");
+		const container = document.createElement("div");
+		document.body.append(container);
+		const root = createRoot(container);
+		await act(async () =>
+			root.render(
+				createElement(
+					Share,
+					createProps({
+						data: {
+							...createProps().data,
+							owner: { id: "owner-id", isPro: true },
+						} as ShareComponentProps["data"],
+					}),
+				),
+			),
+		);
+		const aside = container.querySelector("aside");
+		expect(aside?.className).toContain("lg:w-0");
+		await act(async () => findButton(container, "Paste a summary")?.click());
+		expect(aside?.className).not.toContain("lg:w-0");
+		expect(
+			container
+				.querySelector("[data-sidebar]")
+				?.getAttribute("data-open-summary-request"),
+		).toBe("1");
+		await act(async () => root.unmount());
+		window.localStorage.removeItem("cap_share_rail_collapsed");
+	});
+
+	it.each(["QUEUED", "PROCESSING"])(
+		"keeps the owner's empty Summary and paste action visible while AI is %s",
+		async (aiGenerationStatus) => {
+			const container = document.createElement("div");
+			document.body.append(container);
+			const root = createRoot(container);
+			await act(async () =>
+				root.render(
+					createElement(
+						Share,
+						createProps({
+							data: {
+								...createProps().data,
+								owner: { id: "owner-id", isPro: true },
+								transcriptionStatus: "COMPLETE",
+							} as ShareComponentProps["data"],
+							aiGenerationAvailable: true,
+							initialAiData: {
+								summary: null,
+								chapters: null,
+								aiGenerationStatus: aiGenerationStatus as
+									| "QUEUED"
+									| "PROCESSING",
+							},
+						}),
+					),
+				),
+			);
+			expect(container.querySelector("[data-summary]")).not.toBeNull();
+			expect(findButton(container, "Paste a summary")).toBeDefined();
+			await act(async () => root.unmount());
+		},
+	);
+
+	it.each([
+		{ initial: "PROCESSING", current: "COMPLETE", canPaste: true },
+		{ initial: "COMPLETE", current: "PROCESSING", canPaste: false },
+	])(
+		"uses current transcription status $current instead of initial $initial for paste access",
+		async ({ initial, current, canPaste }) => {
+			polledStatus.transcriptionStatus = current;
+			const container = document.createElement("div");
+			document.body.append(container);
+			const root = createRoot(container);
+			await act(async () =>
+				root.render(
+					createElement(
+						Share,
+						createProps({
+							data: {
+								...createProps().data,
+								owner: { id: "owner-id", isPro: true },
+								transcriptionStatus: initial,
+							} as ShareComponentProps["data"],
+						}),
+					),
+				),
+			);
+			expect(container.querySelector("[data-summary]")).not.toBeNull();
+			expect(Boolean(findButton(container, "Paste a summary"))).toBe(canPaste);
+			await act(async () => root.unmount());
+		},
+	);
+
+	it("does not offer paste when the owner cannot open the editor", async () => {
+		const container = document.createElement("div");
+		document.body.append(container);
+		const root = createRoot(container);
+		await act(async () => root.render(createElement(Share, createProps())));
+		expect(findButton(container, "Paste a summary")).toBeUndefined();
+		await act(async () => root.unmount());
+	});
+
 	it("renders public summary content in classic row 3 after the toolbar and outside the comments rail", async () => {
 		const container = document.createElement("div");
 		document.body.append(container);
@@ -227,7 +363,7 @@ describe("Share view toggle", () => {
 		});
 
 		const toolbar = container.querySelector("[data-toolbar]");
-		const summary = container.querySelector("[data-timeline-view]");
+		const summary = container.querySelector("[data-summary]");
 		const summaryRegion = summary?.parentElement;
 		const commentsRail = container.querySelector("aside");
 

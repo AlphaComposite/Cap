@@ -50,7 +50,9 @@ vi.mock("next/dynamic", async () => {
 				return function MockSummary({
 					onEditingStateChange,
 					onSaveRequestChange,
+					focusRequest,
 				}: {
+					focusRequest?: number;
 					onEditingStateChange?: (state: "clean" | "dirty" | "saving") => void;
 					onSaveRequestChange?: (
 						request: (() => Promise<boolean>) | null,
@@ -61,7 +63,19 @@ vi.mock("next/dynamic", async () => {
 						onSaveRequestChange?.(summaryHarness.save);
 						return () => onSaveRequestChange?.(null);
 					}, [onEditingStateChange, onSaveRequestChange]);
-					return createElement("div", null, "Summary editor");
+					useEffect(() => {
+						document
+							.querySelector<HTMLTextAreaElement>(
+								'textarea[aria-label="Summary"]',
+							)
+							?.focus();
+					}, [focusRequest]);
+					return createElement(
+						"div",
+						null,
+						"Summary editor",
+						createElement("textarea", { "aria-label": "Summary" }),
+					);
 				};
 			}
 			const label = dynamicCall === 2 ? "Transcript panel" : "Settings panel";
@@ -88,14 +102,18 @@ afterEach(async () => {
 	vi.unstubAllGlobals();
 });
 
-const renderSidebar = async (onCollapse = vi.fn()) => {
+const renderSidebar = async (
+	onCollapse = vi.fn(),
+	openSummaryRequest = 0,
+	disableComments = true,
+) => {
 	await act(async () => {
 		root.render(
 			createElement(Sidebar, {
 				data: {
 					id: "video-id",
 					owner: { id: "owner-id", isPro: true },
-					orgSettings: { disableComments: true },
+					orgSettings: { disableComments },
 					duration: 120,
 					transcriptionStatus: "COMPLETE",
 				} as never,
@@ -112,6 +130,7 @@ const renderSidebar = async (onCollapse = vi.fn()) => {
 					aiGenerationStatus: "COMPLETE",
 				},
 				onCollapse,
+				openSummaryRequest,
 			}),
 		);
 	});
@@ -135,6 +154,26 @@ const deferred = <T>() => {
 };
 
 describe("Summary navigation autosave", () => {
+	it("opens and focuses the existing editor when requested from the page", async () => {
+		const collapse = vi.fn();
+		await renderSidebar(collapse, 0, false);
+		expect(container.textContent).toContain("Comments panel");
+		await renderSidebar(collapse, 1, false);
+		expect(container.textContent).toContain("Summary editor");
+		expect(document.activeElement).toBe(
+			container.querySelector('textarea[aria-label="Summary"]'),
+		);
+	});
+	it("refocuses the editor when Summary is already selected", async () => {
+		const collapse = vi.fn();
+		await renderSidebar(collapse, 0);
+		const textarea = container.querySelector('textarea[aria-label="Summary"]');
+		if (!textarea) throw new Error("Missing editor");
+		(textarea as HTMLTextAreaElement).blur();
+		await renderSidebar(collapse, 1);
+		expect(document.activeElement).toBe(textarea);
+	});
+
 	it("awaits a dirty summary save and then opens the originally clicked tab", async () => {
 		const save = deferred<boolean>();
 		summaryHarness.save.mockReturnValue(save.promise);
