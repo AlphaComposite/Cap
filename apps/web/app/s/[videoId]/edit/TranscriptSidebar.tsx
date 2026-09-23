@@ -792,7 +792,7 @@ export function TranscriptSidebar({
 							Transcript
 						</h2>
 						<p className="mt-0.5 text-[11px] tabular-nums text-gray-9">
-							{formatTimestamp(transcript.durationMs)} ·{" "}
+							Original {formatTimestamp(transcript.durationMs)} ·{" "}
 							{transcript.words.length} words
 						</p>
 					</div>

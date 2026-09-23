@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -53,7 +53,7 @@ vi.mock("@cap/ui", async () => {
 	};
 });
 
-import type { VideoAutoCuts } from "@cap/database/types";
+import type { VideoAutoCuts, VideoEditRange } from "@cap/database/types";
 import { TranscriptSidebar } from "@/app/s/[videoId]/edit/TranscriptSidebar";
 
 const transcript = {
@@ -119,14 +119,18 @@ function renderSidebar(
 	onSetAutoCutLayer: ReturnType<typeof vi.fn>,
 	onInitializeAutoCuts = vi.fn(),
 	autoCutsInitialized?: boolean,
+	videoRef: RefObject<HTMLVideoElement | null> = {
+		current: document.createElement("video"),
+	},
+	keepRanges: VideoEditRange[] = [{ start: 0, end: 3 }],
 ) {
 	return act(async () => {
 		root.render(
 			// Avoid TSX because Vitest includes only *.test.ts files in this project.
 			(await import("react")).createElement(TranscriptSidebar, {
 				videoId: "video-1" as never,
-				videoRef: { current: document.createElement("video") },
-				keepRanges: [{ start: 0, end: 3 }],
+				videoRef,
+				keepRanges,
 				autoCuts,
 				autoCutsInitialized,
 				onDeleteRanges: vi.fn(),
@@ -158,6 +162,63 @@ describe("TranscriptSidebar automatic cuts", () => {
 		act(() => root.unmount());
 		container.remove();
 		vi.clearAllMocks();
+	});
+
+	it("labels the original transcript duration and keeps word seeks on source time", async () => {
+		const sourceTranscript = {
+			...transcript,
+			durationMs: 1_037_600,
+			words: Array.from({ length: 2_091 }, (_, index) => {
+				const startMs = index === 0 ? 69_309 : 69_600 + (index - 1) * 250;
+				return {
+					id: `source-${index}`,
+					text: "word",
+					startMs,
+					endMs: startMs + 150,
+					confidence: 1,
+					speaker: null,
+					channel: null,
+				};
+			}),
+		};
+		mocks.getTranscript.mockResolvedValue({
+			status: "ready",
+			transcript: sourceTranscript,
+		});
+		const video = document.createElement("video");
+		Object.defineProperty(video, "currentTime", {
+			configurable: true,
+			writable: true,
+			value: 0,
+		});
+		const videoRef: RefObject<HTMLVideoElement | null> = { current: video };
+
+		await renderSidebar(
+			root,
+			createAutoCuts(),
+			vi.fn(),
+			vi.fn(),
+			true,
+			videoRef,
+			[{ start: 0, end: 1_037.6 }],
+		);
+
+		const durationSummary = [...container.querySelectorAll("p")].find((node) =>
+			node.textContent?.includes("words"),
+		);
+		expect(durationSummary?.textContent?.replace(/\s+/g, " ").trim()).toBe(
+			"Original 17:17 · 2091 words",
+		);
+
+		const firstWord = container.querySelector<HTMLButtonElement>(
+			'button[data-word-index="0"]',
+		);
+		await act(async () => {
+			firstWord?.dispatchEvent(
+				new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+			);
+		});
+		expect(video.currentTime).toBe(69.309);
 	});
 
 	it("exposes independent accessible toggles and emits source-timeline layers", async () => {
