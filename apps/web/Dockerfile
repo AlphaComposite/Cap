@@ -27,6 +27,11 @@ ENV NEXT_PUBLIC_WEB_URL=http://localhost:3000
 
 RUN --mount=type=secret,id=build_env,target=/app/.env --mount=type=secret,id=build_env,target=/app/apps/web/.env bun run build:web
 
+# Next output tracing copies the mounted build_env secret into .next/standalone.
+# It must be deleted here: the runner's later `rm` only whites it out and the
+# file stays readable in the runner's COPY layer.
+RUN find apps/web/.next/standalone -name .env -type f -delete
+
 
 # 3. Production image, copy all the files and run next
 FROM base AS runner
