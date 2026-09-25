@@ -10,6 +10,7 @@ import time
 SERVICE_HEADER = "x-cap-origin-service"
 SERVICE_SKEW_S = 5
 SERVICE_TTL_S = 30
+SAFE_INT_MAX = 9_007_199_254_740_991
 
 
 class ServiceAuthError(Exception):
@@ -81,9 +82,16 @@ def verify_request(
     if not isinstance(claims, dict) or claims.get("aud") != "origin-service" or claims.get("v") != 1:
         return False
     wall = int(time.time()) if now is None else int(now)
-    try:
-        iat = int(claims["iat"])
-        exp = int(claims["exp"])
-    except (KeyError, TypeError, ValueError):
+    iat = _safe_int(claims.get("iat"))
+    exp = _safe_int(claims.get("exp"))
+    if iat is None or exp is None or exp - iat != SERVICE_TTL_S:
         return False
     return iat <= wall + SERVICE_SKEW_S and wall <= exp
+
+
+def _safe_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > SAFE_INT_MAX:
+        return None
+    return value
