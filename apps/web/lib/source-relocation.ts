@@ -316,6 +316,23 @@ export function createMemoryJournal(): RelocationJournal & {
 	};
 }
 
+export function assertFinishSourceKey(input: {
+	liveKey: string;
+	relocations: Array<{ newKey: string; state: string }>;
+}) {
+	const relocated = input.relocations.find(
+		(item) =>
+			item.newKey.startsWith("private/source/") &&
+			(item.state === "POINTER" ||
+				item.state === "DELETED" ||
+				item.state === "PURGED"),
+	);
+	if (relocated && input.liveKey !== relocated.newKey) {
+		throw new Error("Finish SourceId must use the relocated liveKey");
+	}
+	return input.liveKey;
+}
+
 export function resolveLegacySourceKey(input: {
 	sourceKey: string;
 	liveKey: string | null;
