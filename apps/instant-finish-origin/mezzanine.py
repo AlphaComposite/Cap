@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json as json_mod
+import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -44,7 +46,9 @@ def build_mezzanine(source: Path, dest: Path) -> dict:
     if original.audio_rate is None:
         raise MezzanineError("refusing source with no audio stream")
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = dest.with_name(f".{dest.stem}.build.mp4")
+    tmp = dest.with_name(
+        f".{dest.stem}.{os.getpid()}.{threading.get_ident()}.build.mp4"
+    )
     started = time.perf_counter()
     cmd = mezz_command(source, tmp, original.timescale)
     if "-vf" in cmd or "fps=" in " ".join(cmd):
@@ -56,6 +60,22 @@ def build_mezzanine(source: Path, dest: Path) -> dict:
         raise MezzanineError(result.stderr.decode("utf-8", "replace")[-500:])
     os_replace(tmp, dest)
     private(dest)
+    try:
+        return _finish_mezzanine(source, dest, original, started)
+    except Exception:
+        _discard_partial_mezz(dest)
+        raise
+
+
+def _discard_partial_mezz(dest: Path) -> None:
+    dest.unlink(missing_ok=True)
+    for suffix in (".frames.json", ".keyframes.json", ".prep.json", ".source-bind.json"):
+        sidecar = dest.with_suffix(suffix)
+        if sidecar.is_file():
+            sidecar.unlink()
+
+
+def _finish_mezzanine(source: Path, dest: Path, original: Probe, started: float) -> dict:
     built = probe(dest)
     if built.has_b_frames != 0:
         raise MezzanineError(f"mezzanine still has B-frames ({built.has_b_frames})")
