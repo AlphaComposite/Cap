@@ -106,6 +106,20 @@ vi.mock("@/lib/desktop-segments-recovery", () => ({}));
 vi.mock("@/lib/Notification", () => ({}));
 vi.mock("@/lib/public-share-video", () => ({}));
 vi.mock("@/lib/shareable-link-quota", () => ({}));
+vi.mock("@/lib/revision-playback-load", () => ({
+	loadRevisionPlayback: async () => ({
+		publication: { enabled: false, currentRevisionId: null, generation: 0 },
+		plan: {
+			prefetchResultMp4: false,
+			player: "legacy",
+			omitRawFallback: false,
+			blockProcessingOverlay: false,
+		},
+		playback: null,
+		publicPlaylistUrl: null,
+		thumbnailUnavailable: false,
+	}),
+}));
 vi.mock("@/lib/transcribe", () => ({}));
 vi.mock("@/utils/flags", () => ({}));
 vi.mock("@/app/s/[videoId]/_components/PasswordOverlay", () => ({

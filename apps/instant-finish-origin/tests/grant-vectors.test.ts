@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
 	verifyInternalServiceRequest,
 	verifyRevisionMediaGrant,
@@ -24,7 +24,10 @@ type Vectors = {
 };
 
 const vectors = JSON.parse(
-	readFileSync(new URL("./vectors/grant-service.json", import.meta.url), "utf8"),
+	readFileSync(
+		new URL("./vectors/grant-service.json", import.meta.url),
+		"utf8",
+	),
 ) as Vectors;
 
 const grantEnv = (ring: string[]) => ({

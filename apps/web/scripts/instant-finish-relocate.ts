@@ -203,8 +203,8 @@ export async function createMysqlJournal(
 				id: Number(row.id),
 				createdAt: String(row.createdAt),
 				state: row.state as RelocationState,
-		};
-	},
+			};
+		},
 	};
 	return journal;
 }

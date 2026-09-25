@@ -827,7 +827,7 @@ def _reject_bad_media(path: Path) -> str | None:
 
     thread = threading.Thread(target=run, name="origin-probe", daemon=True)
     thread.start()
-    thread.join(limits.PROBE_TIMEOUT_S)
+    thread.join(limits.probe_walk_timeout(path))
     if thread.is_alive() or "error" in box or "probe" not in box:
         return "undecodable"
     probed = box["probe"]
