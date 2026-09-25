@@ -10,6 +10,7 @@ import { revalidatePath } from "next/cache";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { requireSpaceManager } from "@/actions/organization/space-authorization";
+import { bumpSpaceAccess } from "@/lib/acl-policy-epoch";
 import {
 	canRemoveSpaceMember,
 	normalizeSpaceRole,
@@ -208,7 +209,10 @@ export async function removeSpaceMember(
 		throw new Error("You do not have permission to remove this space member");
 	}
 
-	await db().delete(spaceMembers).where(eq(spaceMembers.id, memberId));
+	await db().transaction(async (tx) => {
+		await tx.delete(spaceMembers).where(eq(spaceMembers.id, memberId));
+		await bumpSpaceAccess(tx, spaceId);
+	});
 
 	revalidatePath(`/dashboard/spaces/${spaceId}`);
 
@@ -279,8 +283,11 @@ export async function setSpaceMembers(
 		};
 	});
 
-	await db().delete(spaceMembers).where(eq(spaceMembers.spaceId, spaceId));
-	await db().insert(spaceMembers).values(values);
+	await db().transaction(async (tx) => {
+		await tx.delete(spaceMembers).where(eq(spaceMembers.spaceId, spaceId));
+		await tx.insert(spaceMembers).values(values);
+		await bumpSpaceAccess(tx, spaceId);
+	});
 
 	revalidatePath(`/dashboard/spaces/${spaceId}`);
 	return { success: true, count: allMemberIds.length };
@@ -340,7 +347,10 @@ export async function batchRemoveSpaceMembers(
 		throw new Error("You do not have permission to remove one or more members");
 	}
 
-	await db().delete(spaceMembers).where(inArray(spaceMembers.id, memberIds));
+	await db().transaction(async (tx) => {
+		await tx.delete(spaceMembers).where(inArray(spaceMembers.id, memberIds));
+		await bumpSpaceAccess(tx, spaceId);
+	});
 	revalidatePath(`/dashboard/spaces/${spaceId}`);
 	return { success: true, removed: memberIds };
 }

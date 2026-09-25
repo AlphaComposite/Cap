@@ -16,9 +16,9 @@ import {
 import { eq, type SQL, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { revalidatePath } from "next/cache";
+import { bumpSpaceAccess } from "@/lib/acl-policy-epoch";
 import { isOrganizationOwnerPro } from "@/lib/org-pro";
 import { normalizeSpaceRole } from "@/lib/permissions/roles";
-import { bumpPolicyEpochForSpace } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 import { getSpaceAccess } from "./space-authorization";
 import {
@@ -119,8 +119,12 @@ export async function updateSpace(formData: FormData) {
 	}
 
 	await db().transaction(async (tx) => {
-		if (passwordAction === "set" || passwordAction === "remove") {
-			await bumpPolicyEpochForSpace(id, tx);
+		if (
+			passwordAction === "set" ||
+			passwordAction === "remove" ||
+			publicField !== null
+		) {
+			await bumpSpaceAccess(tx, id);
 		}
 		await tx.update(spaces).set(spaceUpdate).where(eq(spaces.id, id));
 	});
@@ -137,10 +141,9 @@ export async function updateSpace(formData: FormData) {
 		]),
 	);
 
-	await db().delete(spaceMembers).where(eq(spaceMembers.spaceId, id));
-	await db()
-		.insert(spaceMembers)
-		.values(
+	await db().transaction(async (tx) => {
+		await tx.delete(spaceMembers).where(eq(spaceMembers.spaceId, id));
+		await tx.insert(spaceMembers).values(
 			memberIds.map((userId) => {
 				const role: SpaceMemberRole =
 					userId === space.createdById
@@ -154,6 +157,8 @@ export async function updateSpace(formData: FormData) {
 				};
 			}),
 		);
+		await bumpSpaceAccess(tx, id);
+	});
 
 	if (formData.get("removeIcon") === "true") {
 		const spaceArr = await db().select().from(spaces).where(eq(spaces.id, id));

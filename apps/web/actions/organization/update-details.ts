@@ -6,6 +6,7 @@ import { organizations } from "@cap/database/schema";
 import type { Organisation } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
 import { requireOrganizationSettingsManager } from "./authorization";
 
 export async function updateOrganizationDetails({
@@ -44,12 +45,15 @@ export async function updateOrganizationDetails({
 	}
 
 	if (allowedEmailDomain || allowedEmailDomain === "") {
-		await db()
-			.update(organizations)
-			.set({
-				allowedEmailDomain: allowedEmailDomain,
-			})
-			.where(eq(organizations.id, organizationId));
+		await db().transaction(async (tx) => {
+			await tx
+				.update(organizations)
+				.set({
+					allowedEmailDomain: allowedEmailDomain,
+				})
+				.where(eq(organizations.id, organizationId));
+			await bumpOrganizationAccess(tx, organizationId);
+		});
 	}
 
 	revalidatePath("/dashboard/settings/organization");
