@@ -1,9 +1,15 @@
 import { db } from "@cap/database";
 import { getCurrentUser } from "@cap/database/auth/session";
-import { videoEdits, videos, videoUploads } from "@cap/database/schema";
+import {
+	editIntent,
+	videoEdits,
+	videoPublication,
+	videos,
+	videoUploads,
+} from "@cap/database/schema";
 import { userIsPro } from "@cap/utils";
 import { Video } from "@cap/web-domain";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
@@ -99,10 +105,26 @@ export default async function EditVideoPage(props: {
 		.select({ editSpec: videoEdits.editSpec })
 		.from(videoEdits)
 		.where(eq(videoEdits.videoId, videoId));
+	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
+	const [publishedIntent] =
+		flagged && !existingEdit
+			? await db()
+					.select({ canonicalSpec: editIntent.canonicalSpec })
+					.from(editIntent)
+					.innerJoin(
+						videoPublication,
+						and(
+							eq(videoPublication.videoId, editIntent.videoId),
+							eq(videoPublication.generation, editIntent.generation),
+						),
+					)
+					.where(eq(editIntent.videoId, videoId))
+			: [];
 	const initialEditSpec = existingEdit
 		? parseVideoEditSpec(existingEdit.editSpec)
-		: createIdentityEditSpec(video.duration);
-	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
+		: publishedIntent
+			? parseVideoEditSpec(publishedIntent.canonicalSpec)
+			: createIdentityEditSpec(video.duration);
 	const opened = flagged ? await openInstantFinishEditor(videoId) : null;
 	const originalDownload =
 		!flagged && existingEdit
