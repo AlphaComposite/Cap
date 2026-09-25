@@ -1,0 +1,499 @@
+"""Private origin. Public /media grants, internal prepare, no source route."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import grant as grant_mod
+import lib_audio
+import lib_origin
+from mezzanine import MezzanineError, build_mezzanine, load_source_bind
+from publication import PublicationStore
+from storage import ObjectStore, StorageError, atomic_write, private
+
+MEDIA_RE = re.compile(
+    r"^/media/(?P<video>[A-Za-z0-9_-]{8,64})/r/(?P<rev>[A-Za-z0-9_-]{8,128})/"
+    r"(?P<kind>playlist\.m3u8|init\.mp4|seg/(?P<n>\d+)\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg|download\.mp4)$"
+)
+SOURCE_PREPARE_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/prepare$")
+REVISION_PREPARE_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/prepare$")
+SERVICE_HEADER = "X-Origin-Service-Token"
+NO_STORE = "private, no-store"
+
+
+class OriginApp:
+    def __init__(
+        self,
+        store: PublicationStore,
+        objects: ObjectStore,
+        cache: Path,
+        grant_secret: bytes,
+        service_token: bytes,
+        *,
+        now=None,
+        before_send=None,
+    ) -> None:
+        if len(grant_secret) < 32 or len(service_token) < 32:
+            raise RuntimeError("refusing short origin secrets")
+        if hmac_equal(grant_secret, service_token):
+            raise RuntimeError("grant secret and service token must differ")
+        self.store = store
+        self.objects = objects
+        self.cache = cache
+        self.cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private(self.cache)
+        self.grant_secret = grant_secret
+        self.service_token = service_token
+        self.now = now or (lambda: int(time.time()))
+        self.before_send = before_send
+        self._origins: dict[str, lib_origin.Origin] = {}
+        self._lock = threading.Lock()
+        self.timings: list[dict] = []
+
+    def handle(self, method: str, raw_path: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        if method not in {"GET", "HEAD", "POST"}:
+            return self._text(405, b"method")
+        parsed = urlparse(raw_path)
+        path = parsed.path
+        if ".." in path or path.startswith("/media/") and "source" in path:
+            return self._text(404, b"not found")
+        if path in {"/source", "/result.mp4"} or path.endswith("/result.mp4") or "/source/" in path:
+            return self._text(404, b"not found")
+        if path == "/health":
+            return 200, b'{"ok":true}\n', "application/json", {"Cache-Control": NO_STORE}
+        if path.startswith("/internal/"):
+            return self._internal(method, path, headers)
+        match = MEDIA_RE.match(path)
+        if match is None:
+            return self._text(404, b"not found")
+        return self._media(method, match, parse_qs(parsed.query), headers)
+
+    def _internal(self, method: str, path: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        if method != "POST":
+            return self._text(405, b"method")
+        presented = headers.get(SERVICE_HEADER, "")
+        if not presented or not hmac_equal(presented.encode(), self.service_token):
+            return self._text(401, b"unauthorized")
+        source = SOURCE_PREPARE_RE.match(path)
+        if source:
+            return self._prepare_source(source.group("video"), headers)
+        revision = REVISION_PREPARE_RE.match(path)
+        if revision:
+            return self._prepare_revision(revision.group("rev"), headers)
+        return self._text(404, b"not found")
+
+    def _prepare_source(self, video_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            body = json.loads(headers.get("_body") or b"{}")
+            source_id = str(body["sourceId"])
+            key = str(body["sourceKey"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._text(400, b"bad request")
+        try:
+            original = self._materialize_original(source_id, key)
+            mezz = original.with_name("mezz.mp4")
+            if not mezz.is_file():
+                build_mezzanine(original, mezz)
+            bind = load_source_bind(mezz)
+            if bind["source_sha256"] != lib_origin.sha256_file(original):
+                return self._text(500, b"unavailable")
+            lib_audio.build_audio_index(original)
+            lib_audio.prepare_presentation(original)
+            warm = lib_origin.warm_for_source(source_id, mezz, original)
+        except lib_audio.AudioRejected:
+            return self._json(409, {"error": "audio_rejected"})
+        except (StorageError, MezzanineError, lib_origin.MezzanineRequired):
+            return self._json(409, {"error": "mezzanine_required"})
+        except Exception:
+            return self._text(500, b"unavailable")
+        payload = {
+            "audioPolicy": "prepared",
+            "hasBFrames": False,
+            "keyed": "source",
+            "ready": True,
+            "sourceId": source_id,
+            "timescale": bind["timescale"],
+            "warmMs": warm.get("total_ms"),
+        }
+        return self._json(200, payload)
+
+    def _prepare_revision(self, revision_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            body = json.loads(headers.get("_body") or b"{}")
+            video_id = str(body["videoId"])
+            ranges = list(body["keepRanges"])
+            source_id = str(body["sourceId"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._text(400, b"bad request")
+        row = self.store.revision(revision_id)
+        if row is None or row.video_id != video_id:
+            return self._text(404, b"not found")
+        try:
+            origin = self._origin_for(video_id, source_id, ranges)
+            self._persist_ranges(revision_id, ranges)
+            init = origin.ensure_init()
+            seg0 = origin.ensure(0)
+            decoded = _decode_check(init, seg0)
+            duration = lib_origin.duration_ticks(origin.segments) / origin.profile.timescale
+            self._write_side_artifacts(origin, body)
+        except lib_origin.MezzanineRequired:
+            return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
+        except Exception:
+            return self._text(500, b"unavailable")
+        if decoded < 1 or b"#EXT-X-ENDLIST" not in origin.playlist:
+            return self._text(500, b"unavailable")
+        return self._json(200, {
+            "durationSeconds": duration,
+            "durationTicks": lib_origin.duration_ticks(origin.segments),
+            "encoderHash": origin.encoder_hash,
+            "intentId": origin.rev,
+            "playlistHasEndList": True,
+            "ready": True,
+            "seg0DecodedFrames": decoded,
+            "segmentCount": len(origin.segments),
+            "segmentPlanVersion": lib_origin.SEGMENT_PLAN_VERSION,
+        })
+
+    def _media(self, method: str, match: re.Match, query: dict, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        video_id = match.group("video")
+        revision_id = match.group("rev")
+        token = (query.get("t") or [""])[0]
+        try:
+            parsed = grant_mod.verify(self.grant_secret, token, now=int(self.now()))
+        except grant_mod.GrantError:
+            return self._text(401, b"unauthorized")
+        if parsed.video_id != video_id or parsed.revision_id != revision_id:
+            return self._text(403, b"forbidden")
+        snap = self._authorize(video_id, revision_id, parsed)
+        if isinstance(snap, tuple):
+            return snap
+        kind = match.group("kind")
+        if kind == "download.mp4":
+            return self._json(202, {"status": "unavailable"})
+        try:
+            body, content_type = self._artifact(snap, kind, match, token)
+        except IndexError:
+            return self._text(404, b"not found")
+        except (lib_origin.MezzanineRequired, lib_origin.CacheIntegrityError, Exception):
+            return self._text(500, b"unavailable")
+        if self.before_send is not None:
+            self.before_send(snap)
+        again = self._authorize(video_id, revision_id, parsed)
+        if isinstance(again, tuple):
+            return again
+        if again["generation"] != snap["generation"] or again["publication_epoch"] != snap["publication_epoch"] or again["policy_epoch"] != snap["policy_epoch"]:
+            return self._text(410, b"gone")
+        extra = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": NO_STORE,
+        }
+        range_header = headers.get("Range")
+        if range_header:
+            status, chunk, content_range = _slice(body, range_header)
+            if status != 206:
+                return self._text(status, chunk)
+            extra["Content-Range"] = content_range
+            return status, chunk, content_type, extra
+        return 200, body, content_type, extra
+
+    def _authorize(self, video_id: str, revision_id: str, parsed) -> dict | tuple:
+        video = self.store.video(video_id)
+        pub = self.store.publication(video_id)
+        rev = self.store.revision(revision_id)
+        if video is None:
+            return self._text(410, b"gone")
+        if pub is None or rev is None or rev.video_id != video_id:
+            return self._text(410, b"gone")
+        if pub.current_revision_id != revision_id or rev.state not in {"CURRENT", "READY"}:
+            return self._text(410, b"gone")
+        if int(pub.publication_epoch) != parsed.publication_epoch or int(pub.policy_epoch) != parsed.policy_epoch:
+            return self._text(410, b"gone")
+        if int(pub.generation) != int(rev.generation):
+            return self._text(410, b"gone")
+        if video.bucket not in {None, "", "cap"}:
+            return self._text(403, b"forbidden")
+        return {
+            "generation": int(pub.generation),
+            "policy_epoch": int(pub.policy_epoch),
+            "publication_epoch": int(pub.publication_epoch),
+            "revision": rev,
+            "video_id": video_id,
+        }
+
+    def _artifact(self, snap: dict, kind: str, match: re.Match, token: str) -> tuple[bytes, str]:
+        rev = snap["revision"]
+        ranges = json.loads((self.cache / "revisions" / rev.revision_id / "ranges.json").read_text())
+        origin = self._origin_for(rev.video_id, rev.source_id, ranges)
+        if origin.rev != rev.intent_id:
+            raise lib_origin.CacheIntegrityError("intent mismatch")
+        if kind == "playlist.m3u8":
+            return lib_origin.playlist_with_grant(origin.playlist.decode(), token), "application/vnd.apple.mpegurl"
+        if kind == "init.mp4":
+            return origin.ensure_init(), "video/mp4"
+        if kind.startswith("seg/"):
+            return origin.ensure(int(match.group("n"))), "video/mp4"
+        if kind == "captions.vtt":
+            return _read_cache(origin, "captions.vtt"), "text/vtt"
+        if kind == "chapters.json":
+            return _read_cache(origin, "chapters.json"), "application/json"
+        if kind == "thumbnail.jpg":
+            return _read_cache(origin, "thumbnail.jpg"), "image/jpeg"
+        if kind == "download.mp4":
+            path = origin.cache / "download.mp4"
+            if not path.is_file():
+                raise FileNotFoundError("revision mp4 is not required before finish")
+            return path.read_bytes(), "video/mp4"
+        raise FileNotFoundError(kind)
+
+    def _origin_for(self, video_id: str, source_id: str, ranges: list[dict]) -> lib_origin.Origin:
+        mezz, original, source_sha = self._source_files(video_id, source_id)
+        key = f"{source_sha}:{lib_origin.canonical_spec(ranges).hex()}"
+        with self._lock:
+            found = self._origins.get(key)
+            if found is not None:
+                return found
+            origin = lib_origin.Origin(mezz, original, self.cache, ranges, source_sha)
+            self._origins[key] = origin
+            return origin
+
+    def _source_files(self, video_id: str, source_id: str) -> tuple[Path, Path, str]:
+        root = self.cache / "sources" / _safe(source_id)
+        original = root / "original.mp4"
+        mezz = root / "mezz.mp4"
+        if not mezz.is_file() or not original.is_file():
+            raise lib_origin.MezzanineRequired("mezzanine missing")
+        bind = load_source_bind(mezz)
+        if bind.get("source_sha256") != lib_origin.sha256_file(original):
+            raise lib_origin.CacheIntegrityError("source sha mismatch")
+        stored = self.store.source(video_id)
+        if stored is not None and stored.sha256 != bind["source_sha256"]:
+            raise lib_origin.CacheIntegrityError("source projection mismatch")
+        return mezz, original, bind["source_sha256"]
+
+    def _materialize_original(self, source_id: str, key: str) -> Path:
+        root = self.cache / "sources" / _safe(source_id)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        dest = root / "original.mp4"
+        self.objects.get_to(key, dest)
+        private(dest)
+        return dest
+
+    def _persist_ranges(self, revision_id: str, ranges: list[dict]) -> None:
+        path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
+        atomic_write(path, json.dumps(ranges).encode(), sync=False)
+
+    def _write_side_artifacts(self, origin: lib_origin.Origin, body: dict) -> None:
+        captions = lib_origin.remap_cues(list(body.get("captions") or []), origin.ranges, text_key="text")
+        chapters = lib_origin.remap_cues(list(body.get("chapters") or []), origin.ranges, text_key="title")
+        vtt = _vtt(captions)
+        chapters_doc = (json.dumps({"chapters": chapters}, sort_keys=True) + "\n").encode()
+        atomic_write(origin.cache / "captions.vtt", vtt, sync=False)
+        atomic_write(origin.cache / "chapters.json", chapters_doc, sync=False)
+        thumb = origin.cache / "thumbnail.jpg"
+        if not thumb.exists():
+            _thumbnail(origin, thumb)
+
+    def _text(self, status: int, body: bytes, content_type: str = "text/plain") -> tuple[int, bytes, str, dict[str, str]]:
+        return status, body, content_type, {"Cache-Control": NO_STORE}
+
+    def _json(self, status: int, payload: dict) -> tuple[int, bytes, str, dict[str, str]]:
+        return status, (json.dumps(payload, sort_keys=True) + "\n").encode(), "application/json", {"Cache-Control": NO_STORE}
+
+
+def hmac_equal(left: bytes, right: bytes) -> bool:
+    import hmac
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
+def _safe(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", value):
+        raise lib_origin.MezzanineRequired("bad source id")
+    return value
+
+
+def _ranges_from_intent(app: OriginApp, rev) -> list[dict]:
+    path = app.cache / "intents" / rev.intent_id / "ranges.json"
+    if not path.is_file():
+        raise lib_origin.MezzanineRequired("revision spec missing")
+    return json.loads(path.read_text())
+
+
+def remember_ranges(cache: Path, intent_id: str, ranges: list[dict]) -> None:
+    path = cache / "intents" / intent_id / "ranges.json"
+    atomic_write(path, json.dumps(ranges).encode(), sync=False)
+
+
+def _read_cache(origin: lib_origin.Origin, name: str) -> bytes:
+    path = origin.cache / name
+    if not path.is_file():
+        raise FileNotFoundError(name)
+    return path.read_bytes()
+
+
+def _vtt(cues: list[dict]) -> bytes:
+    lines = ["WEBVTT", ""]
+    for index, cue in enumerate(cues, start=1):
+        lines.append(str(index))
+        lines.append(f"{_ts(float(cue['start']))} --> {_ts(float(cue['end']))}")
+        lines.append(str(cue.get("text", "")))
+        lines.append("")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _ts(value: float) -> str:
+    ms = int(round(value * 1000))
+    hours, rem = divmod(ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    seconds, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
+def _slice(body: bytes, header: str) -> tuple[int, bytes, str]:
+    if not header.startswith("bytes=") or "," in header:
+        return 416, b"range", ""
+    start_s, end_s = header.split("=", 1)[1].split("-", 1)
+    if start_s == "":
+        return 416, b"range", ""
+    start = int(start_s)
+    end = int(end_s) if end_s else len(body) - 1
+    if start < 0 or start >= len(body) or end < start:
+        return 416, b"range", ""
+    end = min(end, len(body) - 1)
+    return 206, body[start:end + 1], f"bytes {start}-{end}/{len(body)}"
+
+
+def _without_styp(segment: bytes) -> bytes:
+    if len(segment) >= 8 and segment[4:8] == b"styp":
+        size = int.from_bytes(segment[:4], "big")
+        if 8 <= size <= len(segment):
+            return segment[size:]
+    return segment
+
+
+def _decode_check(init: bytes, seg0: bytes) -> int:
+    import av
+    import io
+    blob = init + _without_styp(seg0)
+    container = av.open(io.BytesIO(blob))
+    try:
+        stream = container.streams.video[0]
+        count = 0
+        for frame in container.decode(stream):
+            if frame.pts is None:
+                continue
+            count += 1
+        return count
+    finally:
+        container.close()
+
+
+def _thumbnail(origin: lib_origin.Origin, dest: Path) -> None:
+    init = origin.ensure_init()
+    seg0 = origin.ensure(0)
+    blob = init + _without_styp(seg0)
+    tmp = dest.with_suffix(".in.mp4")
+    atomic_write(tmp, blob, sync=False)
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(tmp), "-frames:v", "1", str(dest)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if tmp.exists():
+        tmp.unlink()
+    if result.returncode or not dest.is_file():
+        raise RuntimeError("thumbnail failed")
+    private(dest)
+
+
+def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
+    if host == "0.0.0.0" and os.environ.get("ORIGIN_HOST_PUBLISH", "127.0.0.1") == "0.0.0.0":
+        raise RuntimeError("refusing 0.0.0.0 host publish")
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            self._dispatch("GET")
+
+        def do_HEAD(self) -> None:
+            self._dispatch("HEAD")
+
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length > 1_000_000:
+                self._emit(413, b"too large", "text/plain", {})
+                return
+            body = self.rfile.read(length) if length else b""
+            headers = {key: value for key, value in self.headers.items()}
+            headers["_body"] = body
+            self._dispatch("POST", headers)
+
+        def _dispatch(self, method: str, headers=None) -> None:
+            hdrs = headers if headers is not None else {key: value for key, value in self.headers.items()}
+            try:
+                status, body, content_type, extra = app.handle(method, self.path, hdrs)
+            except Exception:
+                status, body, content_type, extra = 500, b"unavailable", "text/plain", {"Cache-Control": NO_STORE}
+            self._emit(status, body, content_type, extra)
+
+        def _emit(self, status: int, body: bytes, content_type: str, extra: dict) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            for key, value in extra.items():
+                self.send_header(key, value)
+            self.end_headers()
+            if self.command != "HEAD" and body:
+                self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args) -> None:
+            return
+
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, name="instant-finish-origin", daemon=True)
+    thread.start()
+    return httpd
+
+
+def main() -> None:
+    host_publish = os.environ.get("ORIGIN_HOST_PUBLISH", "127.0.0.1")
+    if host_publish == "0.0.0.0":
+        raise SystemExit("refusing 0.0.0.0 host publish")
+    from publication import MySQLPublication
+    from storage import S3ObjectStore
+
+    cache = Path(os.environ.get("ORIGIN_CACHE", "/var/cache/origin"))
+    store = MySQLPublication(os.environ["ORIGIN_DATABASE_URL"])
+    objects = S3ObjectStore(
+        os.environ["S3_INTERNAL_ENDPOINT"],
+        os.environ.get("S3_BUCKET", "cap"),
+        os.environ["S3_ACCESS_KEY"],
+        os.environ["S3_SECRET_KEY"],
+        os.environ.get("S3_REGION", "us-east-1"),
+    )
+    app = OriginApp(
+        store,
+        objects,
+        cache,
+        os.environ["ORIGIN_GRANT_SECRET"].encode(),
+        os.environ["ORIGIN_SERVICE_TOKEN"].encode(),
+    )
+    bind = os.environ.get("ORIGIN_BIND", "0.0.0.0")
+    port = int(os.environ.get("ORIGIN_PORT", "3020"))
+    httpd = serve(app, bind, port)
+    try:
+        threading.Event().wait()
+    finally:
+        httpd.shutdown()
+
+
+if __name__ == "__main__":
+    main()
