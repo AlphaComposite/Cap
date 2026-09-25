@@ -174,7 +174,7 @@ describe("Instant playlist readiness API", () => {
 		mocks.sign.mockClear();
 		mocks.head.mockClear();
 		mocks.read.mockClear();
-		delete process.env.CAP_INSTANT_FINISH_OWNER_IDS;
+		delete process.env.CAP_INSTANT_FINISH_OWNERS;
 		delete process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY;
 	});
 	afterAll(() => mocks.dispose());
@@ -311,7 +311,7 @@ describe("Instant playlist readiness API", () => {
 	});
 
 	it("denies raw-preview for a flagged owner with no video_edits row", async () => {
-		process.env.CAP_INSTANT_FINISH_OWNER_IDS = "owner";
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner";
 		mocks.sourceType = "webMP4";
 		mocks.videoEditExists = false;
 		mocks.metadata = null;
@@ -326,7 +326,7 @@ describe("Instant playlist readiness API", () => {
 	});
 
 	it("denies segments playlists for a flagged owner with no saved edit", async () => {
-		process.env.CAP_INSTANT_FINISH_OWNER_IDS = "owner";
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner";
 		mocks.videoEditExists = false;
 		mocks.metadata = null;
 
@@ -337,7 +337,7 @@ describe("Instant playlist readiness API", () => {
 	});
 
 	it("does not sign the previous MP4 for a flagged owner", async () => {
-		process.env.CAP_INSTANT_FINISH_OWNER_IDS = "owner";
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner";
 		mocks.sourceType = "webMP4";
 
 		const response = await request("mp4", "");

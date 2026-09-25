@@ -149,7 +149,10 @@ export async function bumpPolicyEpochForVideos(
 	}
 }
 
-export async function bumpPolicyEpochForSpace(spaceId: string): Promise<void> {
+export async function bumpPolicyEpochForSpace(
+	spaceId: string,
+	executor?: SqlExecutor,
+): Promise<void> {
 	const rows = await db()
 		.select({ videoId: spaceVideos.videoId })
 		.from(spaceVideos)
@@ -159,7 +162,10 @@ export async function bumpPolicyEpochForSpace(spaceId: string): Promise<void> {
 				spaceId as (typeof spaceVideos.$inferSelect)["spaceId"],
 			),
 		);
-	await bumpPolicyEpochForVideos(rows.map((row) => row.videoId));
+	await bumpPolicyEpochForVideos(
+		rows.map((row) => row.videoId),
+		executor,
+	);
 }
 
 export function evaluateGrantIssue(input: {
@@ -386,6 +392,23 @@ export function isFlaggedDirectObjectKey(
 ) {
 	const prefix = `${ownerId}/${videoId}/`;
 	return key.startsWith(prefix) && !key.startsWith(`${prefix}private/`);
+}
+
+export type PlaylistPresignKind = "raw-or-segments" | "mp4";
+export type PlaylistPresignDecision = "allow" | "not-found" | "gone";
+
+export async function decidePlaylistPresign(input: {
+	videoId: string;
+	ownerId: string;
+	kind: PlaylistPresignKind;
+}): Promise<PlaylistPresignDecision> {
+	const forced = process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY;
+	if (forced === "gone" || forced === "not-found") return forced;
+	if (!isInstantFinishEnabledForOwner(input.ownerId)) return "allow";
+	if (input.kind === "raw-or-segments" || input.kind === "mp4") {
+		return "not-found";
+	}
+	return "allow";
 }
 
 export function denyFlaggedPresign(input: {

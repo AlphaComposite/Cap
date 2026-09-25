@@ -1,7 +1,8 @@
 """Revision media grant. Matches apps/web/lib/revision-media-token.ts.
 
-token = base64url(canonical UTF-8 JSON) + "." + base64url(HMAC-SHA256(secret, canonical JSON bytes))
-Canonical JSON uses sorted keys and no whitespace. TTL is 60s. Skew on iat is 5s.
+token = kid + "." + base64url(canonical UTF-8 JSON) + "." + base64url(HMAC-SHA256(secret, encoded payload))
+Canonical JSON uses D's fixed claim order, not sorted keys. TTL is 60s. iat skew is 5s.
+The key id is the token header. Verification uses REVISION_MEDIA_GRANT_KEYS, never NEXTAUTH_SECRET.
 """
 from __future__ import annotations
 
@@ -13,16 +14,7 @@ from dataclasses import dataclass
 
 GRANT_TTL_S = 60
 GRANT_SKEW_S = 5
-CLAIM_KEYS = (
-    "exp",
-    "grantId",
-    "iat",
-    "policyEpoch",
-    "publicationEpoch",
-    "revisionId",
-    "v",
-    "videoId",
-)
+MIN_SECRET_BYTES = 32
 
 
 class GrantError(Exception):
@@ -41,15 +33,39 @@ class Grant:
     iat: int
     exp: int
     grant_id: str
+    kid: str
 
 
-def canonical_json(claims: dict) -> bytes:
-    if set(claims) != set(CLAIM_KEYS):
+def canonical_grant_json(claims: dict) -> str:
+    required = (
+        "v",
+        "videoId",
+        "revisionId",
+        "publicationEpoch",
+        "policyEpoch",
+        "iat",
+        "exp",
+        "grantId",
+    )
+    if set(claims) != set(required) or claims.get("v") != 1:
         raise GrantError(401, "claims")
-    ordered = {key: claims[key] for key in CLAIM_KEYS}
-    if ordered["v"] != 1:
-        raise GrantError(401, "version")
-    return json.dumps(ordered, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return (
+        '{"v":1,"videoId":'
+        + json.dumps(claims["videoId"], ensure_ascii=False)
+        + ',"revisionId":'
+        + json.dumps(claims["revisionId"], ensure_ascii=False)
+        + ',"publicationEpoch":'
+        + str(int(claims["publicationEpoch"]))
+        + ',"policyEpoch":'
+        + str(int(claims["policyEpoch"]))
+        + ',"iat":'
+        + str(int(claims["iat"]))
+        + ',"exp":'
+        + str(int(claims["exp"]))
+        + ',"grantId":'
+        + json.dumps(claims["grantId"], ensure_ascii=False)
+        + "}"
+    )
 
 
 def b64url_encode(data: bytes) -> str:
@@ -64,38 +80,79 @@ def b64url_decode(text: str) -> bytes:
         raise GrantError(401, "encoding") from exc
 
 
-def mint(secret: bytes, claims: dict) -> str:
-    payload = canonical_json(claims)
+def parse_key_ring(raw: str) -> list[tuple[str, bytes]]:
+    keys: list[tuple[str, bytes]] = []
+    for part in raw.split(","):
+        trimmed = part.strip()
+        if not trimmed or ":" not in trimmed:
+            continue
+        kid, secret = trimmed.split(":", 1)
+        if not kid or len(secret.encode()) < MIN_SECRET_BYTES or "." in kid:
+            continue
+        keys.append((kid, secret.encode()))
+    return keys
+
+
+def _as_ring(secret: bytes | list[tuple[str, bytes]], kid: str = "k1") -> list[tuple[str, bytes]]:
+    if isinstance(secret, list):
+        return [(key_id, key) for key_id, key in secret if len(key) >= MIN_SECRET_BYTES and "." not in key_id]
+    if len(secret) < MIN_SECRET_BYTES:
+        return []
+    return [(kid, secret)]
+
+
+def mint(secret: bytes | list[tuple[str, bytes]], claims: dict, kid: str = "k1") -> str:
+    ring = _as_ring(secret, kid)
+    chosen = next((item for item in ring if item[0] == kid), ring[0] if ring else None)
+    if chosen is None:
+        raise GrantError(401, "key")
+    key_id, key = chosen
+    payload = canonical_grant_json(claims).encode("utf-8")
     if int(claims["exp"]) - int(claims["iat"]) != GRANT_TTL_S:
         raise GrantError(401, "ttl")
-    sig = hmac.new(secret, payload, hashlib.sha256).digest()
-    return f"{b64url_encode(payload)}.{b64url_encode(sig)}"
+    encoded = b64url_encode(payload)
+    sig = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{key_id}.{encoded}.{b64url_encode(sig)}"
 
 
-def verify(secret: bytes, token: str, *, now: int) -> Grant:
-    dummy = hmac.new(secret, b"cap-origin-grant", hashlib.sha256).digest()
+def verify(
+    secret: bytes | list[tuple[str, bytes]],
+    token: str,
+    *,
+    now: int,
+    kid: str = "k1",
+) -> Grant:
+    ring = _as_ring(secret, kid)
+    dummy = hmac.new(b"cap-origin-grant-placeholder-secret", b"cap-origin-grant", hashlib.sha256).digest()
     parts = token.split(".") if isinstance(token, str) else []
-    payload = b""
-    sig = b""
-    ok_shape = len(parts) == 2 and parts[0] and parts[1]
+    ok_shape = len(parts) == 3 and all(parts)
+    presented_kid = parts[0] if ok_shape else ""
+    encoded = parts[1] if ok_shape else ""
+    signature = b""
     if ok_shape:
         try:
-            payload = b64url_decode(parts[0])
-            sig = b64url_decode(parts[1])
+            signature = b64url_decode(parts[2])
+            b64url_decode(encoded)
         except GrantError:
             ok_shape = False
-    expected = hmac.new(secret, payload, hashlib.sha256).digest() if ok_shape else dummy
-    presented = sig if len(sig) == len(expected) else dummy
-    if not hmac.compare_digest(expected, presented) or not ok_shape:
+    key = next((item[1] for item in ring if item[0] == presented_kid), b"")
+    expected = (
+        hmac.new(key, encoded.encode("ascii"), hashlib.sha256).digest()
+        if ok_shape and key
+        else dummy
+    )
+    presented = signature if len(signature) == len(expected) else dummy
+    if not hmac.compare_digest(expected, presented) or not ok_shape or not key:
         raise GrantError(401, "signature")
     try:
+        payload = b64url_decode(encoded)
         claims = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, GrantError) as exc:
         raise GrantError(401, "json") from exc
-    if not isinstance(claims, dict) or set(claims) != set(CLAIM_KEYS):
+    if not isinstance(claims, dict):
         raise GrantError(401, "claims")
     try:
-        canonical = canonical_json(claims)
+        canonical = canonical_grant_json(claims).encode("utf-8")
     except GrantError as exc:
         raise GrantError(401, exc.code) from exc
     if not hmac.compare_digest(canonical, payload):
@@ -109,12 +166,13 @@ def verify(secret: bytes, token: str, *, now: int) -> Grant:
             iat=int(claims["iat"]),
             exp=int(claims["exp"]),
             grant_id=str(claims["grantId"]),
+            kid=presented_kid,
         )
     except (TypeError, ValueError) as exc:
         raise GrantError(401, "claims") from exc
     if grant.exp - grant.iat != GRANT_TTL_S:
         raise GrantError(401, "ttl")
-    if grant.iat > now + GRANT_SKEW_S or now >= grant.exp or now + GRANT_SKEW_S < grant.iat:
+    if grant.iat > now + GRANT_SKEW_S or now >= grant.exp:
         raise GrantError(401, "expired")
     if not grant.video_id or not grant.revision_id or not grant.grant_id:
         raise GrantError(401, "claims")

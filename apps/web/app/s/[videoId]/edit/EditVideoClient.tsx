@@ -38,17 +38,15 @@ import { toast } from "sonner";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
 import {
 	getEditorInstantFinishState,
-	publishRevision,
+	publishVideoRevision,
+	recordServerEditDraft,
 } from "@/actions/videos/publish-revision";
 import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
 } from "@/actions/videos/save-edits";
 import { isEditorShortcutTarget } from "@/lib/editor-keyboard";
-import {
-	planDoneAfterPublish,
-	readOrCreateDraftSession,
-} from "@/lib/revision-done";
+import { readOrCreateDraftSession } from "@/lib/revision-done";
 import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
@@ -1133,24 +1131,28 @@ export function EditVideoClient({
 		setIsSaving(true);
 		try {
 			const draftStorage = getTimelineDraftStorage();
-			const published = await publishRevision({
-				videoId: video.id,
-				ownerId: video.ownerId,
-				editSpec,
-				expectedEditSpec: initialEditSpec,
-				baseGeneration: instantFinish?.generation ?? 0,
-				draftVersion: instantFinish?.draftVersion ?? 0,
-				draftSession: readOrCreateDraftSession(draftStorage, video.id),
-			});
-			const plan = planDoneAfterPublish(published);
-			if (plan === "legacy") {
+			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
+			if (!instantFinish?.enabled) {
 				await saveVideoEdits(video.id, editSpec, initialEditSpec);
 				if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
 				router.push(`/s/${video.id}`);
 				router.refresh();
 				return;
 			}
-			if (plan === "published") {
+			const recorded = await recordServerEditDraft({
+				videoId: video.id,
+				draftVersion: (instantFinish.draftVersion ?? 0) + 1,
+				draftSession,
+			});
+			const published = await publishVideoRevision({
+				videoId: video.id,
+				editSpec,
+				expectedEditSpec: initialEditSpec,
+				baseGeneration: recorded.generation,
+				draftVersion: recorded.draftVersion,
+				draftSession: recorded.draftSession,
+			});
+			if (published.success) {
 				if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
 				router.push(`/s/${video.id}`);
 				router.refresh();

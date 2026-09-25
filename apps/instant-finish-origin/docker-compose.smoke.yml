@@ -62,8 +62,8 @@ services:
       S3_SECRET_KEY: capwire-minio-secret
       S3_REGION: us-east-1
       ORIGIN_DATABASE_URL: mysql://root:capwire-root@mysql:3306/cap
-      ORIGIN_GRANT_SECRET: capwire-grant-secret-capwire-grant-secret
-      ORIGIN_SERVICE_TOKEN: capwire-service-token-capwire-service-token
+      REVISION_MEDIA_GRANT_KEYS: k1:capwire-grant-secret-capwire-grant-secret
+      REVISION_ORIGIN_SERVICE_SECRET: capwire-service-token-capwire-service-token
     ports:
       - "127.0.0.1:3119:3020"
     cpus: "1.5"

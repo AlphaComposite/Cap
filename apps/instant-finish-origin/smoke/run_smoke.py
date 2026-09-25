@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import grant as grant_mod
+from service_auth import sign_request
 
 COMPOSE = ROOT / "docker-compose.smoke.yml"
 SQL = ROOT / "sql" / "smoke-projection.sql"
@@ -39,8 +40,8 @@ def _env() -> dict[str, str]:
             "MINIO_ROOT_PASSWORD",
             "S3_ACCESS_KEY",
             "S3_SECRET_KEY",
-            "ORIGIN_GRANT_SECRET",
-            "ORIGIN_SERVICE_TOKEN",
+            "REVISION_MEDIA_GRANT_KEYS",
+            "REVISION_ORIGIN_SERVICE_SECRET",
         }:
             values[key] = value.strip().strip('"')
     return values
@@ -144,12 +145,19 @@ def main() -> int:
     if inserted.returncode:
         print(inserted.stderr.decode("utf-8", "replace")[-200:].replace(env["MYSQL_ROOT_PASSWORD"], "[redacted]"))
         return inserted.returncode
-    service = {"X-Origin-Service-Token": env["ORIGIN_SERVICE_TOKEN"], "Content-Type": "application/json"}
+    def signed(path: str, body: bytes) -> dict[str, str]:
+        return {
+            "x-cap-origin-service": sign_request(env["REVISION_ORIGIN_SERVICE_SECRET"].encode(), "POST", path, body),
+            "Content-Type": "application/json",
+        }
+
+    source_body = json.dumps({"sourceId": SOURCE, "sourceKey": key}).encode()
+    source_path = f"/internal/sources/{VIDEO}/prepare"
     status, _, payload = _req(
-        f"{ORIGIN}/internal/sources/{VIDEO}/prepare",
+        f"{ORIGIN}{source_path}",
         "POST",
-        service,
-        json.dumps({"sourceId": SOURCE, "sourceKey": key}).encode(),
+        signed(source_path, source_body),
+        source_body,
     )
     print(f"source_prepare={status}")
     if status != 200:
@@ -175,17 +183,19 @@ def main() -> int:
     )
     print(f"source_row_exit={sourced.returncode}")
     ranges = [{"start": 0.0, "end": 0.15}, {"start": 0.45, "end": 0.9}]
+    revision_body = json.dumps({
+        "videoId": VIDEO,
+        "sourceId": SOURCE,
+        "keepRanges": ranges,
+        "captions": [{"start": 0.02, "end": 0.08, "text": "kept"}],
+        "chapters": [{"start": 0.0, "end": 0.1, "title": "Open"}],
+    }).encode()
+    revision_path = f"/internal/revisions/{REV}/prepare"
     status, _, payload = _req(
-        f"{ORIGIN}/internal/revisions/{REV}/prepare",
+        f"{ORIGIN}{revision_path}",
         "POST",
-        service,
-        json.dumps({
-            "videoId": VIDEO,
-            "sourceId": SOURCE,
-            "keepRanges": ranges,
-            "captions": [{"start": 0.02, "end": 0.08, "text": "kept"}],
-            "chapters": [{"start": 0.0, "end": 0.1, "title": "Open"}],
-        }).encode(),
+        signed(revision_path, revision_body),
+        revision_body,
     )
     print(f"revision_prepare={status}")
     if status != 200:
@@ -215,7 +225,7 @@ def main() -> int:
     )
     print(f"publish_exit={published.returncode}")
     now = int(time.time())
-    token = grant_mod.mint(env["ORIGIN_GRANT_SECRET"].encode(), {
+    token = grant_mod.mint(grant_mod.parse_key_ring(env["REVISION_MEDIA_GRANT_KEYS"]), {
         "exp": now + 60,
         "grantId": "smoke-grant",
         "iat": now,

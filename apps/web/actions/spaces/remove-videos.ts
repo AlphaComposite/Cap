@@ -49,27 +49,24 @@ export async function removeVideosFromSpace(
 			throw new Error("No valid videos found");
 		}
 
-		await bumpPolicyEpochForVideos(validVideoIds);
-
-		if (isAllSpacesEntry) {
-			await db()
-				.delete(sharedVideos)
-				.where(
+		await db().transaction(async (tx) => {
+			await bumpPolicyEpochForVideos(validVideoIds, tx);
+			if (isAllSpacesEntry) {
+				await tx.delete(sharedVideos).where(
 					and(
 						eq(sharedVideos.organizationId, spaceId),
 						inArray(sharedVideos.videoId, validVideoIds),
 					),
 				);
-		} else {
-			await db()
-				.delete(spaceVideos)
-				.where(
+			} else {
+				await tx.delete(spaceVideos).where(
 					and(
 						eq(spaceVideos.spaceId, spaceId),
 						inArray(spaceVideos.videoId, validVideoIds),
 					),
 				);
-		}
+			}
+		});
 
 		revalidatePath(`/dashboard/spaces/${spaceId}`);
 

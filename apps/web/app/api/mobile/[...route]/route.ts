@@ -2943,17 +2943,19 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 								const publicOrigin = getMobilePublicOrigin(request);
 								const user = yield* CurrentUser;
 								yield* assertMobileVideoOwner(path.id);
-								yield* Effect.promise(() => bumpPolicyEpoch(path.id));
-								yield* database.use((db) =>
-									db
-										.update(Db.videos)
-										.set({ public: payload.public })
-										.where(
-											and(
-												eq(Db.videos.id, path.id),
-												eq(Db.videos.ownerId, user.id),
-											),
-										),
+								yield* database.use((client) =>
+									client.transaction(async (tx) => {
+										await tx
+											.update(Db.videos)
+											.set({ public: payload.public })
+											.where(
+												and(
+													eq(Db.videos.id, path.id),
+													eq(Db.videos.ownerId, user.id),
+												),
+											);
+										await bumpPolicyEpoch(path.id, tx);
+									}),
 								);
 								const { cap } = yield* getCapById(path.id, publicOrigin);
 								return cap;
@@ -3012,17 +3014,19 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 										})
 									: null;
 
-								yield* Effect.promise(() => bumpPolicyEpoch(path.id));
-								yield* database.use((db) =>
-									db
-										.update(Db.videos)
-										.set({ password: nextPassword })
-										.where(
-											and(
-												eq(Db.videos.id, path.id),
-												eq(Db.videos.ownerId, user.id),
-											),
-										),
+								yield* database.use((client) =>
+									client.transaction(async (tx) => {
+										await tx
+											.update(Db.videos)
+											.set({ password: nextPassword })
+											.where(
+												and(
+													eq(Db.videos.id, path.id),
+													eq(Db.videos.ownerId, user.id),
+												),
+											);
+										await bumpPolicyEpoch(path.id, tx);
+									}),
 								);
 								const { cap } = yield* getCapById(path.id, publicOrigin);
 								return cap;

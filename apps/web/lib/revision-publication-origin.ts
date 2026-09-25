@@ -1,19 +1,60 @@
+import { createHash } from "node:crypto";
 import type { VideoEditSpecV2 } from "@cap/database/types";
 import { sha256Hex } from "@/lib/revision-publication-metadata";
+import {
+	ORIGIN_SERVICE_HEADER,
+	signInternalServiceRequest,
+} from "@/lib/revision-media-token";
 
-export const INTERNAL_TOKEN_HEADER = "x-cap-internal-token";
+export const INTERNAL_TOKEN_HEADER = ORIGIN_SERVICE_HEADER;
+
+export type SourcePrepareBody = {
+	videoId: string;
+	sourceId: string;
+	sourceKey: string;
+};
+
+export type SourcePrepareResult = {
+	sourceKey: string;
+	sha256: string;
+	codec: string;
+	timebase: string;
+	frameMode: "vfr" | "cfr";
+	a1Digest: string;
+	indexId: string;
+	warmExpiresAt: string;
+};
 
 export type RevisionPrepareBody = {
 	videoId: string;
 	revisionId: string;
 	intentId: string;
 	sourceId: string;
+	sourceKey?: string;
 	generation: number;
 	durationSeconds: number;
+	keepRanges: { start: number; end: number }[];
 	editSpec: VideoEditSpecV2;
 	captionsVtt: string;
 	chaptersJson: string;
 	thumbnailPolicy: "source-zero" | "seg0-first-frame";
+};
+
+export type RevisionPrepareResult = {
+	ready: boolean;
+	intentId: string;
+	durationSeconds: number;
+	durationTicks?: number;
+	segmentCount?: number;
+	seg0DecodedFrames: number;
+	encoderHash?: string;
+	segmentPlanVersion?: number;
+	playlistHasEndList: boolean;
+	decoded: boolean;
+	decodedFrames: number;
+	initSha256: string;
+	seg0Sha256: string;
+	playlistDurationSeconds: number;
 };
 
 export type OriginArtifact = {
@@ -23,13 +64,7 @@ export type OriginArtifact = {
 };
 
 export type OriginClient = {
-	prepareRevision(body: RevisionPrepareBody): Promise<{
-		decoded: boolean;
-		decodedFrames: number;
-		initSha256: string;
-		seg0Sha256: string;
-		playlistDurationSeconds: number;
-	}>;
+	prepareRevision(body: RevisionPrepareBody): Promise<RevisionPrepareResult>;
 	fetchArtifact(input: {
 		videoId: string;
 		revisionId: string;
@@ -46,43 +81,39 @@ export function originBaseUrl(): string {
 	return raw.replace(/\/$/, "");
 }
 
-export function internalToken(): string {
-	const token = process.env.CAP_INSTANT_FINISH_INTERNAL_TOKEN?.trim() ?? "";
-	if (!token) {
-		throw new Error("Instant finish internal authentication is not configured");
-	}
-	return token;
+function signedHeaders(method: string, path: string, body = ""): HeadersInit {
+	return {
+		"content-type": "application/json",
+		[ORIGIN_SERVICE_HEADER]: signInternalServiceRequest({
+			method,
+			path,
+			body,
+		}),
+	};
 }
 
-export function httpOriginClient(
-	baseUrl = originBaseUrl(),
-	token = internalToken(),
-): OriginClient {
+async function signedFetch(path: string, method: "GET" | "HEAD" | "POST", body = "") {
+	return fetch(`${originBaseUrl()}${path}`, {
+		method,
+		headers: signedHeaders(method, path, body),
+		body: method === "POST" ? body : undefined,
+	});
+}
+
+export function httpOriginClient(): OriginClient {
 	return {
 		async prepareRevision(body) {
-			const response = await fetch(
-				`${baseUrl}/internal/revisions/${body.revisionId}/prepare`,
-				{
-					method: "POST",
-					headers: {
-						"content-type": "application/json",
-						[INTERNAL_TOKEN_HEADER]: token,
-					},
-					body: JSON.stringify(body),
-				},
-			);
+			const path = `/internal/revisions/${body.revisionId}/prepare`;
+			const encoded = JSON.stringify(body);
+			const response = await signedFetch(path, "POST", encoded);
 			if (!response.ok) {
 				throw new Error(`Revision prepare failed with HTTP ${response.status}`);
 			}
-			const payload = (await response.json()) as {
-				decoded?: boolean;
-				decodedFrames?: number;
-				initSha256?: string;
-				seg0Sha256?: string;
-				playlistDurationSeconds?: number;
-			};
+			const payload = (await response.json()) as Partial<RevisionPrepareResult>;
 			if (
-				payload.decoded !== true ||
+				payload.playlistHasEndList !== true ||
+				typeof payload.intentId !== "string" ||
+				typeof payload.seg0DecodedFrames !== "number" ||
 				typeof payload.initSha256 !== "string" ||
 				typeof payload.seg0Sha256 !== "string" ||
 				typeof payload.playlistDurationSeconds !== "number"
@@ -90,21 +121,25 @@ export function httpOriginClient(
 				throw new Error("Revision prepare did not return a decode attestation");
 			}
 			return {
-				decoded: true,
-				decodedFrames: payload.decodedFrames ?? 0,
+				ready: payload.ready === true,
+				intentId: payload.intentId,
+				durationSeconds: payload.durationSeconds ?? payload.playlistDurationSeconds,
+				durationTicks: payload.durationTicks,
+				segmentCount: payload.segmentCount,
+				seg0DecodedFrames: payload.seg0DecodedFrames,
+				encoderHash: payload.encoderHash,
+				segmentPlanVersion: payload.segmentPlanVersion,
+				playlistHasEndList: true,
+				decoded: payload.seg0DecodedFrames >= 1,
+				decodedFrames: payload.decodedFrames ?? payload.seg0DecodedFrames,
 				initSha256: payload.initSha256,
 				seg0Sha256: payload.seg0Sha256,
 				playlistDurationSeconds: payload.playlistDurationSeconds,
 			};
 		},
 		async fetchArtifact(input) {
-			const response = await fetch(
-				`${baseUrl}/media/${input.videoId}/r/${input.revisionId}/${input.name}`,
-				{
-					method: input.method,
-					headers: { [INTERNAL_TOKEN_HEADER]: token },
-				},
-			);
+			const path = `/internal/revisions/${input.revisionId}/artifact/${input.name}`;
+			const response = await signedFetch(path, input.method);
 			const body =
 				input.method === "HEAD"
 					? Buffer.alloc(0)
@@ -118,40 +153,27 @@ export function httpOriginClient(
 	};
 }
 
-export async function prepareSourceOnEditorOpen(videoId: string): Promise<{
+export function originSourceId(sourceKey: string): string {
+	return createHash("sha256").update(sourceKey).digest("hex").slice(0, 32);
+}
+
+export async function prepareSourceOnEditorOpen(input: {
+	videoId: string;
 	sourceKey: string;
-	sha256: string;
-	codec: string;
-	timebase: string;
-	frameMode: "vfr" | "cfr";
-	a1Digest: string;
-	indexId: string;
-	warmExpiresAt: string;
-}> {
-	const response = await fetch(
-		`${originBaseUrl()}/internal/sources/${videoId}/prepare`,
-		{
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				[INTERNAL_TOKEN_HEADER]: internalToken(),
-			},
-			body: JSON.stringify({ videoId }),
-		},
-	);
+	sourceId?: string;
+}): Promise<SourcePrepareResult> {
+	const sourceId = input.sourceId ?? originSourceId(input.sourceKey);
+	const path = `/internal/sources/${input.videoId}/prepare`;
+	const encoded = JSON.stringify({
+		videoId: input.videoId,
+		sourceId,
+		sourceKey: input.sourceKey,
+	} satisfies SourcePrepareBody);
+	const response = await signedFetch(path, "POST", encoded);
 	if (!response.ok) {
 		throw new Error(`Source prepare failed with HTTP ${response.status}`);
 	}
-	const payload = (await response.json()) as {
-		sourceKey?: string;
-		sha256?: string;
-		codec?: string;
-		timebase?: string;
-		frameMode?: string;
-		a1Digest?: string;
-		indexId?: string;
-		warmExpiresAt?: string;
-	};
+	const payload = (await response.json()) as Partial<SourcePrepareResult>;
 	if (
 		!payload.sourceKey ||
 		!payload.sha256 ||
@@ -162,9 +184,7 @@ export async function prepareSourceOnEditorOpen(videoId: string): Promise<{
 		!payload.indexId ||
 		!payload.warmExpiresAt
 	) {
-		throw new Error(
-			"Source prepare did not return an immutable source identity",
-		);
+		throw new Error("Source prepare did not return an immutable source identity");
 	}
 	return {
 		sourceKey: payload.sourceKey,

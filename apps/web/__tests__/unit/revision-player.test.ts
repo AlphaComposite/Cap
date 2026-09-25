@@ -14,7 +14,7 @@ import {
 	redactMediaGrant,
 	replacePlaylistGrant,
 } from "@/lib/revision-playback";
-import type { RevisionPublicationDto } from "@/lib/revision-publication";
+import type { InstantFinishPublicationDto } from "@/lib/revision-publication-read";
 import {
 	bindRevisionSeek,
 	bufferCoversTarget,
@@ -29,8 +29,8 @@ import {
 } from "@/lib/share-video-metadata";
 
 const publication = (
-	overrides: Partial<RevisionPublicationDto> = {},
-): RevisionPublicationDto => ({
+	overrides: Partial<InstantFinishPublicationDto> = {},
+): InstantFinishPublicationDto => ({
 	enabled: true,
 	currentRevisionId: "rev-1",
 	generation: 2,
@@ -44,6 +44,16 @@ const publication = (
 		commentTimestamps: { c1: 2.5, c2: null },
 		thumbnailAvailable: false,
 		downloadReady: false,
+		playlistPath: "/media/video-1/r/rev-1/playlist.m3u8",
+		summaryStatus: "persisted",
+		summaryDerived: false,
+		summaryText: null,
+		captions: "revision",
+		chaptersStatus: "revision",
+		thumbnail: "unavailable",
+		download: "preparing",
+		commentClock: "output-time",
+		removedRangeComments: "hidden",
 	},
 	...overrides,
 });

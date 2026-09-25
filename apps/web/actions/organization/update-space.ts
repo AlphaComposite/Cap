@@ -118,11 +118,12 @@ export async function updateSpace(formData: FormData) {
 		spaceUpdate.password = null;
 	}
 
-	if (passwordAction === "set" || passwordAction === "remove") {
-		await bumpPolicyEpochForSpace(id);
-	}
-
-	await db().update(spaces).set(spaceUpdate).where(eq(spaces.id, id));
+	await db().transaction(async (tx) => {
+		if (passwordAction === "set" || passwordAction === "remove") {
+			await bumpPolicyEpochForSpace(id, tx);
+		}
+		await tx.update(spaces).set(spaceUpdate).where(eq(spaces.id, id));
+	});
 
 	const memberIds = Array.from(new Set([...members, space.createdById]));
 	const existingMembers = await db()
