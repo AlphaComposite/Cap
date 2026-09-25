@@ -21,7 +21,11 @@ import {
 	resolveMobileRequestOrigin,
 	resolveMobileWebResourceUrl,
 } from "@/lib/mobile-request-origin";
-import { decidePlaylistPresign } from "@/lib/revision-media-grant";
+import { flaggedPlaylistGate } from "@/lib/playlist-flag-gate";
+import {
+	decidePlaylistPresign,
+	issueAuthorizedRevisionPlayback,
+} from "@/lib/revision-media-grant";
 import { getSegmentPlaybackState } from "@/lib/segment-playback";
 import { apiToHandler } from "@/lib/server";
 import { CACHE_CONTROL_HEADERS } from "@/utils/helpers";
@@ -186,6 +190,45 @@ const getPlaylistResponse = (
 	publicOrigin: string,
 ) =>
 	Effect.gen(function* () {
+		const gate = flaggedPlaylistGate({
+			ownerId: video.ownerId,
+			videoType: urlParams.videoType,
+			fileType: Option.isSome(urlParams.fileType)
+				? urlParams.fileType.value
+				: undefined,
+			sourceType: video.source.type,
+		});
+		if (gate === "unavailable") {
+			return HttpServerResponse.text("", {
+				status: 404,
+				headers: { "cache-control": "private, no-store" },
+			});
+		}
+		if (gate === "revision") {
+			const issued = yield* Effect.promise(() =>
+				issueAuthorizedRevisionPlayback({
+					videoId: video.id,
+					ownerId: video.ownerId,
+					origin: publicOrigin,
+				}).catch(() => ({
+					enabled: true as const,
+					url: null,
+					transcriptUrl: null,
+				})),
+			);
+			if (!issued.enabled || !issued.url) {
+				return HttpServerResponse.text("", {
+					status: 404,
+					headers: { "cache-control": "private, no-store" },
+				});
+			}
+			return HttpServerResponse.redirect(issued.url, {
+				headers: {
+					"cache-control": "private, no-store",
+					"referrer-policy": "no-referrer",
+				},
+			});
+		}
 		const isMp4Source =
 			video.source.type === "desktopMP4" || video.source.type === "webMP4";
 		const isSegmentsRequest =
