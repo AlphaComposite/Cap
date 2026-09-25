@@ -113,7 +113,6 @@ describe("revision playback plan", () => {
 		const playback = buildClientRevisionPlayback({
 			publication: publication({
 				currentRevisionId: null,
-				revisionMetadata: null,
 			}),
 			videoId: "video-1",
 			origin: "https://cap.styrir.com",
