@@ -66,6 +66,7 @@ class OriginApp:
         self.before_send = before_send
         self._origins: dict[str, lib_origin.Origin] = {}
         self._lock = threading.Lock()
+        self._prepare_locks: dict[str, threading.Lock] = {}
         self.timings: list[dict] = []
 
     def handle(self, method: str, raw_path: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
@@ -118,6 +119,14 @@ class OriginApp:
             return self._prepare_revision(revision.group("rev"), headers)
         return self._text(404, b"not found")
 
+    def _source_prepare_lock(self, cache_id: str) -> threading.Lock:
+        with self._lock:
+            found = self._prepare_locks.get(cache_id)
+            if found is None:
+                found = threading.Lock()
+                self._prepare_locks[cache_id] = found
+            return found
+
     def _prepare_source(self, video_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
         try:
             body = json.loads(headers.get("_body") or b"{}")
@@ -125,11 +134,20 @@ class OriginApp:
             key = str(body["sourceKey"])
         except (json.JSONDecodeError, KeyError, TypeError):
             return self._text(400, b"bad request")
+        cache_id = cache_source_id(source_id)
+        # Overlapping editor opens share one build temp. Publishing a mezz before its
+        # bind exists made the next open treat a corrupt file as ready and return 409.
+        with self._source_prepare_lock(cache_id):
+            return self._prepare_source_locked(video_id, cache_id, source_id, key)
+
+    def _prepare_source_locked(
+        self, video_id: str, cache_id: str, source_id: str, key: str
+    ) -> tuple[int, bytes, str, dict[str, str]]:
         try:
-            cache_id = cache_source_id(source_id)
             original = self._materialize_original(cache_id, key)
             mezz = original.with_name("mezz.mp4")
-            if not mezz.is_file():
+            bind_path = mezz.with_suffix(".source-bind.json")
+            if not mezz.is_file() or not bind_path.is_file():
                 build_mezzanine(original, mezz)
             bind = load_source_bind(mezz)
             if bind["source_sha256"] != lib_origin.sha256_file(original):
@@ -605,14 +623,17 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             self._emit(status, body, content_type, extra)
 
         def _emit(self, status: int, body: bytes, content_type: str, extra: dict) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            for key, value in extra.items():
-                self.send_header(key, value)
-            self.end_headers()
-            if self.command != "HEAD" and body:
-                self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                for key, value in extra.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                if self.command != "HEAD" and body:
+                    self.wfile.write(body)
+            except BrokenPipeError:
+                return
 
         def log_message(self, fmt: str, *args) -> None:
             return

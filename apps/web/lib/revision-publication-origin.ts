@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { VideoEditSpecV2 } from "@cap/database/types";
+import { Agent, fetch as originFetch } from "undici";
 import {
 	ORIGIN_SERVICE_HEADER,
 	signInternalServiceRequest,
@@ -92,15 +93,24 @@ function signedHeaders(method: string, path: string, body = ""): HeadersInit {
 	};
 }
 
+// undici's default headersTimeout is 300s. A cold A1 encode on a long source
+// outlasts that and 500s the editor before Done can be shown.
+const originDispatcher = new Agent({
+	headersTimeout: 45 * 60 * 1000,
+	bodyTimeout: 45 * 60 * 1000,
+	connectTimeout: 30_000,
+});
+
 async function signedFetch(
 	path: string,
 	method: "GET" | "HEAD" | "POST",
 	body = "",
 ) {
-	return fetch(`${originBaseUrl()}${path}`, {
+	return originFetch(`${originBaseUrl()}${path}`, {
 		method,
 		headers: signedHeaders(method, path, body),
 		body: method === "POST" ? body : undefined,
+		dispatcher: originDispatcher,
 	});
 }
 
