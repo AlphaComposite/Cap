@@ -208,7 +208,7 @@ def build_audio_index(source: Path) -> dict:
             "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_packets",
             "-show_entries", "packet=pts,duration,size,pos", "-of", "csv=p=0", str(source),
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
     )
     if result.returncode:
         raise RuntimeError(result.stderr.decode("utf-8", "replace")[-2000:])
@@ -257,7 +257,7 @@ def probe_audio_rate(source: Path) -> int:
             "ffprobe", "-v", "error", "-select_streams", "a:0",
             "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(source),
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
     )
     text = result.stdout.decode().strip().splitlines()
     if result.returncode or not text or not text[0].strip().isdigit():
@@ -278,7 +278,7 @@ def prepare_presentation(source: Path) -> dict:
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
             "-vn", "-ac", "2", "-ar", str(SR), "-f", "f32le", str(dest),
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
     )
     if result.returncode:
         raise RuntimeError(result.stderr.decode("utf-8", "replace")[-2000:])
@@ -611,7 +611,7 @@ def _decode_adts(blob: bytes) -> np.ndarray:
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "aac", "-i", "pipe:0",
             "-ac", "2", "-ar", str(SR), "-f", "f32le", "pipe:1",
         ],
-        input=blob, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        input=blob, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30,
     )
     if result.returncode:
         raise RuntimeError(result.stderr.decode("utf-8", "replace")[-2000:])
