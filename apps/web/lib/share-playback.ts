@@ -2,6 +2,7 @@ import type { videos } from "@cap/database/schema";
 import { Storage } from "@cap/web-backend";
 import { type User, Video } from "@cap/web-domain";
 import { Effect, Schema } from "effect";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { runPromise } from "@/lib/server";
 
 type SharePlaybackVideo = Omit<
@@ -11,6 +12,7 @@ type SharePlaybackVideo = Omit<
 
 export const getSharePlaybackUrl = (video: SharePlaybackVideo) =>
 	Effect.gen(function* () {
+		if (isInstantFinishEnabledForOwner(video.owner.id)) return null;
 		const loadedVideo = yield* Schema.decodeUnknown(Video.Video)({
 			...video,
 			ownerId: video.owner.id,

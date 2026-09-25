@@ -7,6 +7,7 @@ import { provideOptionalAuth, Storage, VideosPolicy } from "@cap/web-backend";
 import { Policy, type Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Exit, Option } from "effect";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
@@ -52,6 +53,13 @@ export async function getTranscript(
 		return {
 			success: false,
 			message: "Transcript is not ready yet",
+		};
+	}
+
+	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		return {
+			success: false,
+			message: "Transcript is not available for this revision",
 		};
 	}
 

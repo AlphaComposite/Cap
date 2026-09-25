@@ -5,8 +5,10 @@ import { getPublishedRecordingThumbnailKey } from "@cap/web-backend/src/Storage/
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { extractPosterFrameDataUri } from "@/lib/og/poster-frame";
 import { renderVideoOg } from "@/lib/og/video-og";
+import { revisionArtifactUrl } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
 
@@ -19,6 +21,24 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 
 	if (video.password) return renderVideoOg({ kind: "password" });
 	if (video.public === false) return renderVideoOg({ kind: "locked" });
+
+	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		const screenshotUrl = await revisionArtifactUrl({
+			videoId,
+			ownerId: video.ownerId,
+			artifact: "thumbnail",
+			child: "thumbnail.jpg",
+		}).catch(() => null);
+		return renderVideoOg({
+			kind: "video",
+			video: {
+				title: video.name,
+				ownerName: ownerName ?? undefined,
+				duration: video.duration ?? undefined,
+				screenshotUrl: screenshotUrl ?? undefined,
+			},
+		});
+	}
 
 	let screenshotUrl: string | undefined;
 

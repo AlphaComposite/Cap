@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { db } from "@cap/database";
+import { getCurrentUser } from "@cap/database/auth/session";
 import { videoEdits, videoUploads } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
 import {
@@ -16,6 +17,9 @@ import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { NextRequest } from "next/server";
 import { isPrivateEditTranscriptObjectKey } from "@/lib/edit-transcript";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { ownerOriginalObjectKey } from "@/lib/private-source-read";
+import { isFlaggedDirectObjectKey } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 import { CACHE_CONTROL_HEADERS } from "@/utils/helpers";
 
@@ -156,6 +160,22 @@ async function isEditedSourceObject(
 	return Boolean(upload?.rawFileKey && key === upload.rawFileKey);
 }
 
+async function flaggedObjectGate(
+	video: Video.Video,
+	key: string,
+	internalDownload: boolean,
+) {
+	if (!isInstantFinishEnabledForOwner(video.ownerId)) return "allow" as const;
+	if (internalDownload) return "allow" as const;
+	if (!isFlaggedDirectObjectKey(key, video.ownerId, video.id)) {
+		return "allow" as const;
+	}
+	const user = await getCurrentUser();
+	if (user?.id !== video.ownerId) return "unauthorized" as const;
+	const original = await ownerOriginalObjectKey(video.id, video.ownerId);
+	return key === original ? ("owner-original" as const) : ("stale" as const);
+}
+
 export async function GET(request: NextRequest) {
 	const internalDownload =
 		request.headers.get("x-cap-internal-download") === "1";
@@ -218,7 +238,26 @@ export async function GET(request: NextRequest) {
 		}
 
 		const [storage] = yield* Storage.getAccessForVideo(video);
-		if (!("getObjectResponse" in storage)) {
+		const flaggedGate = yield* Effect.promise(() =>
+			flaggedObjectGate(video, key, internalDownload),
+		);
+		if (flaggedGate === "unauthorized") {
+			return new Response("Forbidden", {
+				status: 403,
+				headers: { "Cache-Control": "private, no-store" },
+			});
+		}
+		if (flaggedGate === "stale") {
+			return new Response("Gone", {
+				status: 410,
+				headers: { "Cache-Control": "private, no-store" },
+			});
+		}
+
+		if (
+			storage.provider !== "googleDrive" &&
+			!isInstantFinishEnabledForOwner(video.ownerId)
+		) {
 			const url = yield* storage.getSignedObjectUrl(key);
 			return Response.redirect(url);
 		}
@@ -272,14 +311,15 @@ export async function GET(request: NextRequest) {
 			if (head.ContentType) headers.set("Content-Type", head.ContentType);
 			return new Response(null, { status: 200, headers });
 		}
-		const upstream = identity
-			? yield* storage.getObjectResponse(key, request.headers.get("range"), {
-					objectIdentity: identity,
-					signal: request.signal,
-				})
-			: yield* storage.getObjectResponse(key, request.headers.get("range"), {
-					signal: request.signal,
-				});
+		const range = request.headers.get("range");
+		const upstream = yield* (
+			storage.provider === "googleDrive"
+				? storage.getObjectResponse(key, range, { signal: request.signal })
+				: storage.getObjectResponse(key, range, {
+						objectIdentity: identity,
+						signal: request.signal,
+					})
+		) as Effect.Effect<Response, unknown, never>;
 		const headers = new Headers(CACHE_CONTROL_HEADERS);
 		if (identity) headers.set("ETag", identity);
 		copyHeader(upstream.headers, headers, "content-type", "Content-Type");
