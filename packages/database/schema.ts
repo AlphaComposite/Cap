@@ -525,6 +525,162 @@ export const videoEdits = mysqlTable("video_edits", {
 	updatedAt: timestamp("updatedAt").notNull().defaultNow().onUpdateNow(),
 });
 
+export type RevisionEncoderProfile = {
+	name: string;
+	preset: string;
+	crf: number;
+	bf: number;
+	gopSeconds: number;
+	fpsMode: string;
+	audio: string;
+	encoderImpl: string;
+	segmentPlanVersion: number;
+	mappingVersion: number;
+};
+
+const revisionVideoId = (name: string) =>
+	varchar(name, { length: nanoIdLength }).notNull().$type<Video.VideoId>();
+
+export const editIntent = mysqlTable(
+	"edit_intent",
+	{
+		videoId: revisionVideoId("videoId"),
+		generation: int("generation").notNull(),
+		intentId: varchar("intentId", { length: 64 }).notNull(),
+		sourceId: text("sourceId").notNull(),
+		canonicalSpec: json("canonicalSpec").notNull().$type<VideoEditSpec>(),
+		mappingVersion: int("mappingVersion").notNull(),
+		encoderProfile: json("encoderProfile")
+			.notNull()
+			.$type<RevisionEncoderProfile>(),
+		draftVersion: int("draftVersion").notNull(),
+		draftSession: varchar("draftSession", { length: 64 }).notNull(),
+		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
+	},
+	(table) => [
+		primaryKey({
+			name: "edit_intent_video_generation",
+			columns: [table.videoId, table.generation],
+		}),
+		index("edit_intent_video_intent_idx").on(table.videoId, table.intentId),
+		foreignKey({
+			name: "edit_intent_video_id_fk",
+			columns: [table.videoId],
+			foreignColumns: [videos.id],
+		}).onDelete("cascade"),
+	],
+);
+
+export const editRevision = mysqlTable(
+	"edit_revision",
+	{
+		revisionId: varchar("revisionId", { length: 64 }).notNull().primaryKey(),
+		videoId: revisionVideoId("videoId"),
+		intentId: varchar("intentId", { length: 64 }).notNull(),
+		sourceId: text("sourceId").notNull(),
+		generation: int("generation").notNull(),
+		state: varchar("state", { length: 32 }).notNull(),
+		attempt: int("attempt").notNull(),
+		error: text("error"),
+		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
+		updatedAt: datetime("updatedAt", { fsp: 3 }).notNull(),
+	},
+	(table) => [
+		index("edit_revision_video_state_idx").on(table.videoId, table.state),
+		index("edit_revision_intent_idx").on(table.intentId),
+		foreignKey({
+			name: "edit_revision_video_id_fk",
+			columns: [table.videoId],
+			foreignColumns: [videos.id],
+		}).onDelete("cascade"),
+	],
+);
+
+export const videoPublication = mysqlTable(
+	"video_publication",
+	{
+		videoId: revisionVideoId("videoId").primaryKey(),
+		currentRevisionId: varchar("currentRevisionId", { length: 64 }),
+		generation: int("generation").notNull().default(0),
+		latestDraftVersion: int("latestDraftVersion").notNull().default(0),
+		draftSession: varchar("draftSession", { length: 64 }).notNull().default(""),
+		publicationEpoch: int("publicationEpoch").notNull().default(0),
+		policyEpoch: int("policyEpoch").notNull().default(0),
+	},
+	(table) => [
+		foreignKey({
+			name: "video_publication_video_id_fk",
+			columns: [table.videoId],
+			foreignColumns: [videos.id],
+		}).onDelete("cascade"),
+	],
+);
+
+export const revisionArtifactStatus = mysqlTable(
+	"revision_artifact_status",
+	{
+		revisionId: varchar("revisionId", { length: 64 }).notNull(),
+		artifact: varchar("artifact", { length: 32 }).notNull(),
+		state: varchar("state", { length: 32 }).notNull(),
+		attempts: int("attempts").notNull().default(0),
+		leaseUntil: datetime("leaseUntil", { fsp: 3 }),
+		heartbeatAt: datetime("heartbeatAt", { fsp: 3 }),
+	},
+	(table) => [
+		primaryKey({
+			name: "revision_artifact_status_pk",
+			columns: [table.revisionId, table.artifact],
+		}),
+	],
+);
+
+export const revisionOutbox = mysqlTable(
+	"outbox",
+	{
+		id: int("id").primaryKey().autoincrement(),
+		videoId: revisionVideoId("videoId"),
+		revisionId: varchar("revisionId", { length: 64 }).notNull(),
+		job: varchar("job", { length: 32 }).notNull(),
+		payload: json("payload").notNull().$type<Record<string, unknown>>(),
+		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
+	},
+	(table) => [
+		index("outbox_video_created_idx").on(table.videoId, table.createdAt),
+	],
+);
+
+export const sourceObject = mysqlTable("source_object", {
+	videoId: revisionVideoId("videoId").primaryKey(),
+	liveKey: varchar("liveKey", { length: 512 }).notNull(),
+	sha256: varchar("sha256", { length: 64 }).notNull(),
+	relocationState: varchar("relocationState", { length: 32 })
+		.notNull()
+		.default("LIVE"),
+	codec: varchar("codec", { length: 64 }),
+	timebase: varchar("timebase", { length: 32 }),
+	frameMode: varchar("frameMode", { length: 16 }),
+	a1Digest: varchar("a1Digest", { length: 64 }),
+	indexId: varchar("indexId", { length: 128 }),
+	warmExpiresAt: datetime("warmExpiresAt", { fsp: 3 }),
+});
+
+export const sourceRelocation = mysqlTable(
+	"source_relocation",
+	{
+		id: int("id").primaryKey().autoincrement(),
+		videoId: revisionVideoId("videoId"),
+		revisionId: varchar("revisionId", { length: 64 }).notNull(),
+		oldKey: varchar("oldKey", { length: 512 }).notNull(),
+		newKey: varchar("newKey", { length: 512 }).notNull(),
+		sha256: varchar("sha256", { length: 64 }).notNull(),
+		state: varchar("state", { length: 32 }).notNull(),
+		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
+	},
+	(table) => [
+		index("source_relocation_video_idx").on(table.videoId, table.createdAt),
+	],
+);
+
 export const sharedVideos = mysqlTable(
 	"shared_videos",
 	{
