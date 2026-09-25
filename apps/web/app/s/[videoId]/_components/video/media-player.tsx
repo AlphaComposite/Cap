@@ -59,6 +59,12 @@ import {
 	normalizePlaybackSpeed,
 	PLAYBACK_SPEEDS,
 } from "@/lib/playback-speed";
+import {
+	hasRevisionSeekBinding,
+	revisionDiscreteSeek,
+	revisionDragCommit,
+	revisionDragStart,
+} from "@/lib/revision-seek";
 import { Badge } from "./badge";
 import { Button as PlayerButton } from "./button";
 import {
@@ -559,13 +565,21 @@ function MediaPlayerRootImpl(props: MediaPlayerRootProps) {
 						isVideo ||
 						(mediaElement instanceof HTMLAudioElement && event.shiftKey)
 					) {
-						dispatch({
-							type: MediaActionTypes.MEDIA_SEEK_REQUEST,
-							detail: Math.min(
-								mediaElement.duration,
-								mediaElement.currentTime + SEEK_STEP_SHORT,
-							),
-						});
+						const nextTime = Math.min(
+							mediaElement.duration,
+							mediaElement.currentTime + SEEK_STEP_SHORT,
+						);
+						if (
+							!(
+								mediaElement instanceof HTMLVideoElement &&
+								revisionDiscreteSeek(mediaElement, nextTime)
+							)
+						) {
+							dispatch({
+								type: MediaActionTypes.MEDIA_SEEK_REQUEST,
+								detail: nextTime,
+							});
+						}
 					}
 					break;
 
@@ -575,10 +589,21 @@ function MediaPlayerRootImpl(props: MediaPlayerRootProps) {
 						isVideo ||
 						(mediaElement instanceof HTMLAudioElement && event.shiftKey)
 					) {
-						dispatch({
-							type: MediaActionTypes.MEDIA_SEEK_REQUEST,
-							detail: Math.max(0, mediaElement.currentTime - SEEK_STEP_SHORT),
-						});
+						const nextTime = Math.max(
+							0,
+							mediaElement.currentTime - SEEK_STEP_SHORT,
+						);
+						if (
+							!(
+								mediaElement instanceof HTMLVideoElement &&
+								revisionDiscreteSeek(mediaElement, nextTime)
+							)
+						) {
+							dispatch({
+								type: MediaActionTypes.MEDIA_SEEK_REQUEST,
+								detail: nextTime,
+							});
+						}
 					}
 					break;
 
@@ -1471,12 +1496,20 @@ function MediaPlayerSeekBackward(props: MediaPlayerSeekBackwardProps) {
 
 			if (event.defaultPrevented) return;
 
+			const nextTime = Math.max(0, mediaCurrentTime - seconds);
+			const media = context.mediaRef.current;
+			if (
+				media instanceof HTMLVideoElement &&
+				revisionDiscreteSeek(media, nextTime)
+			) {
+				return;
+			}
 			dispatch({
 				type: MediaActionTypes.MEDIA_SEEK_REQUEST,
-				detail: Math.max(0, mediaCurrentTime - seconds),
+				detail: nextTime,
 			});
 		},
-		[dispatch, props.onClick, mediaCurrentTime, seconds],
+		[context.mediaRef, dispatch, props.onClick, mediaCurrentTime, seconds],
 	);
 
 	return (
@@ -1530,15 +1563,30 @@ function MediaPlayerSeekForward(props: MediaPlayerSeekForwardProps) {
 
 			if (event.defaultPrevented) return;
 
+			const nextTime = Math.min(
+				seekableEnd ?? Number.POSITIVE_INFINITY,
+				mediaCurrentTime + seconds,
+			);
+			const media = context.mediaRef.current;
+			if (
+				media instanceof HTMLVideoElement &&
+				revisionDiscreteSeek(media, nextTime)
+			) {
+				return;
+			}
 			dispatch({
 				type: MediaActionTypes.MEDIA_SEEK_REQUEST,
-				detail: Math.min(
-					seekableEnd ?? Number.POSITIVE_INFINITY,
-					mediaCurrentTime + seconds,
-				),
+				detail: nextTime,
 			});
 		},
-		[dispatch, props.onClick, mediaCurrentTime, seekableEnd, seconds],
+		[
+			context.mediaRef,
+			dispatch,
+			props.onClick,
+			mediaCurrentTime,
+			seekableEnd,
+			seconds,
+		],
 	);
 
 	return (
@@ -2082,6 +2130,15 @@ function MediaPlayerSeek(props: MediaPlayerSeekProps) {
 	const onSeek = React.useCallback(
 		(value: number[]) => {
 			const time = value[0] ?? 0;
+			const media = context.mediaRef.current;
+			if (media instanceof HTMLVideoElement && hasRevisionSeekBinding(media)) {
+				if (!store.getState().dragging) {
+					revisionDragStart(media);
+					store.setState("dragging", true);
+				}
+				setSeekState((prev) => ({ ...prev, pendingSeekTime: time }));
+				return;
+			}
 
 			setSeekState((prev) => ({ ...prev, pendingSeekTime: time }));
 
@@ -2101,7 +2158,7 @@ function MediaPlayerSeek(props: MediaPlayerSeekProps) {
 				seekThrottleRef.current = null;
 			});
 		},
-		[dispatch, store.getState, store.setState],
+		[context.mediaRef, dispatch, store.getState, store.setState],
 	);
 
 	const onSeekCommit = React.useCallback(
@@ -2146,17 +2203,22 @@ function MediaPlayerSeek(props: MediaPlayerSeekProps) {
 				store.setState("dragging", false);
 			}
 
-			dispatch({
-				type: MediaActionTypes.MEDIA_SEEK_REQUEST,
-				detail: time,
-			});
+			const media = context.mediaRef.current;
+			if (
+				!(media instanceof HTMLVideoElement && revisionDragCommit(media, time))
+			) {
+				dispatch({
+					type: MediaActionTypes.MEDIA_SEEK_REQUEST,
+					detail: time,
+				});
+			}
 
 			dispatch({
 				type: MediaActionTypes.MEDIA_PREVIEW_REQUEST,
 				detail: undefined,
 			});
 		},
-		[dispatch, store.getState, store.setState],
+		[context.mediaRef, dispatch, store.getState, store.setState],
 	);
 
 	React.useEffect(() => {

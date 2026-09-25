@@ -174,6 +174,8 @@ describe("Instant playlist readiness API", () => {
 		mocks.sign.mockClear();
 		mocks.head.mockClear();
 		mocks.read.mockClear();
+		delete process.env.CAP_INSTANT_FINISH_OWNER_IDS;
+		delete process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY;
 	});
 	afterAll(() => mocks.dispose());
 
@@ -306,5 +308,53 @@ describe("Instant playlist readiness API", () => {
 			"https://media.example.com/owner/recording/raw-upload.mp4",
 		);
 		expect(mocks.sign).toHaveBeenCalledWith(mocks.rawFileKey);
+	});
+
+	it("denies raw-preview for a flagged owner with no video_edits row", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNER_IDS = "owner";
+		mocks.sourceType = "webMP4";
+		mocks.videoEditExists = false;
+		mocks.metadata = null;
+		mocks.rawFileKey = "owner/recording/raw-upload.mp4";
+		mocks.rawObjectExists = true;
+
+		const response = await rawPreviewRequest();
+
+		expect(response.status).toBe(404);
+		expect(mocks.sign).not.toHaveBeenCalled();
+		expect(mocks.head).not.toHaveBeenCalled();
+	});
+
+	it("denies segments playlists for a flagged owner with no saved edit", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNER_IDS = "owner";
+		mocks.videoEditExists = false;
+		mocks.metadata = null;
+
+		const response = await request("segments-master", "");
+
+		expect(response.status).toBe(404);
+		expect(mocks.sign).not.toHaveBeenCalled();
+	});
+
+	it("does not sign the previous MP4 for a flagged owner", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNER_IDS = "owner";
+		mocks.sourceType = "webMP4";
+
+		const response = await request("mp4", "");
+
+		expect(response.status).toBe(404);
+		expect(mocks.sign).not.toHaveBeenCalled();
+	});
+
+	it("returns 410 when the presign helper marks the old route gone", async () => {
+		process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY = "gone";
+		mocks.sourceType = "webMP4";
+		mocks.rawFileKey = "owner/recording/raw-upload.mp4";
+
+		const response = await rawPreviewRequest();
+
+		expect(response.status).toBe(410);
+		expect(response.headers.get("cache-control")).toBe("private, no-store");
+		expect(mocks.sign).not.toHaveBeenCalled();
 	});
 });

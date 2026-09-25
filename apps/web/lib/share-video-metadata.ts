@@ -23,6 +23,9 @@ export type ShareVideoMetadataInput = {
 	 */
 	canonicalWebUrl?: string;
 	advertiseIframelyPlayer?: boolean;
+	revisionStreamUrl?: string;
+	revisionThumbnailUnavailable?: boolean;
+	revisionUnavailable?: boolean;
 };
 
 export const getShareVideoUrls = ({
@@ -30,9 +33,18 @@ export const getShareVideoUrls = ({
 	sourceType,
 	webUrl,
 	canonicalWebUrl = webUrl,
+	revisionStreamUrl,
+	revisionThumbnailUnavailable = false,
+	revisionUnavailable = false,
 }: Pick<
 	ShareVideoMetadataInput,
-	"videoId" | "sourceType" | "webUrl" | "canonicalWebUrl"
+	| "videoId"
+	| "sourceType"
+	| "webUrl"
+	| "canonicalWebUrl"
+	| "revisionStreamUrl"
+	| "revisionThumbnailUnavailable"
+	| "revisionUnavailable"
 >) => {
 	const shareUrl = new URL(`/s/${videoId}`, webUrl).toString();
 	const canonicalShareUrl = new URL(
@@ -43,7 +55,11 @@ export const getShareVideoUrls = ({
 	const streamUrl = new URL("/api/playlist", webUrl);
 	streamUrl.searchParams.set("videoId", videoId);
 	let streamContentType = "application/vnd.apple.mpegurl";
-	if (sourceType === "desktopMP4" || sourceType === "webMP4") {
+	if (revisionStreamUrl) {
+		streamContentType = "application/vnd.apple.mpegurl";
+	} else if (revisionUnavailable) {
+		streamContentType = "application/vnd.apple.mpegurl";
+	} else if (sourceType === "desktopMP4" || sourceType === "webMP4") {
 		streamUrl.searchParams.set("videoType", "mp4");
 		streamContentType = "video/mp4";
 	} else if (sourceType === "desktopSegments") {
@@ -64,10 +80,14 @@ export const getShareVideoUrls = ({
 	return {
 		shareUrl,
 		playerUrl,
-		streamUrl: streamUrl.toString(),
+		streamUrl: revisionUnavailable
+			? null
+			: (revisionStreamUrl ?? streamUrl.toString()),
 		streamContentType,
-		previewImageUrl: previewImageUrl.toString(),
-		ogImageUrl: ogImageUrl.toString(),
+		previewImageUrl: revisionThumbnailUnavailable
+			? null
+			: previewImageUrl.toString(),
+		ogImageUrl: revisionThumbnailUnavailable ? null : ogImageUrl.toString(),
 		oEmbedUrl: oEmbedUrl.toString(),
 	};
 };
@@ -79,12 +99,18 @@ export const buildShareVideoMetadata = ({
 	webUrl,
 	canonicalWebUrl,
 	advertiseIframelyPlayer = false,
+	revisionStreamUrl,
+	revisionThumbnailUnavailable = false,
+	revisionUnavailable = false,
 }: ShareVideoMetadataInput): Metadata => {
 	const urls = getShareVideoUrls({
 		videoId,
 		sourceType,
 		webUrl,
 		canonicalWebUrl,
+		revisionStreamUrl,
+		revisionThumbnailUnavailable,
+		revisionUnavailable,
 	});
 	const title = `${name} | Cap Recording`;
 	const description = "Watch this video on Cap";
@@ -125,40 +151,55 @@ export const buildShareVideoMetadata = ({
 			description,
 			ttl: 300,
 			images: [
-				{
-					url: urls.previewImageUrl,
-					width: 480,
-					height: 270,
-					type: "image/gif",
-				},
-				{
-					url: urls.ogImageUrl,
-					width: 1200,
-					height: 630,
-					type: "image/png",
-				},
+				...(urls.previewImageUrl
+					? [
+							{
+								url: urls.previewImageUrl,
+								width: 480,
+								height: 270,
+								type: "image/gif",
+							},
+						]
+					: []),
+				...(urls.ogImageUrl
+					? [
+							{
+								url: urls.ogImageUrl,
+								width: 1200,
+								height: 630,
+								type: "image/png",
+							},
+						]
+					: []),
 			],
-			videos: [
-				{
-					url: urls.streamUrl,
-					secureUrl: urls.streamUrl,
-					width: PLAYER_WIDTH,
-					height: PLAYER_HEIGHT,
-					type: urls.streamContentType,
-				},
-			],
+			videos:
+				revisionUnavailable || !urls.streamUrl
+					? []
+					: [
+							{
+								url: urls.streamUrl,
+								secureUrl: urls.streamUrl,
+								width: PLAYER_WIDTH,
+								height: PLAYER_HEIGHT,
+								type: urls.streamContentType,
+							},
+						],
 		},
 		twitter: {
 			card: "player",
 			title,
 			description,
-			images: [urls.previewImageUrl, urls.ogImageUrl],
-			players: {
-				playerUrl: urls.playerUrl,
-				streamUrl: urls.streamUrl,
-				width: PLAYER_WIDTH,
-				height: PLAYER_HEIGHT,
-			},
+			images: [urls.previewImageUrl, urls.ogImageUrl].filter(
+				(url): url is string => typeof url === "string",
+			),
+			players: urls.streamUrl
+				? {
+						playerUrl: urls.playerUrl,
+						streamUrl: urls.streamUrl,
+						width: PLAYER_WIDTH,
+						height: PLAYER_HEIGHT,
+					}
+				: undefined,
 		},
 		other: {
 			"twitter:player:stream:content_type": urls.streamContentType,
