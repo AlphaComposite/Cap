@@ -7,6 +7,7 @@ import {
 	revisionArtifactStatus,
 	revisionOutbox,
 	sourceObject,
+	sourceRelocation,
 	videoEdits,
 	videoPublication,
 	videos,
@@ -16,6 +17,7 @@ import type { Video } from "@cap/web-domain";
 import { and, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
+import { finishMetadataSnapshot } from "@/lib/revision-metadata-snapshot";
 import {
 	assertServableEncoderProfile,
 	chaptersDocument,
@@ -38,6 +40,7 @@ import {
 	digestMatches,
 	type OriginClient,
 } from "@/lib/revision-publication-origin";
+import { assertFinishSourceKey } from "@/lib/source-relocation";
 
 export type { InstantFinishPublicationDto as RevisionPublicationDto } from "@/lib/revision-publication-read";
 export {
@@ -251,7 +254,8 @@ async function allocateRevision(
 		current &&
 		current.state === "CURRENT" &&
 		current.intentId === intentId &&
-		current.generation === publication.generation
+		publication.currentGeneration != null &&
+		current.generation === publication.currentGeneration
 	) {
 		await advanceDraft(tx, input, publication.latestDraftVersion);
 		return {
@@ -385,6 +389,26 @@ async function readReadySource(
 		throw new RevisionPublicationError(
 			409,
 			"Source identity must be the uncut original, not a rendered result",
+		);
+	}
+	const relocations = await tx
+		.select({
+			newKey: sourceRelocation.newKey,
+			state: sourceRelocation.state,
+		})
+		.from(sourceRelocation)
+		.where(eq(sourceRelocation.videoId, videoId(id)));
+	try {
+		assertFinishSourceKey({
+			liveKey: row.liveKey,
+			relocations,
+		});
+	} catch (error) {
+		throw new RevisionPublicationError(
+			409,
+			error instanceof Error
+				? error.message
+				: "Finish SourceId must use the relocated liveKey",
 		);
 	}
 	return {
@@ -755,7 +779,11 @@ async function flipCurrent(
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
 	allocated: Allocated,
-	prepared: { durationSeconds: number },
+	prepared: {
+		durationSeconds: number;
+		captionsVtt: string;
+		chapters: { title: string; start: number }[];
+	},
 	stamp: Date,
 ) {
 	const [publication] = await tx
@@ -828,9 +856,26 @@ async function flipCurrent(
 			.set({ timestamp: nextTimestamp })
 			.where(eq(comments.id, comment.id));
 	}
+	const [videoRow] = await tx
+		.select({ metadata: videos.metadata })
+		.from(videos)
+		.where(eq(videos.id, videoId(input.videoId)));
+	const snapshot = finishMetadataSnapshot({
+		captionsVtt: prepared.captionsVtt,
+		chapters: prepared.chapters,
+		summaryText: videoRow?.metadata?.summary ?? null,
+		thumbnail:
+			spec.keepRanges[0]?.start === 0 ? "source-zero" : "seg0-first-frame",
+		durationSeconds: prepared.durationSeconds,
+	});
 	const flipped = await tx
 		.update(editRevision)
-		.set({ state: "CURRENT", error: null, updatedAt: stamp })
+		.set({
+			state: "CURRENT",
+			error: null,
+			updatedAt: stamp,
+			metadataSnapshot: snapshot,
+		})
 		.where(
 			and(
 				eq(editRevision.revisionId, allocated.revisionId),
@@ -850,6 +895,7 @@ async function flipCurrent(
 		.update(videoPublication)
 		.set({
 			currentRevisionId: allocated.revisionId,
+			currentGeneration: allocated.generation,
 			publicationEpoch: publication.publicationEpoch + 1,
 		})
 		.where(

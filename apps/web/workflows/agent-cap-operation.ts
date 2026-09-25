@@ -19,6 +19,7 @@ import {
 	checkDomainStatus,
 	getDomainResponse,
 } from "@/actions/organization/domain-utils";
+import { withAclChange } from "@/lib/acl-policy-epoch";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
 import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
@@ -253,6 +254,7 @@ async function deleteCapDatabase(
 			.where(eq(Db.sharedVideos.videoId, videoId));
 		await tx.delete(Db.spaceVideos).where(eq(Db.spaceVideos.videoId, videoId));
 		await tx.delete(Db.videoEdits).where(eq(Db.videoEdits.videoId, videoId));
+		await withAclChange(tx, [videoId]);
 		await tx.delete(Db.videos).where(eq(Db.videos.id, videoId));
 		const now = new Date();
 		await tx

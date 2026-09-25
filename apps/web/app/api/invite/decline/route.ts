@@ -10,6 +10,7 @@ import {
 import { Organisation } from "@cap/web-domain";
 import { and, eq, inArray } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
 
 export async function POST(request: NextRequest) {
 	const user = await getCurrentUser();
@@ -118,6 +119,7 @@ export async function POST(request: NextRequest) {
 				if (Object.keys(userUpdate).length > 0) {
 					await tx.update(users).set(userUpdate).where(eq(users.id, user.id));
 				}
+				await bumpOrganizationAccess(tx, invite.organizationId);
 			}
 
 			await tx

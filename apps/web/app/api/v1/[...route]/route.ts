@@ -67,6 +67,11 @@ import { start } from "workflow/api";
 import { downloadLoomVideo } from "@/actions/loom";
 import { getOrgAnalyticsData } from "@/app/(org)/dashboard/analytics/data";
 import {
+	bumpOrganizationAccess,
+	bumpSpaceAccess,
+	withAclChange,
+} from "@/lib/acl-policy-epoch";
+import {
 	createAgentAccessGrant,
 	readAgentAccessGrant,
 } from "@/lib/agent-access-grant";
@@ -4637,6 +4642,9 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 										updatedAt: now,
 									})
 									.where(eq(Db.organizations.id, path.organizationId));
+								if (payload.allowedEmailDomain !== undefined) {
+									await bumpOrganizationAccess(tx, path.organizationId);
+								}
 								return {
 									state: "success",
 									response: mutationResponse(
@@ -5050,6 +5058,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.update(Db.organizationMembers)
 									.set({ role: payload.role, updatedAt: now })
 									.where(eq(Db.organizationMembers.id, path.memberId));
+								await bumpOrganizationAccess(tx, path.organizationId);
 								return {
 									state: "success",
 									response: mutationResponse(
@@ -5364,6 +5373,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 										),
 									);
 								if (affectedRows(result) === 0) return { state: "not_found" };
+								await bumpOrganizationAccess(tx, path.organizationId);
 								const now = new Date();
 								return {
 									state: "success",
@@ -6840,6 +6850,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 										await tx
 											.delete(Db.videoEdits)
 											.where(eq(Db.videoEdits.videoId, path.id));
+										await withAclChange(tx, [path.id]);
 										await tx
 											.delete(Db.videos)
 											.where(
@@ -8649,6 +8660,13 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 										updatedAt: now,
 									})
 									.where(eq(Db.spaces.id, path.spaceId));
+								if (
+									payload.privacy !== undefined ||
+									payload.public !== undefined ||
+									payload.settings !== undefined
+								) {
+									await bumpSpaceAccess(tx, path.spaceId);
+								}
 								return {
 									state: "success",
 									response: mutationResponse(
@@ -8727,6 +8745,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.for("update");
 								if (!space) return { state: "not_found" };
 								if (space.primary) return { state: "conflict" };
+								await bumpSpaceAccess(tx, path.spaceId);
 								await tx
 									.delete(Db.spaceVideos)
 									.where(eq(Db.spaceVideos.spaceId, path.spaceId));
@@ -8875,6 +8894,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.update(Db.spaceMembers)
 									.set({ role: payload.role, updatedAt: now })
 									.where(eq(Db.spaceMembers.id, member.id));
+								await bumpSpaceAccess(tx, path.spaceId);
 								return {
 									state: "success",
 									response: mutationResponse(
@@ -8930,6 +8950,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.limit(1)
 									.for("update");
 								if (!member) return { state: "not_found" };
+								await bumpSpaceAccess(tx, path.spaceId);
 								await tx
 									.delete(Db.spaceMembers)
 									.where(eq(Db.spaceMembers.id, member.id));

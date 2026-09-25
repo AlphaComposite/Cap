@@ -165,7 +165,61 @@ export function applyRevisionCommentTimes<
 	});
 }
 
-export type GrantRefreshPlan = "reload-same" | "refresh-page" | "hold";
+export type GrantRefreshPlan =
+	| "reload-same"
+	| "refresh-page"
+	| "hold"
+	| "fail-closed";
+
+export function revisionHlsErrorAction(input: {
+	status?: number;
+	fatal?: boolean;
+	details?: string;
+	refreshAttempts: number;
+	maxRefreshAttempts: number;
+	policyDenied: boolean;
+	native?: boolean;
+}): { type: "refresh-grant" } | { type: "fail-closed" } | { type: "ignore" } {
+	if (input.policyDenied || input.refreshAttempts >= input.maxRefreshAttempts) {
+		return { type: "fail-closed" };
+	}
+	const status = input.status ?? 0;
+	if (
+		input.native === true ||
+		status === 401 ||
+		status === 403 ||
+		status === 410 ||
+		status >= 500
+	) {
+		return { type: "refresh-grant" };
+	}
+	return { type: "ignore" };
+}
+
+export function replayRevisionHlsEvents(
+	events: Array<{
+		status?: number;
+		native?: boolean;
+		policyDenied?: boolean;
+	}>,
+	maxRefreshAttempts = 2,
+) {
+	let refreshAttempts = 0;
+	let policyDenied = false;
+	return events.map((event) => {
+		const action = revisionHlsErrorAction({
+			status: event.status,
+			fatal: true,
+			refreshAttempts,
+			maxRefreshAttempts,
+			policyDenied: policyDenied || event.policyDenied === true,
+			native: event.native,
+		});
+		if (action.type === "refresh-grant") refreshAttempts += 1;
+		if (action.type === "fail-closed") policyDenied = true;
+		return action;
+	});
+}
 
 export function planGrantRefresh(input: {
 	status: number;

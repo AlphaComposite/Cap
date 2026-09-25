@@ -18,7 +18,9 @@ import { toast } from "sonner";
 import { retryVideoProcessing } from "@/actions/video/retry-processing";
 import {
 	planGrantRefresh,
+	redactMediaGrant,
 	replacePlaylistGrant,
+	revisionHlsErrorAction,
 } from "@/lib/revision-playback";
 import { bindRevisionSeek, unbindRevisionSeek } from "@/lib/revision-seek";
 import { bindCaptionTrackCueText } from "./caption-tracks";
@@ -220,7 +222,7 @@ export function HLSVideoPlayer({
 
 	const refreshRevisionSource = useCallback(async () => {
 		const revision = revisionRef.current;
-		if (!revision) return "hold" as const;
+		if (!revision) return { plan: "hold" as const, url: null as string | null };
 		const response = await fetch("/api/media/grant", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -229,6 +231,9 @@ export function HLSVideoPlayer({
 				revisionId: revision.revisionId,
 			}),
 		});
+		if (response.status === 401 || response.status === 403) {
+			return { plan: "fail-closed" as const, url: null };
+		}
 		const body = (await response.json().catch(() => null)) as {
 			revisionId?: string;
 			changed?: boolean;
@@ -240,12 +245,14 @@ export function HLSVideoPlayer({
 			body,
 		});
 		if (plan === "reload-same" && body?.grant) {
+			const url = replacePlaylistGrant(videoSrc, body.grant);
 			setGrantState({
 				src: videoSrc,
-				url: replacePlaylistGrant(videoSrc, body.grant),
+				url,
 			});
+			return { plan, url };
 		}
-		return plan;
+		return { plan, url: null };
 	}, [videoSrc]);
 	const refreshRevisionSourceRef = useRef(refreshRevisionSource);
 	refreshRevisionSourceRef.current = refreshRevisionSource;
@@ -357,12 +364,11 @@ export function HLSVideoPlayer({
 		const handleError = (e: Event) => {
 			const error = (e.target as HTMLVideoElement).error;
 			if (error) setHlsInitFailed(true);
-			console.error("HLSVideoPlayer: Video error detected:", {
-				error,
-				code: error?.code,
-				message: error?.message,
-				videoSrc: playbackSrc,
-			});
+			console.error(
+				"HLSVideoPlayer: Video error detected",
+				error?.code,
+				redactMediaGrant(error?.message ?? ""),
+			);
 		};
 
 		video.addEventListener("loadeddata", handleLoadedData);
@@ -426,17 +432,54 @@ export function HLSVideoPlayer({
 			let mediaRetryCount = 0;
 			const maxNetworkRetries = isLiveSegments ? 30 : 6;
 			let hasTriedPlaylistReload = false;
+			let grantRefreshAttempts = 0;
+			let policyDenied = false;
+			const maxGrantRefreshAttempts = 2;
 			let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 			hls.on(Hls.Events.ERROR, (event, data) => {
 				if (!revisionRef.current) {
-					console.error("HLSVideoPlayer: HLS error:", event, data);
+					console.error(
+						"HLSVideoPlayer: HLS error",
+						event,
+						data.type,
+						data.details,
+					);
 				}
 				if (revisionRef.current) {
 					const status = data.response?.code;
-					if (status === 403 || status === 410 || (status ?? 0) >= 500) {
-						void refreshRevisionSourceRef.current().then((plan) => {
-							if (plan === "refresh-page") router.refresh();
+					const action = revisionHlsErrorAction({
+						status,
+						fatal: data.fatal,
+						details: data.details,
+						refreshAttempts: grantRefreshAttempts,
+						maxRefreshAttempts: maxGrantRefreshAttempts,
+						policyDenied,
+					});
+					if (action.type === "fail-closed") {
+						policyDenied = true;
+						setHlsInitFailed(true);
+						hls.stopLoad();
+						hls.destroy();
+						return;
+					}
+					if (action.type === "refresh-grant") {
+						grantRefreshAttempts += 1;
+						void refreshRevisionSourceRef.current().then((result) => {
+							if (result.plan === "fail-closed") {
+								policyDenied = true;
+								setHlsInitFailed(true);
+								hls.destroy();
+								return;
+							}
+							if (result.plan === "refresh-page") {
+								router.refresh();
+								return;
+							}
+							if (result.url) {
+								hls.loadSource(result.url);
+								hls.startLoad();
+							}
 						});
 						return;
 					}
@@ -449,7 +492,9 @@ export function HLSVideoPlayer({
 				}
 
 				const isExpiredUrl =
-					data.response?.code === 403 || data.response?.code === 410;
+					data.response?.code === 401 ||
+					data.response?.code === 403 ||
+					data.response?.code === 410;
 				if (
 					!data.fatal &&
 					isExpiredUrl &&
@@ -529,9 +574,37 @@ export function HLSVideoPlayer({
 			video.src = playbackSrc;
 			video.load();
 			if (!revisionRef.current) return;
+			let nativeRefreshAttempts = 0;
+			let nativePolicyDenied = false;
 			const onError = () => {
-				void refreshRevisionSourceRef.current().then((plan) => {
-					if (plan === "refresh-page") router.refresh();
+				const action = revisionHlsErrorAction({
+					native: true,
+					fatal: true,
+					refreshAttempts: nativeRefreshAttempts,
+					maxRefreshAttempts: 2,
+					policyDenied: nativePolicyDenied,
+				});
+				if (action.type === "fail-closed") {
+					nativePolicyDenied = true;
+					setHlsInitFailed(true);
+					return;
+				}
+				if (action.type !== "refresh-grant") return;
+				nativeRefreshAttempts += 1;
+				void refreshRevisionSourceRef.current().then((result) => {
+					if (result.plan === "fail-closed") {
+						nativePolicyDenied = true;
+						setHlsInitFailed(true);
+						return;
+					}
+					if (result.plan === "refresh-page") {
+						router.refresh();
+						return;
+					}
+					if (result.url) {
+						video.src = result.url;
+						video.load();
+					}
 				});
 			};
 			video.addEventListener("error", onError);

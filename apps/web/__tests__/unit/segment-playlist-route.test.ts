@@ -7,7 +7,11 @@ const mocks = vi.hoisted(() => ({
 	audioInitExists: false,
 	storageUnavailable: false,
 	denied: false,
-	sourceType: "desktopSegments" as "desktopSegments" | "webMP4",
+	sourceType: "desktopSegments" as
+		| "desktopSegments"
+		| "webMP4"
+		| "local"
+		| "MediaConvert",
 	metadata: null as Record<string, unknown> | null,
 	videoEditExists: false,
 	rawFileKey: null as string | null,
@@ -345,6 +349,44 @@ describe("Instant playlist readiness API", () => {
 		expect(response.status).toBe(404);
 		expect(mocks.sign).not.toHaveBeenCalled();
 	});
+
+	it.each([
+		{ sourceType: "local" as const, videoType: "video", fileType: "" },
+		{ sourceType: "MediaConvert" as const, videoType: "video", fileType: "" },
+		{
+			sourceType: "desktopSegments" as const,
+			videoType: "segments-master",
+			fileType: "",
+		},
+		{ sourceType: "webMP4" as const, videoType: "master", fileType: "" },
+		{ sourceType: "webMP4" as const, videoType: "video", fileType: "" },
+		{ sourceType: "webMP4" as const, videoType: "audio", fileType: "" },
+		{
+			sourceType: "webMP4" as const,
+			videoType: "mp4",
+			fileType: "&fileType=transcription",
+		},
+		{
+			sourceType: "webMP4" as const,
+			videoType: "mp4",
+			fileType: "&fileType=enhanced-audio",
+		},
+		{ sourceType: "webMP4" as const, videoType: "raw-preview", fileType: "" },
+	])(
+		"does not presign $sourceType $videoType for a flagged owner",
+		async ({ sourceType, videoType, fileType }) => {
+			process.env.CAP_INSTANT_FINISH_OWNERS = "owner";
+			mocks.sourceType = sourceType;
+			mocks.rawObjectExists = true;
+			mocks.rawFileKey = "owner/recording/raw-upload.mp4";
+
+			const response = await request(videoType, fileType);
+
+			expect([404, 410]).toContain(response.status);
+			expect(response.status).not.toBe(302);
+			expect(mocks.sign).not.toHaveBeenCalled();
+		},
+	);
 
 	it("returns 410 when the presign helper marks the old route gone", async () => {
 		process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY = "gone";

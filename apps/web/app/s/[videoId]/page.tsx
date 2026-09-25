@@ -921,6 +921,7 @@ async function AuthorizedContent({
 	// in a container.
 	return (
 		<div className="flex flex-col flex-1 min-h-0">
+			<meta name="referrer" content="no-referrer" />
 			<Share
 				header={
 					<ShareHeader

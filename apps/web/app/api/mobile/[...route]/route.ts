@@ -56,6 +56,7 @@ import {
 	createMobileContentReport,
 	hasPendingAccountDeletion,
 } from "@/lib/account-deletion-request";
+import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
 import { queueDesktopSegmentsFinalization } from "@/lib/desktop-segments-finalization";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
@@ -1167,10 +1168,13 @@ const updateOrganizationSettings = Effect.fn(
 
 	const database = yield* Database;
 	yield* database.use((db) =>
-		db
-			.update(Db.organizations)
-			.set({ name, allowedEmailDomain })
-			.where(eq(Db.organizations.id, settings.id)),
+		db.transaction(async (tx) => {
+			await tx
+				.update(Db.organizations)
+				.set({ name, allowedEmailDomain })
+				.where(eq(Db.organizations.id, settings.id));
+			await bumpOrganizationAccess(tx, settings.id);
+		}),
 	);
 	yield* Effect.sync(() => {
 		revalidatePath("/dashboard/caps");

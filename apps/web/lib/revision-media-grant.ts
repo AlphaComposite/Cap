@@ -21,6 +21,7 @@ export type PolicyView = "allow" | "deny" | "password" | "missing";
 export type PublicationView = {
 	currentRevisionId: string | null;
 	generation: number;
+	currentGeneration: number | null;
 	publicationEpoch: number;
 	policyEpoch: number;
 };
@@ -67,7 +68,7 @@ export async function readPublication(
 ): Promise<PublicationView | null | "missing_table"> {
 	try {
 		const result = await executor.execute(sql`
-			SELECT currentRevisionId, generation, publicationEpoch, policyEpoch
+			SELECT currentRevisionId, generation, currentGeneration, publicationEpoch, policyEpoch
 			FROM video_publication
 			WHERE videoId = ${videoId}
 			LIMIT 1
@@ -82,6 +83,8 @@ export async function readPublication(
 		return {
 			currentRevisionId: row.currentRevisionId,
 			generation: Number(row.generation),
+			currentGeneration:
+				row.currentGeneration == null ? null : Number(row.currentGeneration),
 			publicationEpoch: Number(row.publicationEpoch),
 			policyEpoch: Number(row.policyEpoch),
 		};
@@ -116,16 +119,29 @@ export async function readArtifactReady(
 	}
 }
 
+function rowsOf(result: unknown): Array<Record<string, unknown>> {
+	const rows = Array.isArray(result)
+		? result
+		: ((result as { rows?: unknown[] }).rows ?? []);
+	const list = Array.isArray(rows[0]) ? rows[0] : rows;
+	return list.filter(
+		(row): row is Record<string, unknown> =>
+			typeof row === "object" && row !== null && !Array.isArray(row),
+	);
+}
+
 export async function bumpPolicyEpoch(
 	videoId: string,
 	executor: SqlExecutor = db(),
 ): Promise<void> {
-	const [video] = await db()
-		.select({ ownerId: videos.ownerId })
-		.from(videos)
-		.where(eq(videos.id, videoId as Video.VideoId));
-	if (!video) throw new Error("policy epoch bump failed closed");
-	if (!isInstantFinishEnabledForOwner(video.ownerId)) return;
+	const ownerResult = await executor.execute(sql`
+		SELECT ownerId FROM videos WHERE id = ${videoId} LIMIT 1
+	`);
+	const ownerId = rowsOf(ownerResult)[0]?.ownerId;
+	if (typeof ownerId !== "string" || ownerId.length === 0) {
+		throw new Error("policy epoch bump failed closed");
+	}
+	if (!isInstantFinishEnabledForOwner(ownerId)) return;
 	try {
 		await executor.execute(sql`
 			UPDATE video_publication

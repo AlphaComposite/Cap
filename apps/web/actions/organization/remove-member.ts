@@ -12,6 +12,7 @@ import {
 import type { Organisation } from "@cap/web-domain";
 import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
 import {
 	canRemoveOrganizationMember,
 	getEffectiveOrganizationRole,
@@ -106,6 +107,7 @@ export async function removeOrganizationMember(
 			);
 
 		if (result.affectedRows === 0) throw new Error("Member not found");
+		await bumpOrganizationAccess(tx, organizationId);
 	});
 
 	revalidatePath("/dashboard/settings/organization");
