@@ -13,6 +13,7 @@ import {
 import { and, eq, inArray, isNull, like, notInArray, sql } from "drizzle-orm";
 import { Option } from "effect";
 import { FatalError } from "workflow";
+import { refuseFlaggedOwnershipTransfer } from "@/lib/acl-policy-epoch";
 import {
 	CONTENT_TRANSFER_KIND,
 	type ContentTransferPayload,
@@ -782,6 +783,16 @@ async function transferOneVideo(
 			throw new FatalError(`Source placement changed for ${item.name}`);
 		}
 
+		try {
+			refuseFlaggedOwnershipTransfer({
+				sourceOwnerId: lockedVideo.ownerId,
+				targetOwnerId: targetUserId,
+			});
+		} catch (error) {
+			throw new FatalError(
+				error instanceof Error ? error.message : "Ownership transfer refused",
+			);
+		}
 		await tx
 			.update(Db.videos)
 			.set({

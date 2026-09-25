@@ -6,6 +6,7 @@ import { organizationMembers } from "@cap/database/schema";
 import type { Organisation } from "@cap/web-domain";
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
 import {
 	canChangeOrganizationMemberRole,
 	getEffectiveOrganizationRole,
@@ -65,10 +66,13 @@ export async function updateOrganizationMemberRole(
 		throw new Error("You do not have permission to update this member role");
 	}
 
-	await db()
-		.update(organizationMembers)
-		.set({ role: nextRole })
-		.where(eq(organizationMembers.id, memberId));
+	await db().transaction(async (tx) => {
+		await tx
+			.update(organizationMembers)
+			.set({ role: nextRole })
+			.where(eq(organizationMembers.id, memberId));
+		await bumpOrganizationAccess(tx, organizationId);
+	});
 
 	revalidatePath("/dashboard/settings/organization");
 	revalidatePath("/dashboard");
