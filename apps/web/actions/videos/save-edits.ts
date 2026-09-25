@@ -13,7 +13,9 @@ import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { revalidatePath } from "next/cache";
 import { start } from "workflow/api";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { assertLegacyEditsQuiescent } from "@/lib/legacy-video-edit-recovery";
+import { resolveRollbackSourceKey } from "@/lib/revision-publication-read";
 import { runPromise } from "@/lib/server";
 import {
 	clearPendingEdit,
@@ -272,6 +274,11 @@ export async function saveVideoEdits(
 	expectedEditSpec?: VideoEditSpec,
 ) {
 	const { user, video } = await loadEditableVideo(videoId);
+	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		throw new Error(
+			"Instant finish is enabled for this video. Publish the revision instead of starting a render.",
+		);
+	}
 	const requestedEditSpec = parseVideoEditSpec(editSpec);
 	const expectedBaseline = expectedEditSpec
 		? parseVideoEditSpec(expectedEditSpec)
@@ -326,8 +333,10 @@ export async function saveVideoEdits(
 		return { success: true, skipped: true };
 	}
 
-	const sourceKey =
-		existingEdit?.sourceKey ?? getEditSourceKey(video.ownerId, video.id);
+	const sourceKey = await resolveRollbackSourceKey(
+		video.id,
+		existingEdit?.sourceKey ?? getEditSourceKey(video.ownerId, video.id),
+	);
 	const aiGenerationEnabled = await isAiGenerationEnabled(user);
 	const operation = await markEditProcessing({
 		video,
@@ -384,8 +393,10 @@ export async function restoreVideoToOriginal(videoId: Video.VideoId) {
 		return { success: true, skipped: true };
 	}
 
-	const sourceKey =
-		existingEdit?.sourceKey ?? getEditSourceKey(video.ownerId, video.id);
+	const sourceKey = await resolveRollbackSourceKey(
+		video.id,
+		existingEdit?.sourceKey ?? getEditSourceKey(video.ownerId, video.id),
+	);
 	const bucket = await getVideoBucket(video);
 	if (!(await objectExists(bucket, sourceKey)))
 		throw new Error("Original video is no longer available");
