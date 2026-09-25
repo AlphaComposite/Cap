@@ -10,11 +10,15 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass
 
 GRANT_TTL_S = 60
 GRANT_SKEW_S = 5
 MIN_SECRET_BYTES = 32
+SAFE_INT_MAX = 9_007_199_254_740_991
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+GRANT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
 class GrantError(Exception):
@@ -36,6 +40,14 @@ class Grant:
     kid: str
 
 
+def _safe_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise GrantError(401, "claims")
+    if value < 0 or value > SAFE_INT_MAX:
+        raise GrantError(401, "claims")
+    return value
+
+
 def canonical_grant_json(claims: dict) -> str:
     required = (
         "v",
@@ -55,13 +67,13 @@ def canonical_grant_json(claims: dict) -> str:
         + ',"revisionId":'
         + json.dumps(claims["revisionId"], ensure_ascii=False)
         + ',"publicationEpoch":'
-        + str(int(claims["publicationEpoch"]))
+        + str(_safe_int(claims["publicationEpoch"]))
         + ',"policyEpoch":'
-        + str(int(claims["policyEpoch"]))
+        + str(_safe_int(claims["policyEpoch"]))
         + ',"iat":'
-        + str(int(claims["iat"]))
+        + str(_safe_int(claims["iat"]))
         + ',"exp":'
-        + str(int(claims["exp"]))
+        + str(_safe_int(claims["exp"]))
         + ',"grantId":'
         + json.dumps(claims["grantId"], ensure_ascii=False)
         + "}"
@@ -108,7 +120,7 @@ def mint(secret: bytes | list[tuple[str, bytes]], claims: dict, kid: str = "k1")
         raise GrantError(401, "key")
     key_id, key = chosen
     payload = canonical_grant_json(claims).encode("utf-8")
-    if int(claims["exp"]) - int(claims["iat"]) != GRANT_TTL_S:
+    if _safe_int(claims["exp"]) - _safe_int(claims["iat"]) != GRANT_TTL_S:
         raise GrantError(401, "ttl")
     encoded = b64url_encode(payload)
     sig = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).digest()
@@ -172,8 +184,12 @@ def verify(
         raise GrantError(401, "claims") from exc
     if grant.exp - grant.iat != GRANT_TTL_S:
         raise GrantError(401, "ttl")
-    if grant.iat > now + GRANT_SKEW_S or now >= grant.exp:
-        raise GrantError(401, "expired")
-    if not grant.video_id or not grant.revision_id or not grant.grant_id:
+    if not ID_RE.fullmatch(grant.video_id) or not ID_RE.fullmatch(grant.revision_id):
         raise GrantError(401, "claims")
+    if not GRANT_ID_RE.fullmatch(grant.grant_id):
+        raise GrantError(401, "claims")
+    if grant.iat > now + GRANT_SKEW_S:
+        raise GrantError(401, "skew")
+    if now > grant.exp + GRANT_SKEW_S:
+        raise GrantError(401, "expired")
     return grant
