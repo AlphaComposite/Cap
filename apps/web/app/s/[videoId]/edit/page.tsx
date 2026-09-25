@@ -6,6 +6,11 @@ import { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import {
+	openInstantFinishEditor,
+	selectEditorPlayback,
+} from "@/lib/revision-publication-read";
 import { isEditSourceKey } from "@/lib/video-edit-processing";
 import {
 	areEditSpecsEquivalent,
@@ -97,19 +102,26 @@ export default async function EditVideoPage(props: {
 	const initialEditSpec = existingEdit
 		? parseVideoEditSpec(existingEdit.editSpec)
 		: createIdentityEditSpec(video.duration);
-	const originalDownload = existingEdit
-		? await getVideoDownloadInfo(videoId, "original")
-		: null;
-	if (existingEdit && originalDownload?.success !== true) {
+	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
+	const opened = flagged ? await openInstantFinishEditor(videoId) : null;
+	const originalDownload =
+		!flagged && existingEdit
+			? await getVideoDownloadInfo(videoId, "original")
+			: null;
+	if (!flagged && existingEdit && originalDownload?.success !== true) {
 		throw new Error(
 			originalDownload?.error ??
 				"The original recording is unavailable, so this edit cannot be opened safely.",
 		);
 	}
-	const playbackSrc =
-		existingEdit && originalDownload?.success === true
-			? originalDownload.downloadUrl
-			: `/api/playlist?userId=${video.ownerId}&videoId=${video.id}&videoType=mp4`;
+	const playback = selectEditorPlayback({
+		flagged,
+		existingEdit: Boolean(existingEdit),
+		ownerProxyUrl: opened?.playbackSrc ?? null,
+		presignedOriginalUrl:
+			originalDownload?.success === true ? originalDownload.downloadUrl : null,
+		playlistUrl: `/api/playlist?userId=${video.ownerId}&videoId=${video.id}&videoType=mp4`,
+	});
 
 	const hasExistingEdits = existingEdit
 		? !areEditSpecsEquivalent(
@@ -123,8 +135,8 @@ export default async function EditVideoPage(props: {
 			chapters={video.metadata?.chapters ?? []}
 			hasExistingEdits={hasExistingEdits}
 			initialEditSpec={initialEditSpec}
-			playbackSrc={playbackSrc}
-			usesOriginalSource={Boolean(existingEdit)}
+			playbackSrc={playback.playbackSrc}
+			usesOriginalSource={playback.usesOriginalSource}
 			video={{
 				id: video.id,
 				name: video.name,
