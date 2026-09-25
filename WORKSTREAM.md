@@ -1,67 +1,95 @@
-# W-A revisions, publication fence, server owner flag
+# cap-fzp.8 wire integration
 
-Branch `wire/a-revisions` at `/srv/styrir/worktrees/cap-fzp-8-wire-a-revisions`, cut from `downstream/main` `a17a3348fac7e91f3c63ee620826b8a3a2dac041`. Not deployed. Not a production success.
+Branch `wire/integration` in `/srv/styrir/worktrees/cap-fzp-8-wire-integration`. Base `a17a3348fa`. Not pushed. Not production. Not the section 9 acceptance run.
 
-## What landed
+The previous text in this file was W-A's handoff, kept on every merge. This replaces it with the integration result.
 
-- `packages/database/schema.ts` — `edit_intent`, `edit_revision`, `video_publication`, `revision_artifact_status`, `outbox`, plus reserved `source_object` and `source_relocation`.
-- `packages/database/migrations/0047_brown_spitfire.sql` and `packages/database/migrations/meta/0047_snapshot.json`, journal idx 47. Columns are camelCase (`videoId`, `currentRevisionId`, `liveKey`) so B's read-only SQL and D's raw SQL match. Uniqueness of `(videoId, generation)` is the `edit_intent` primary key.
-- `apps/web/lib/instant-finish-flag.ts` — `CAP_INSTANT_FINISH_OWNERS`, checked by `video.ownerId`.
-- `apps/web/lib/revision-publication.ts` — CAS allocate, origin fence, CURRENT flip only after checks, outbox, download lease.
-- `apps/web/lib/revision-publication-metadata.ts` — intent hash, caption/chapter/comment clocks, playlist duration, thumbnail binding.
-- `apps/web/lib/revision-publication-origin.ts` — internal origin client. Header `x-cap-internal-token`.
-- `apps/web/lib/revision-publication-read.ts` — publication DTO, policyEpoch bump, rollback live-key read, editor-open prepare.
-- `apps/web/actions/videos/publish-revision.ts` — `publishVideoRevision`, `recordServerEditDraft`.
-- `apps/web/actions/videos/save-edits.ts` — flagged `saveVideoEdits` throws and does not start `editVideoWorkflow`. Unflagged path unchanged. Rollback source key reads `source_object.liveKey`.
-- `apps/web/app/s/[videoId]/edit/page.tsx` — flagged editor open skips the original S3 presign.
-- Tests and disposable compose under `apps/web/__tests__/`.
+## Merge
 
-A publication does not insert `video_uploads`, does not set `metadata.editProcessing`, and does not upsert `video_edits`.
+Order A, B, D, C, each `--no-ff`. Shared modules kept the owner's implementation.
 
-## Commands and exit codes
+- `1c8daba9a3` merge `wire/a-revisions` (`677f50bac5`): schema 0047, owner flag, publication fence, origin client.
+- `fa60dfe251` merge `wire/b-origin` (`85a502519f`): origin service, nginx location, PyAV. Kept A's `apps/web/lib/revision-publication.ts`.
+- `ab54060864` merge `wire/d-auth` (`da08a3d9b9`): grant, token, relocation, private source reads. Kept A's owner flag.
+- `15fe926287` merge `wire/c-player` (`3f906db8af`): player, seek helper, Done wiring. Kept A/D shared modules.
+- `ba20e01125` reconcile the ten contracts.
+- `466512f8f6` `b702ba5695` `e35c872bc1` fence test and typecheck fixes.
 
-Disposable compose (not production). Project `capwire-a-revisions`, file `apps/web/__tests__/fixtures/wire-a-revisions.compose.yml`, MySQL `127.0.0.1:13316`, MinIO `127.0.0.1:19010`. Local-only password, not a production secret.
+C's `CONTRACT STUB` modules were replaced by A/D implementations during the merges. No stub-only export remains as the live implementation of those modules.
 
-- `bun run db:generate` via systemd unit `capwire-a-revisions-dbgen2`: exit 0. Wrote `migrations/0047_brown_spitfire.sql`.
-- Unit: `bunx vitest run __tests__/unit/revision-publication.test.ts __tests__/unit/revision-publication-flag.test.ts __tests__/unit/save-video-edits.test.ts __tests__/unit/video-edit-actions.test.ts` unit `capwire-a-revisions-unit4`: exit 0. `Test Files  4 passed (4)` / `Tests  27 passed (27)`.
-- Integration against fresh database `capwire_a` and an in-process fake origin, unit `capwire-a-revisions-integration`: exit 0. `Tests  6 passed (6)`, including migration up, duplicate generation rejection, table drop/recreate, R1 flip, same-intent idempotence, stale generation and same-session draft 409, injected caption 500 blocking CURRENT, fresh revision on retry, stale S0 left SUPERSEDED, Next action 200 only after the fake origin prepared `seg/0.m4s`.
-- `bunx biome check --write` on the touched TS/JSON/YML files: exit 0.
-- `bunx tsc -b packages/database --pretty false` unit `capwire-a-revisions-tsc-db`: exit 0.
-- `bunx next typegen` unit `capwire-a-revisions-typegen`: exit 0.
-- `NODE_OPTIONS=--max-old-space-size=5120 bunx tsc -b apps/web --pretty false` unit `capwire-a-revisions-tsc-web`: exit 0.
-- Earlier `tsc --noEmit` without project builds exited 2 (`TS6305` missing `dist`). Earlier `tsc -b apps/web` before `next typegen` exited 1 with 12 pre-existing `PageProps` / `RouteContext` errors, none in W-A files. A full `tsc -b` without a raised heap was killed by the default Node heap limit (not a type error).
-- `curl -fsS http://127.0.0.1:19010/minio/health/live`: HTTP 200. Fence tests did not write MinIO objects.
+## Mismatches
 
-## Contract stubs (integrator replaces these files)
+1. Owner flag. Canonical env `CAP_INSTANT_FINISH_OWNERS`, parser `packages/utils/src/instant-finish-flag.ts:1`. Re-exported by `apps/web/lib/instant-finish-flag.ts:1` and `packages/web-backend/src/Videos/instantFinishFlag.ts:1`. Callers and tests no longer read `CAP_INSTANT_FINISH_OWNER_IDS` or `INSTANT_FINISH_OWNER_IDS`.
 
-- `apps/web/lib/revision-media-grant.ts` — `CONTRACT STUB (owned by W-D)`. Exports `ownerOriginalPath(videoId)` as `/api/media/original?videoId=...`, matching W-D's current helper. Editor open calls this. It must not become an S3 presign.
-- `apps/web/lib/private-source-read.ts` — `CONTRACT STUB (owned by W-D)`. Exports `resolveLiveOriginal`, `mapLegacySourceKey`, `ownerOriginalObjectKey`. A does not call this module. A reads `source_object.liveKey` via `resolveRollbackSourceKey`.
-- `apps/web/lib/source-relocation.ts` — `CONTRACT STUB (owned by W-D)`. `resolveLegacySourceKey` is a minimal stand-in. `relocateKey` throws. D owns copy/verify/delete and the journal writer.
+2. Internal service auth. Canonical header `x-cap-origin-service` (`apps/web/lib/revision-media-token.ts:10`). MAC is method + path + body sha256 + timestamp, skew 5s, TTL 30s (`revision-media-token.ts:273`, `apps/instant-finish-origin/service_auth.py:10`). Secret `REVISION_ORIGIN_SERVICE_SECRET`, at least 32 bytes, distinct from the grant secret. A's client sends it (`apps/web/lib/revision-publication-origin.ts:84`). B verifies it case-insensitively (`apps/instant-finish-origin/server.py:93`). No `x-cap-internal-token` and no `X-Origin-Service-Token` on the live path.
 
-## Handoff
+3. Viewer grant. Canonical ring `REVISION_MEDIA_GRANT_KEYS` (`revision-media-token.ts:84`, `apps/instant-finish-origin/grant.py:83`, `server.py:637`). Token is `kid.base64url(canonical JSON).base64url(HMAC)`. No derivation from `NEXTAUTH_SECRET`. Unset ring fails closed in `server.py:637`. The `ORIGIN_GRANT_SECRET` fallback was removed.
 
-B internal routes, authenticated with `x-cap-internal-token`:
+4. Publish action. Canonical `publishVideoRevision` in `apps/web/actions/videos/publish-revision.ts:72`. Done records the server draft first (`apps/web/app/s/[videoId]/edit/EditVideoClient.tsx:1142`) then publishes (`EditVideoClient.tsx:1147`). Flag-off still calls `saveVideoEdits` (`EditVideoClient.tsx:1135`).
 
-- `POST /internal/sources/{videoId}/prepare` on editor open. Return `sourceKey`, `sha256`, `codec`, `timebase`, `frameMode`, `a1Digest`, `indexId`, `warmExpiresAt`.
-- `POST /internal/revisions/{revisionId}/prepare`. Return `decoded`, `decodedFrames`, `initSha256`, `seg0Sha256`, `playlistDurationSeconds`.
-- `GET` and `HEAD /media/{videoId}/r/{revisionId}/{init.mp4,seg/0.m4s,playlist.m3u8,captions.vtt,chapters.json,thumbnail.jpg}`.
-- Env: `CAP_INSTANT_FINISH_ORIGIN_URL`, `CAP_INSTANT_FINISH_INTERNAL_TOKEN`, `CAP_INSTANT_FINISH_OWNERS`.
+5. Publication DTO. One type, `InstantFinishPublicationDto` at `apps/web/lib/revision-publication-read.ts:35`, including `draftVersion`, `draftSession`, and `revisionMetadata.duration/chapters/captionsAvailable/commentTimestamps/thumbnailAvailable/downloadReady`. Re-exported from `revision-publication.ts` as `RevisionPublicationDto`. The player reads that type (`apps/web/lib/revision-playback.ts`).
 
-C: call `publishVideoRevision` with the committed V2 spec, `baseGeneration`, `draftVersion`, `draftSession`, and wait for `{success:true,revisionId,generation}`. Call `recordServerEditDraft` for the server draft. A localStorage-only draft is not enough. Read `getInstantFinishPublicationDto`: `{enabled,currentRevisionId,generation,duration,revisionMetadata}`. Do not edit `EditVideoClient` from this branch; it is not wired to Finish.
+6. Policy epoch. Canonical `bumpPolicyEpoch` / `ForVideos` / `ForSpace` in `apps/web/lib/revision-media-grant.ts:119`. Finish calls it inside the flip transaction (`revision-publication.ts:850`). ACL bumps are in the same transaction as the write: `apps/web/actions/caps/share.ts:75`, `apps/web/actions/organization/update-space.ts:121`, `apps/web/actions/spaces/remove-videos.ts:52`, `apps/web/actions/organization/delete-space.ts:66`, `apps/web/actions/organizations/remove-videos.ts:84`, and the mobile sharing and password handlers in `apps/web/app/api/mobile/[...route]/route.ts`. Password (`apps/web/actions/videos/password.ts:38`) and the v1 password route (`apps/web/app/api/v1/[...route]/route.ts:7449`) were already transactional.
 
-D: replace the three stubs. Bump privacy with `bumpPublicationPolicyEpoch`. Rollback source key is `resolveRollbackSourceKey`. Publication columns are camelCase. `download.mp4` is an outbox job plus `claimArtifactLease` / `markArtifactFailed`, not part of the 200 fence.
+7. Origin prepare. Superset is implemented in `apps/instant-finish-origin/server.py` source prepare (`server.py:145`) and revision prepare (`server.py:194`). The client consumes it in `revision-publication-origin.ts`. The fence refuses CURRENT unless `seg0DecodedFrames >= 1`, `playlistHasEndList`, and `intentId` match (`revision-publication.ts:542`).
 
-Summary text is persisted and not auto-derived (`summaryDerived: false`). Comments inside removed ranges are set to null at publish time. Flag off keeps `saveVideoEdits` -> `editVideoWorkflow`.
+8. Grant refresh. POST only, JSON body, grant returned in the JSON body, no GET (`apps/web/app/api/media/grant/route.ts:18`). The player posts JSON (`apps/web/app/s/[videoId]/_components/HLSVideoPlayer.tsx:224`).
 
-## Gaps
+9. Restore. `restoreVideoToOriginal` throws when the owner flag is on (`apps/web/actions/videos/save-edits.ts:382`).
 
-- `restoreVideoToOriginal` resolves the live key but is not refused when the owner flag is on. It can still start the existing rollback renderer.
-- Editor-open `POST /internal/sources/{videoId}/prepare` is implemented and not exercised by the disposable integration test. That fake origin only implements revision prepare and media readback.
-- Concurrent Finish was one MySQL transaction interrupted by a newer generation (`onAllocated`), not two OS processes.
-- Disposable compose is still up. `docker compose -p capwire-a-revisions ... down -v` was refused by the command filter in this session. Do not confuse it with `cap-web` / `cap-mysql` / `cap-minio`. Tear it down before leaving the host:
+10. Origin CPU. `docker-compose.yml:92` is `cpus: "${ORIGIN_CPUS:-2}"`. The integration smoke at 8 was not run.
 
-```
-docker compose -p capwire-a-revisions -f /srv/styrir/worktrees/cap-fzp-8-wire-a-revisions/apps/web/__tests__/fixtures/wire-a-revisions.compose.yml down -v
-```
+## Tests run
 
-- No production containers, production MySQL, production MinIO, nginx, or Beads writes.
+Origin pytest, second run after the case-insensitive MAC header fix:
+
+`systemd-run --user --unit capwire-int-pytest --collect --wait -p MemoryMax=8G -p CPUQuota=400% -p WorkingDirectory=/srv/styrir/worktrees/cap-fzp-8-wire-integration /srv/styrir/scratch/cap-fzp-8-wire/build-b-origin/venv/bin/python -m unittest discover -s apps/instant-finish-origin/tests -v`
+
+Exit 0. `Ran 16 tests in 8.725s` / `OK`. The first run exited 1: five media tests got HTTP 401 because urllib capitalizes `x-cap-origin-service`.
+
+Web unit, `bunx vitest run` under units `capwire-int-vitest` and `capwire-int-vitest2`, working directory `apps/web`:
+
+- `revision-media-auth.test.ts` 10 passed
+- `revision-player.test.ts` 15 passed
+- `segment-playlist-route.test.ts` 26 passed
+- `revision-publication-flag.test.ts` 2 passed
+- `revision-publication.test.ts` 5 passed, 6 skipped (those need MySQL; they ran in the fence file)
+- `video-edit-actions.test.ts` 15 passed, exit 0
+
+Fence integration against disposable MySQL `capwire-int-mysql-1` on `127.0.0.1:31416`, database `capwire`, project `capwire-int`:
+
+`bunx vitest run __tests__/unit/revision-publication.integration.test.ts`
+
+Exit 0. `Test Files  1 passed (1)` / `Tests  6 passed (6)`. Covers migration 0047 up/down, R1 only after the fence, 409 stale generation, metadata failure retry, stale S0, and the Next action against the fake origin using the signed MAC.
+
+Typecheck, unit `capwire-int-typecheck`:
+
+`cd apps/web && bunx next typegen` then `NODE_OPTIONS=--max-old-space-size=5120 bunx tsc -b apps/web --pretty false`
+
+First `tsc` exited 2 (three errors). After the grant narrowing and done-plan type fix, `tsc` exited 0.
+
+## E2E
+
+Not run. No Playwright Chromium or WebKit session. No screenshots in `/srv/styrir/scratch/cap-fzp-8-wire/build-integration/evidence/`. No click-to-first-frame timings. No HTTP statuses for share, embed, grant 403, or privacy 410. The gate fixture and production video `z9x58adx1ra8bm3` were not copied into disposable MinIO. The origin container, nginx, and Next.js were not started. The `ORIGIN_CPUS=8` smoke was not run.
+
+Disposable MySQL only:
+
+- project `capwire-int`
+- compose `/srv/styrir/scratch/cap-fzp-8-wire/build-integration/compose.yml`
+- container `capwire-int-mysql-1` on `127.0.0.1:31416`
+- production containers were not touched
+
+Teardown was not run from this session. Exact command:
+
+`docker compose -p capwire-int -f /srv/styrir/scratch/cap-fzp-8-wire/build-integration/compose.yml down -v`
+
+W-A's older disposable project may still be up from that builder. Its teardown, also not run here:
+
+`docker compose -p capwire-a-revisions -f /srv/styrir/worktrees/cap-fzp-8-wire-a-revisions/apps/web/__tests__/fixtures/wire-a-revisions.compose.yml down -v`
+
+## Known gaps
+
+- Browser proof of Instant Finish (editor Done, HLS through nginx, D6 seek, embed, viewer 403, mid-play 410, raw-preview deny, flag-off legacy invoke) is unproven.
+- The real production source was not copied.
+- The origin image was not built in this session.
+- The `ORIGIN_CPUS=8` comparison smoke was not run.
