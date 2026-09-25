@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import type { VideoEditSpecV2 } from "@cap/database/types";
-import { sha256Hex } from "@/lib/revision-publication-metadata";
 import {
 	ORIGIN_SERVICE_HEADER,
 	signInternalServiceRequest,
 } from "@/lib/revision-media-token";
+import { sha256Hex } from "@/lib/revision-publication-metadata";
 
 export const INTERNAL_TOKEN_HEADER = ORIGIN_SERVICE_HEADER;
 
@@ -92,7 +92,11 @@ function signedHeaders(method: string, path: string, body = ""): HeadersInit {
 	};
 }
 
-async function signedFetch(path: string, method: "GET" | "HEAD" | "POST", body = "") {
+async function signedFetch(
+	path: string,
+	method: "GET" | "HEAD" | "POST",
+	body = "",
+) {
 	return fetch(`${originBaseUrl()}${path}`, {
 		method,
 		headers: signedHeaders(method, path, body),
@@ -123,7 +127,8 @@ export function httpOriginClient(): OriginClient {
 			return {
 				ready: payload.ready === true,
 				intentId: payload.intentId,
-				durationSeconds: payload.durationSeconds ?? payload.playlistDurationSeconds,
+				durationSeconds:
+					payload.durationSeconds ?? payload.playlistDurationSeconds,
 				durationTicks: payload.durationTicks,
 				segmentCount: payload.segmentCount,
 				seg0DecodedFrames: payload.seg0DecodedFrames,
@@ -184,7 +189,9 @@ export async function prepareSourceOnEditorOpen(input: {
 		!payload.indexId ||
 		!payload.warmExpiresAt
 	) {
-		throw new Error("Source prepare did not return an immutable source identity");
+		throw new Error(
+			"Source prepare did not return an immutable source identity",
+		);
 	}
 	return {
 		sourceKey: payload.sourceKey,

@@ -29,6 +29,8 @@ vi.mock("@cap/env", () => ({
 vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
 }));
+
+import { verifyInternalServiceRequest } from "@/lib/revision-media-token";
 import {
 	claimArtifactLease,
 	publishInstantFinishRevision,
@@ -37,15 +39,15 @@ import {
 	RevisionPublicationError,
 	sha256Hex,
 } from "@/lib/revision-publication-metadata";
-import {
-	getInstantFinishPublicationDto,
-	resolveRollbackSourceKey,
-} from "@/lib/revision-publication-read";
 import type {
 	OriginClient,
 	RevisionPrepareBody,
 	RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
+import {
+	getInstantFinishPublicationDto,
+	resolveRollbackSourceKey,
+} from "@/lib/revision-publication-read";
 
 const databaseUrl = process.env.CAP_WIRE_A_DATABASE_URL;
 const token = "wire-a-test-token";
@@ -121,12 +123,38 @@ class FakeOrigin {
 		};
 	}
 
+	private authorized(req: IncomingMessage, path: string, body: Buffer) {
+		if (req.headers["x-cap-internal-token"] === token) return true;
+		const header = req.headers["x-cap-origin-service"];
+		return (
+			typeof header === "string" &&
+			verifyInternalServiceRequest(header, {
+				method: req.method ?? "GET",
+				path,
+				body,
+			})
+		);
+	}
+
 	private handle(req: IncomingMessage, res: ServerResponse) {
-		if (req.headers["x-cap-internal-token"] !== token) {
+		const url = new URL(req.url ?? "/", "http://origin.local");
+		const internal = url.pathname.match(
+			/^\/internal\/revisions\/([^/]+)\/artifact\/(.+)$/,
+		);
+		if (internal) {
+			url.pathname = `/media/${videoId}/r/${internal[1]}/${internal[2]}`;
+		}
+		if (
+			req.method !== "POST" &&
+			!this.authorized(
+				req,
+				new URL(req.url ?? "/", "http://origin.local").pathname,
+				Buffer.alloc(0),
+			)
+		) {
 			res.writeHead(401).end("unauthorized");
 			return;
 		}
-		const url = new URL(req.url ?? "/", "http://origin.local");
 		if (
 			req.method === "POST" &&
 			url.pathname.endsWith("/prepare") &&
@@ -135,9 +163,18 @@ class FakeOrigin {
 			const chunks: Buffer[] = [];
 			req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
 			req.on("end", () => {
-				const body = JSON.parse(
-					Buffer.concat(chunks).toString("utf8"),
-				) as RevisionPrepareBody;
+				const raw = Buffer.concat(chunks);
+				if (
+					!this.authorized(
+						req,
+						new URL(req.url ?? "/", "http://origin.local").pathname,
+						raw,
+					)
+				) {
+					res.writeHead(401).end("unauthorized");
+					return;
+				}
+				const body = JSON.parse(raw.toString("utf8")) as RevisionPrepareBody;
 				const init = Buffer.from(`0000ftypisom${body.revisionId}`);
 				const seg0 = Buffer.from(`0000moofmdat${body.revisionId}`);
 				const playlist = `#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${body.durationSeconds.toFixed(3)},\nseg/0.m4s\n#EXT-X-ENDLIST\n`;
@@ -257,7 +294,8 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 	beforeAll(async () => {
 		process.env.DATABASE_URL = databaseUrl;
 		process.env.CAP_INSTANT_FINISH_OWNERS = ownerId;
-		process.env.CAP_INSTANT_FINISH_INTERNAL_TOKEN = token;
+		process.env.REVISION_ORIGIN_SERVICE_SECRET =
+			"wire-a-origin-service-secret-32b";
 		await origin.start();
 		process.env.CAP_INSTANT_FINISH_ORIGIN_URL = origin.url;
 		pool = mysql.createPool(databaseUrl ?? "");

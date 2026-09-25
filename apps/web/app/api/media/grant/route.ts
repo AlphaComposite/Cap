@@ -24,12 +24,19 @@ export async function POST(request: NextRequest) {
 			revisionId?: unknown;
 		};
 		if (typeof body.videoId === "string") rawVideoId = body.videoId;
-		if (typeof body.revisionId === "string") requestedRevisionId = body.revisionId;
+		if (typeof body.revisionId === "string")
+			requestedRevisionId = body.revisionId;
 	} catch {
-		return NextResponse.json({ error: "missing_video" }, { status: 400, headers });
+		return NextResponse.json(
+			{ error: "missing_video" },
+			{ status: 400, headers },
+		);
 	}
 	if (!idPattern.test(rawVideoId)) {
-		return NextResponse.json({ error: "missing_video" }, { status: 400, headers });
+		return NextResponse.json(
+			{ error: "missing_video" },
+			{ status: 400, headers },
+		);
 	}
 	const origin = new URL(request.url).origin;
 	try {
@@ -63,6 +70,9 @@ export async function POST(request: NextRequest) {
 			{ status: 200, headers },
 		);
 	} catch {
-		return NextResponse.json({ error: "grant_failed" }, { status: 503, headers });
+		return NextResponse.json(
+			{ error: "grant_failed" },
+			{ status: 503, headers },
+		);
 	}
 }

@@ -82,15 +82,17 @@ export async function shareCap({
 
 			for (const sharedOrganization of currentSharedOrganizations) {
 				if (!organizationIds.includes(sharedOrganization.organizationId)) {
-					await tx.delete(sharedVideos).where(
-						and(
-							eq(sharedVideos.videoId, capId),
-							eq(
-								sharedVideos.organizationId,
-								sharedOrganization.organizationId,
+					await tx
+						.delete(sharedVideos)
+						.where(
+							and(
+								eq(sharedVideos.videoId, capId),
+								eq(
+									sharedVideos.organizationId,
+									sharedOrganization.organizationId,
+								),
 							),
-						),
-					);
+						);
 				}
 			}
 
@@ -116,12 +118,14 @@ export async function shareCap({
 
 			for (const spaceVideo of currentSpaceVideos) {
 				if (!spacesIds.includes(spaceVideo.spaceId)) {
-					await tx.delete(spaceVideos).where(
-						and(
-							eq(spaceVideos.videoId, capId),
-							eq(spaceVideos.spaceId, spaceVideo.spaceId),
-						),
-					);
+					await tx
+						.delete(spaceVideos)
+						.where(
+							and(
+								eq(spaceVideos.videoId, capId),
+								eq(spaceVideos.spaceId, spaceVideo.spaceId),
+							),
+						);
 				}
 			}
 

@@ -1,4 +1,9 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+	createHash,
+	createHmac,
+	randomBytes,
+	timingSafeEqual,
+} from "node:crypto";
 
 export const REVISION_MEDIA_GRANT_TTL_SECONDS = 60;
 export const REVISION_MEDIA_GRANT_SKEW_SECONDS = 5;
