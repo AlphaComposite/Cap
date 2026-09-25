@@ -21,6 +21,8 @@ import {
 import { finalizeDesktopSegmentsRecording } from "@/actions/video/finalize-desktop-segments";
 import { Tooltip } from "@/components/Tooltip";
 import { isRetryableDesktopSegmentsFinalizationError } from "@/lib/desktop-segments-retryable-errors";
+import type { ClientRevisionPlayback } from "@/lib/revision-playback";
+import { revisionDiscreteSeek } from "@/lib/revision-seek";
 import type { VideoData } from "../types";
 import { type CaptionLanguage, useCaptionContext } from "./CaptionContext";
 import {
@@ -98,6 +100,7 @@ export const ShareVideo = forwardRef<
 		recordingStopped?: boolean;
 		defaultPlaybackSpeed?: number;
 		viewerIsOwner?: boolean;
+		revisionPlayback?: ClientRevisionPlayback | null;
 	}
 >(
 	(
@@ -119,6 +122,7 @@ export const ShareVideo = forwardRef<
 			recordingStopped = false,
 			defaultPlaybackSpeed,
 			viewerIsOwner = false,
+			revisionPlayback = null,
 		},
 		ref,
 	) => {
@@ -236,8 +240,10 @@ export const ShareVideo = forwardRef<
 
 		// Handle seek functionality
 		const handleSeek = (time: number) => {
-			if (videoRef.current) {
-				videoRef.current.currentTime = time;
+			const video = videoRef.current;
+			if (!video) return;
+			if (!revisionDiscreteSeek(video, time)) {
+				video.currentTime = time;
 			}
 		};
 
@@ -255,6 +261,29 @@ export const ShareVideo = forwardRef<
 			transcriptError,
 			captionContext.setOriginalVttContent,
 		]);
+
+		useEffect(() => {
+			const captionsUrl =
+				revisionPlayback?.mode === "hls" ? revisionPlayback.captionsUrl : null;
+			if (!captionsUrl) return;
+			let cancelled = false;
+			void fetch(captionsUrl)
+				.then(async (response) => {
+					if (!response.ok) return null;
+					return response.text();
+				})
+				.then((content) => {
+					if (!cancelled && content) {
+						captionContext.setOriginalVttContent(content);
+					}
+				})
+				.catch(() => {
+					/* revision captions stay unavailable; do not fall back */
+				});
+			return () => {
+				cancelled = true;
+			};
+		}, [captionContext.setOriginalVttContent, revisionPlayback]);
 
 		useEffect(() => {
 			const vttContent = captionContext.currentVttContent;
@@ -330,6 +359,9 @@ export const ShareVideo = forwardRef<
 
 		const isMp4Source =
 			data.source.type === "desktopMP4" || data.source.type === "webMP4";
+		const revisionHls =
+			revisionPlayback?.mode === "hls" ? revisionPlayback : null;
+		const revisionUnavailable = revisionPlayback?.mode === "unavailable";
 		const isSegmentsSource = data.source.type === "desktopSegments";
 		const isOverShareLimit = data.ownerIsOverShareLimit === true;
 		const isActivelyRecording =
@@ -465,12 +497,14 @@ export const ShareVideo = forwardRef<
 
 		let videoSrc: string;
 		const rawFallbackSrc =
-			data.source.type === "webMP4"
-				? `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=raw-preview`
-				: undefined;
+			revisionPlayback || data.source.type !== "webMP4"
+				? undefined
+				: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=raw-preview`;
 		let enableCrossOrigin = false;
 
-		if (isSegmentsSource) {
+		if (revisionHls) {
+			videoSrc = revisionHls.playlistUrl;
+		} else if (isSegmentsSource) {
 			const requireComplete = userConfirmedStopped ? "&requireComplete=1" : "";
 			videoSrc = `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=segments-master${requireComplete}`;
 		} else if (isMp4Source) {
@@ -537,7 +571,14 @@ export const ShareVideo = forwardRef<
 							}}
 							className="h-full"
 						/>
-					) : isMp4Source ? (
+					) : revisionUnavailable ? (
+						<div
+							className="flex h-full items-center justify-center rounded-xl bg-black px-6 text-center text-sm text-white"
+							data-testid="revision-unavailable"
+						>
+							This edit is not available yet
+						</div>
+					) : isMp4Source && !revisionHls ? (
 						<CapVideoPlayer
 							videoId={data.id}
 							mediaPlayerClassName={clsx(
@@ -584,6 +625,16 @@ export const ShareVideo = forwardRef<
 								externalTimeline ? "rounded-none" : "rounded-xl",
 							)}
 							videoSrc={videoSrc}
+							revisionPlayback={
+								revisionHls
+									? {
+											videoId: revisionHls.videoId,
+											revisionId: revisionHls.revisionId,
+										}
+									: null
+							}
+							suppressGlobalPreview={Boolean(revisionHls)}
+							posterSrc={revisionHls?.thumbnailUrl ?? null}
 							duration={data.duration}
 							defaultPlaybackSpeed={defaultPlaybackSpeed}
 							externalTimeline={externalTimeline}

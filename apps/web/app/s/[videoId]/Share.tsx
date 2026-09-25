@@ -26,6 +26,12 @@ import {
 } from "@/actions/videos/get-status";
 import type { OrganizationSettings } from "@/app/(org)/dashboard/dashboard-data";
 import { SignedImageUrl } from "@/components/SignedImageUrl";
+import {
+	applyRevisionCommentTimes,
+	type ClientRevisionPlayback,
+	filmstripForRevision,
+} from "@/lib/revision-playback";
+import { revisionDiscreteSeek } from "@/lib/revision-seek";
 import { shouldContinueVideoStatusPolling } from "@/lib/video-status-polling";
 import { CaptionProvider } from "./_components/CaptionContext";
 import { PlaybackProvider } from "./_components/playback/PlaybackContext";
@@ -215,6 +221,7 @@ interface ShareProps {
 	 * view is active.
 	 */
 	header?: React.ReactNode;
+	revisionPlayback?: ClientRevisionPlayback | null;
 }
 
 const useVideoStatus = (
@@ -291,6 +298,7 @@ export const Share = ({
 	canRecordMedia = false,
 	viewerSignedIn = false,
 	header,
+	revisionPlayback = null,
 }: ShareProps) => {
 	const isScreenshot = data.isScreenshot === true;
 	// Memoized: a fresh Date each render would defeat the memoized `data`
@@ -336,10 +344,14 @@ export const Share = ({
 		() => ({
 			title: videoStatus?.aiTitle || null,
 			summary: videoStatus?.summary || null,
-			chapters: videoStatus?.chapters || null,
+			chapters: revisionPlayback
+				? revisionPlayback.mode === "hls"
+					? revisionPlayback.chapters
+					: []
+				: videoStatus?.chapters || null,
 			aiGenerationStatus: videoStatus?.aiGenerationStatus || null,
 		}),
-		[videoStatus],
+		[revisionPlayback, videoStatus],
 	);
 
 	useEffect(() => {
@@ -446,6 +458,7 @@ export const Share = ({
 			const dur =
 				Number.isFinite(v.duration) && v.duration > 0 ? v.duration : null;
 			const clamped = dur ? Math.max(0, Math.min(dur - 0.001, t)) : t;
+			if (revisionDiscreteSeek(v, clamped)) return;
 			try {
 				v.currentTime = clamped;
 			} catch (e) {
@@ -542,16 +555,40 @@ export const Share = ({
 		);
 	}, [optimisticComments]);
 
+	const revisionComments = useMemo(() => {
+		if (!revisionPlayback) return null;
+		return applyRevisionCommentTimes(
+			visibleComments,
+			revisionPlayback.mode === "hls"
+				? revisionPlayback.commentTimestamps
+				: null,
+		);
+	}, [revisionPlayback, visibleComments]);
+	const revisionChapters =
+		revisionPlayback?.mode === "hls" ? (revisionPlayback.chapters ?? []) : null;
+	const revisionDownloadPreparing = Boolean(
+		revisionPlayback &&
+			(revisionPlayback.mode === "unavailable" ||
+				!revisionPlayback.downloadReady),
+	);
+
 	// Stable identities for the spreads handed to ShareVideo and Sidebar —
 	// without these, every Share render (each 2s status poll while a video is
 	// processing) re-rendered both subtrees with brand-new `data` objects.
 	const shareVideoData = useMemo(
-		() => ({ ...data, transcriptionStatus }),
-		[data, transcriptionStatus],
+		() => ({
+			...data,
+			transcriptionStatus: revisionPlayback ? null : transcriptionStatus,
+		}),
+		[data, revisionPlayback, transcriptionStatus],
 	);
 	const sidebarData = useMemo(
-		() => ({ ...data, createdAt: effectiveDate, transcriptionStatus }),
-		[data, effectiveDate, transcriptionStatus],
+		() => ({
+			...data,
+			createdAt: effectiveDate,
+			transcriptionStatus: revisionPlayback ? null : transcriptionStatus,
+		}),
+		[data, effectiveDate, revisionPlayback, transcriptionStatus],
 	);
 
 	const reduceMotion = useReducedMotion() ?? false;
@@ -570,31 +607,35 @@ export const Share = ({
 	// seek; everything else is an HLS playlist. A still-uploading segments
 	// source gets no strip — its playlist is in flux and not worth hammering.
 	const filmstripSource = useMemo<FilmstripSource | null>(() => {
-		if (isScreenshot) return null;
-		const sourceType = data.source.type;
-		if (sourceType === "desktopMP4" || sourceType === "webMP4") {
+		const legacy = (() => {
+			if (isScreenshot) return null;
+			const sourceType = data.source.type;
+			if (sourceType === "desktopMP4" || sourceType === "webMP4") {
+				return {
+					src: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=mp4`,
+					kind: "native" as const,
+				};
+			}
+			if (sourceType === "desktopSegments") {
+				if (data.hasActiveUpload) return null;
+				return {
+					src: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=segments-master`,
+					kind: "hls" as const,
+				};
+			}
 			return {
-				src: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=mp4`,
-				kind: "native",
+				src: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=video`,
+				kind: "hls" as const,
 			};
-		}
-		if (sourceType === "desktopSegments") {
-			if (data.hasActiveUpload) return null;
-			return {
-				src: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=segments-master`,
-				kind: "hls",
-			};
-		}
-		return {
-			src: `/api/playlist?userId=${data.owner.id}&videoId=${data.id}&videoType=video`,
-			kind: "hls",
-		};
+		})();
+		return filmstripForRevision(revisionPlayback, legacy);
 	}, [
 		isScreenshot,
 		data.source.type,
 		data.owner.id,
 		data.id,
 		data.hasActiveUpload,
+		revisionPlayback,
 	]);
 	// The theater block hugs the video: width-driven height from the real
 	// aspect ratio, capped so the deck below stays reachable without scrolling.
@@ -737,6 +778,14 @@ export const Share = ({
 					)}
 				>
 					{header}
+					{revisionDownloadPreparing ? (
+						<p
+							className="px-1 pb-2 text-sm text-gray-11"
+							data-testid="revision-download-preparing"
+						>
+							Preparing
+						</p>
+					) : null}
 				</div>
 
 				{/*
@@ -930,8 +979,17 @@ export const Share = ({
 												) : (
 													<ShareVideo
 														initialPlaybackUrl={initialPlaybackUrl}
+														revisionPlayback={revisionPlayback}
 														data={shareVideoData}
-														comments={comments}
+														comments={
+															revisionComments
+																? revisionComments.map((comment) => ({
+																		...comment,
+																		authorName: comment.authorName ?? null,
+																		authorImage: comment.authorImage ?? null,
+																	}))
+																: comments
+														}
 														areChaptersDisabled={areChaptersDisabled}
 														areCaptionsDisabled={areCaptionsDisabled}
 														// The deck under the video owns seeking, the clock and
@@ -954,7 +1012,9 @@ export const Share = ({
 															areReactionStampsDisabled ||
 															(view === "timeline" && !stageFullscreen)
 														}
-														chapters={aiData?.chapters ?? undefined}
+														chapters={
+															revisionChapters ?? aiData?.chapters ?? undefined
+														}
 														aiGenerationStatus={aiData?.aiGenerationStatus}
 														canRetryProcessing={viewerId === data.owner.id}
 														canFinalizeDesktopSegments={
@@ -1017,9 +1077,11 @@ export const Share = ({
 											>
 												<Suspense fallback={<TimelineSkeleton />}>
 													<TimelineView
-														comments={visibleComments}
+														comments={revisionComments ?? visibleComments}
 														videoId={data.id}
-														chapters={aiData?.chapters ?? undefined}
+														chapters={
+															revisionChapters ?? aiData?.chapters ?? undefined
+														}
 														transcriptionStatus={transcriptionStatus}
 														filmstripSource={filmstripSource}
 														onOptimisticComment={handleOptimisticComment}
@@ -1140,7 +1202,7 @@ export const Share = ({
 									videoSettings={videoSettings}
 									commentsData={commentsData}
 									setCommentsData={setCommentsData}
-									optimisticComments={visibleComments}
+									optimisticComments={revisionComments ?? visibleComments}
 									setOptimisticComments={setOptimisticComments}
 									handleCommentSuccess={handleCommentSuccess}
 									views={views}

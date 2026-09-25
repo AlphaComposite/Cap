@@ -37,10 +37,18 @@ import {
 import { toast } from "sonner";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
 import {
+	getEditorInstantFinishState,
+	publishRevision,
+} from "@/actions/videos/publish-revision";
+import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
 } from "@/actions/videos/save-edits";
 import { isEditorShortcutTarget } from "@/lib/editor-keyboard";
+import {
+	planDoneAfterPublish,
+	readOrCreateDraftSession,
+} from "@/lib/revision-done";
 import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
@@ -691,6 +699,11 @@ export function EditVideoClient({
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [zoom, setZoom] = useState(1);
 	const [isSaving, setIsSaving] = useState(false);
+	const [instantFinish, setInstantFinish] = useState<{
+		enabled: boolean;
+		generation: number;
+		draftVersion: number;
+	} | null>(null);
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 	const committedState = history.entries[history.index] ?? initialState;
@@ -1092,6 +1105,23 @@ export function EditVideoClient({
 		handleDelete();
 	}, [commitState, handleDelete, playhead, timelineDisplaySplitPoints]);
 
+	useEffect(() => {
+		let cancelled = false;
+		void getEditorInstantFinishState({
+			videoId: video.id,
+			ownerId: video.ownerId,
+		})
+			.then((state) => {
+				if (!cancelled) setInstantFinish(state);
+			})
+			.catch(() => {
+				if (!cancelled) setInstantFinish(null);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [video.id, video.ownerId]);
+
 	const handleDone = useCallback(async () => {
 		if (isSaving) return;
 		const draftStorage = getTimelineDraftStorage();
@@ -1102,10 +1132,39 @@ export function EditVideoClient({
 		}
 		setIsSaving(true);
 		try {
-			await saveVideoEdits(video.id, editSpec, initialEditSpec);
-			if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
-			router.push(`/s/${video.id}`);
-			router.refresh();
+			const draftStorage = getTimelineDraftStorage();
+			const published = await publishRevision({
+				videoId: video.id,
+				ownerId: video.ownerId,
+				editSpec,
+				expectedEditSpec: initialEditSpec,
+				baseGeneration: instantFinish?.generation ?? 0,
+				draftVersion: instantFinish?.draftVersion ?? 0,
+				draftSession: readOrCreateDraftSession(draftStorage, video.id),
+			});
+			const plan = planDoneAfterPublish(published);
+			if (plan === "legacy") {
+				await saveVideoEdits(video.id, editSpec, initialEditSpec);
+				if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
+				router.push(`/s/${video.id}`);
+				router.refresh();
+				return;
+			}
+			if (plan === "published") {
+				if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
+				router.push(`/s/${video.id}`);
+				router.refresh();
+				return;
+			}
+			if (plan === "conflict") {
+				toast.error("A newer draft exists. Retry Done.");
+				setIsSaving(false);
+				return;
+			}
+			toast.error(
+				"status" in published ? published.message : "Failed to publish edit",
+			);
+			setIsSaving(false);
 		} catch (error) {
 			toast.error(
 				error instanceof Error ? error.message : "Failed to start video edit",
@@ -1117,9 +1176,12 @@ export function EditVideoClient({
 		editSpec,
 		hasTimelineChanges,
 		initialEditSpec,
+		instantFinish?.draftVersion,
+		instantFinish?.generation,
 		isSaving,
 		router,
 		video.id,
+		video.ownerId,
 	]);
 
 	const handleCancel = useCallback(() => {
@@ -1695,7 +1757,7 @@ export function EditVideoClient({
 							onClick={handleDone}
 							className="ml-1"
 						>
-							{isSaving ? "Saving" : "Done"}
+							Done
 						</Button>
 					</div>
 				</div>

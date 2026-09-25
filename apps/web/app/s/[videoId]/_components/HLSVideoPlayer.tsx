@@ -16,6 +16,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { retryVideoProcessing } from "@/actions/video/retry-processing";
+import {
+	planGrantRefresh,
+	replacePlaylistGrant,
+} from "@/lib/revision-playback";
+import { bindRevisionSeek, unbindRevisionSeek } from "@/lib/revision-seek";
 import { bindCaptionTrackCueText } from "./caption-tracks";
 import { scheduleReadyRefresh } from "./deferred-ready-refresh";
 import { waitForSegmentPlayback } from "./segment-playback-probe";
@@ -123,6 +128,9 @@ interface Props {
 	 * timeline strip replaces the seek slider, everything else comes along.
 	 */
 	controlsPortalEl?: HTMLElement | null;
+	revisionPlayback?: { videoId: string; revisionId: string } | null;
+	suppressGlobalPreview?: boolean;
+	posterSrc?: string | null;
 }
 
 export function HLSVideoPlayer({
@@ -151,6 +159,9 @@ export function HLSVideoPlayer({
 	previewMode,
 	externalTimeline = false,
 	controlsPortalEl = null,
+	revisionPlayback = null,
+	suppressGlobalPreview = false,
+	posterSrc = null,
 }: Props) {
 	const hlsInstance = useRef<Hls | null>(null);
 	const [currentCue, setCurrentCue] = useState<string>("");
@@ -178,18 +189,66 @@ export function HLSVideoPlayer({
 	const segmentRetryCountRef = useRef(0);
 	const hasTriedRouterRefreshRef = useRef(false);
 	const isBackgroundPreview = previewMode === "background";
+	const [grantState, setGrantState] = useState<{
+		src: string;
+		url: string;
+	} | null>(null);
+	const revisionRef = useRef(revisionPlayback);
+	revisionRef.current = revisionPlayback;
+	const activeVideoSrc =
+		grantState?.src === videoSrc ? grantState.url : videoSrc;
 	const playbackSrc =
 		sourceVersion === 0
-			? videoSrc
-			: videoSrc.includes("?")
-				? `${videoSrc}&_t=${sourceVersion}`
-				: `${videoSrc}?_t=${sourceVersion}`;
+			? activeVideoSrc
+			: activeVideoSrc.includes("?")
+				? `${activeVideoSrc}&_t=${sourceVersion}`
+				: `${activeVideoSrc}?_t=${sourceVersion}`;
 	const reloadPlayback = useCallback(() => {
 		setVideoLoaded(false);
 		setHlsInitFailed(false);
 		setSourceFailure(null);
 		setSourceVersion((current) => current + 1);
 	}, []);
+
+	useEffect(() => {
+		if (!revisionPlayback) return;
+		const video = videoRef.current;
+		if (!video) return;
+		bindRevisionSeek(video, () => hlsInstance.current);
+		return () => unbindRevisionSeek(video);
+	}, [revisionPlayback, videoRef.current]);
+
+	const refreshRevisionSource = useCallback(async () => {
+		const revision = revisionRef.current;
+		if (!revision) return "hold" as const;
+		const response = await fetch("/api/media/grant", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				videoId: revision.videoId,
+				revisionId: revision.revisionId,
+			}),
+		});
+		const body = (await response.json().catch(() => null)) as {
+			revisionId?: string;
+			changed?: boolean;
+			grant?: string;
+		} | null;
+		const plan = planGrantRefresh({
+			status: response.status,
+			revisionId: revision.revisionId,
+			body,
+		});
+		if (plan === "reload-same" && body?.grant) {
+			setGrantState({
+				src: videoSrc,
+				url: replacePlaylistGrant(videoSrc, body.grant),
+			});
+		}
+		return plan;
+	}, [videoSrc]);
+	const refreshRevisionSourceRef = useRef(refreshRevisionSource);
+	refreshRevisionSourceRef.current = refreshRevisionSource;
 
 	useEffect(() => {
 		setPlayerDuration(fallbackDuration ?? 0);
@@ -370,7 +429,18 @@ export function HLSVideoPlayer({
 			let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 			hls.on(Hls.Events.ERROR, (event, data) => {
-				console.error("HLSVideoPlayer: HLS error:", event, data);
+				if (!revisionRef.current) {
+					console.error("HLSVideoPlayer: HLS error:", event, data);
+				}
+				if (revisionRef.current) {
+					const status = data.response?.code;
+					if (status === 403 || status === 410 || (status ?? 0) >= 500) {
+						void refreshRevisionSourceRef.current().then((plan) => {
+							if (plan === "refresh-page") router.refresh();
+						});
+						return;
+					}
+				}
 				if (isLiveSegments && data.response?.code === 409) {
 					setSourceFailure("incomplete");
 					hls.stopLoad();
@@ -458,7 +528,14 @@ export function HLSVideoPlayer({
 		} else if (video.canPlayType("application/vnd.apple.mpegurl")) {
 			video.src = playbackSrc;
 			video.load();
-			console.log("HLSVideoPlayer: Using native HLS support");
+			if (!revisionRef.current) return;
+			const onError = () => {
+				void refreshRevisionSourceRef.current().then((plan) => {
+					if (plan === "refresh-page") router.refresh();
+				});
+			};
+			video.addEventListener("error", onError);
+			return () => video.removeEventListener("error", onError);
 		} else {
 			console.error("HLSVideoPlayer: HLS is not supported in this browser");
 			setHlsInitFailed(true);
@@ -744,6 +821,7 @@ export function HLSVideoPlayer({
 			<VideoPreviewGif
 				videoId={videoId}
 				preload={
+					!suppressGlobalPreview &&
 					!hasActiveUpload &&
 					!hasPlayedOnce &&
 					!hasFailedOrError &&
@@ -751,6 +829,7 @@ export function HLSVideoPlayer({
 					!isBackgroundPreview
 				}
 				visible={
+					!suppressGlobalPreview &&
 					videoLoaded &&
 					!hasPlayedOnce &&
 					!hasFailedOrError &&
@@ -761,6 +840,7 @@ export function HLSVideoPlayer({
 			/>
 			<MediaPlayerVideo
 				src={undefined} // HLS source is handled by HLS.js
+				poster={posterSrc ?? undefined}
 				ref={videoRef}
 				onPlay={() => {
 					setShowPlayButton(false);
