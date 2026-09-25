@@ -185,6 +185,7 @@ describe("revision media grants", () => {
 		const publication = {
 			currentRevisionId: "rev1",
 			generation: 1,
+			currentGeneration: 1,
 			publicationEpoch: 3,
 			policyEpoch: 4,
 		};

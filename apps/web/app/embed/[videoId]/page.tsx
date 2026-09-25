@@ -427,32 +427,35 @@ async function EmbedContent({
 			: video;
 
 	return (
-		<EmbedVideo
-			data={embedVideo}
-			revisionPlayback={revisionPlayback}
-			branding={branding}
-			user={user}
-			comments={embedComments}
-			chapters={
-				revisionPlayback?.mode === "hls"
-					? (revisionPlayback.chapters ?? [])
-					: revisionPlayback
-						? []
-						: rules.settings.disableChapters
+		<>
+			<meta name="referrer" content="no-referrer" />
+			<EmbedVideo
+				data={embedVideo}
+				revisionPlayback={revisionPlayback}
+				branding={branding}
+				user={user}
+				comments={embedComments}
+				chapters={
+					revisionPlayback?.mode === "hls"
+						? (revisionPlayback.chapters ?? [])
+						: revisionPlayback
 							? []
-							: initialAiData?.chapters || []
-			}
-			ownerName={videoOwner[0]?.name || null}
-			ownerImageUrl={ownerImageUrl}
-			autoplay={autoplay}
-			startTime={startTime}
-			minimal={minimal}
-			defaultPlaybackSpeed={resolveDefaultPlaybackSpeed(
-				video.settings?.defaultPlaybackSpeed,
-				video.orgSettings?.defaultPlaybackSpeed,
-			)}
-			viewerSettings={rules.settings}
-			showPlaybackStatusBadge={user?.id === video.ownerId}
-		/>
+							: rules.settings.disableChapters
+								? []
+								: initialAiData?.chapters || []
+				}
+				ownerName={videoOwner[0]?.name || null}
+				ownerImageUrl={ownerImageUrl}
+				autoplay={autoplay}
+				startTime={startTime}
+				minimal={minimal}
+				defaultPlaybackSpeed={resolveDefaultPlaybackSpeed(
+					video.settings?.defaultPlaybackSpeed,
+					video.orgSettings?.defaultPlaybackSpeed,
+				)}
+				viewerSettings={rules.settings}
+				showPlaybackStatusBadge={user?.id === video.ownerId}
+			/>
+		</>
 	);
 }
