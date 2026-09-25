@@ -21,6 +21,7 @@ CREATE TABLE `edit_revision` (
 	`state` varchar(32) NOT NULL,
 	`attempt` int NOT NULL,
 	`error` text,
+	`metadataSnapshot` json,
 	`createdAt` datetime(3) NOT NULL,
 	`updatedAt` datetime(3) NOT NULL,
 	CONSTRAINT `edit_revision_revisionId` PRIMARY KEY(`revisionId`)
@@ -75,6 +76,7 @@ CREATE TABLE `source_relocation` (
 CREATE TABLE `video_publication` (
 	`videoId` varchar(15) NOT NULL,
 	`currentRevisionId` varchar(64),
+	`currentGeneration` int,
 	`generation` int NOT NULL DEFAULT 0,
 	`latestDraftVersion` int NOT NULL DEFAULT 0,
 	`draftSession` varchar(64) NOT NULL DEFAULT '',

@@ -582,6 +582,15 @@ export const editRevision = mysqlTable(
 		state: varchar("state", { length: 32 }).notNull(),
 		attempt: int("attempt").notNull(),
 		error: text("error"),
+		metadataSnapshot: json("metadataSnapshot").$type<{
+			captionsVtt: string;
+			chapters: { title: string; start: number }[];
+			summaryStatus: "persisted";
+			summaryDerived: false;
+			summaryText: string | null;
+			thumbnail: "source-zero" | "seg0-first-frame" | "unavailable";
+			durationSeconds: number;
+		}>(),
 		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
 		updatedAt: datetime("updatedAt", { fsp: 3 }).notNull(),
 	},
@@ -601,6 +610,7 @@ export const videoPublication = mysqlTable(
 	{
 		videoId: revisionVideoId("videoId").primaryKey(),
 		currentRevisionId: varchar("currentRevisionId", { length: 64 }),
+		currentGeneration: int("currentGeneration"),
 		generation: int("generation").notNull().default(0),
 		latestDraftVersion: int("latestDraftVersion").notNull().default(0),
 		draftSession: varchar("draftSession", { length: 64 }).notNull().default(""),
