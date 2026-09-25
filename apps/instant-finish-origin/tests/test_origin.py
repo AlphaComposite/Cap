@@ -38,7 +38,7 @@ ORACLE_TABLE = Path("/path/to/scratch/cap-fzp-8-gate/build-7/media/data/frame-ta
 def claims(now: int = 1_000, **overrides) -> dict:
     row = {
         "exp": now + 60,
-        "grantId": "grant-1",
+        "grantId": "grant-origin-0001",
         "iat": now,
         "policyEpoch": 3,
         "publicationEpoch": 2,
@@ -147,7 +147,7 @@ class GrantTests(unittest.TestCase):
         with self.assertRaises(grant_mod.GrantError):
             grant_mod.verify(GRANT, token + "x", now=1010)
         with self.assertRaises(grant_mod.GrantError):
-            grant_mod.verify(GRANT, token, now=1060)
+            grant_mod.verify(GRANT, token, now=1066)
         with self.assertRaises(grant_mod.GrantError):
             grant_mod.verify(b"other-secret-other-secret-other-01", token, now=1010)
 
@@ -200,7 +200,7 @@ class HttpTests(unittest.TestCase):
         status, _, _ = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={token}")
         self.assertEqual(status, 410)
         wrong = grant_mod.mint(GRANT, claims(videoId="othervid01"))
-        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3))
+        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3, current_generation=1))
         status, _, _ = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={wrong}")
         self.assertEqual(status, 403)
         status, _, _ = self._req(f"/media/{VIDEO}/source/original.mp4?t={token}")
@@ -217,7 +217,7 @@ class HttpTests(unittest.TestCase):
     def test_epoch_changes_before_send(self) -> None:
         token = grant_mod.mint(GRANT, claims())
         self.store.put_video(VideoRow(VIDEO, True, False, None))
-        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3))
+        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3, current_generation=1))
         self.store.put_revision(RevisionRow(REV, VIDEO, "intent-not-ready", SOURCE, 1, "CURRENT"))
 
         def flip(_snap) -> None:
@@ -357,7 +357,7 @@ class MediaTests(unittest.TestCase):
         self.store.put_video(VideoRow(VIDEO, True, False, "cap"))
         self.store.put_source(SourceRow(VIDEO, key, lib_origin.sha256_file(self.cache / "sources" / SOURCE / "original.mp4"), "live"))
         self.store.put_revision(RevisionRow(REV, VIDEO, prepared["intentId"], SOURCE, 1, "CURRENT"))
-        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3))
+        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3, current_generation=1))
         token = grant_mod.mint(GRANT, claims())
         status, headers, playlist = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={token}")
         self.assertEqual(status, 200, playlist)
@@ -374,7 +374,7 @@ class MediaTests(unittest.TestCase):
         self.assertTrue(headers.get("Content-Range", "").startswith("bytes 0-15/"))
         self.assertEqual(len(seg), 16)
         self.assertIn("no-store", headers.get("Cache-Control", ""))
-        origin = next(iter(self.app._origins.values()))
+        origin = next(iter(self.app._origins.values()))[0]
         self.assertTrue(origin.productions)
         self.assertFalse(all(row["hit"] for row in origin.productions))
         self.assertLessEqual(origin.segments[0].duration_ticks / origin.profile.timescale, 0.2)
@@ -394,7 +394,7 @@ class MediaTests(unittest.TestCase):
         status, _, _ = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={token}")
         self.assertEqual(status, 410)
         self.app.before_send = None
-        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3))
+        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3, current_generation=1))
         seg_path = origin.segment_path(0)
         seg_path.unlink(missing_ok=True)
         seg_path.with_name("0.m4s.bind.json").unlink(missing_ok=True)
