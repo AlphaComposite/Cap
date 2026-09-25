@@ -1,4 +1,6 @@
-import type { PublishRevisionResult } from "@/actions/videos/publish-revision";
+export type PublishRevisionResult =
+	| { success: true; revisionId?: string; generation?: number }
+	| { success: false; reason?: string; status?: number; message?: string };
 
 export type DonePlan = "leave" | "legacy" | "published" | "conflict" | "error";
 

@@ -67,7 +67,7 @@ export async function loadRevisionPlayback(input: {
 		publication,
 		videoId: input.videoId,
 		origin: input.origin,
-		grant: grant?.grant ?? null,
+		grant: grant && "grant" in grant ? grant.grant : null,
 	});
 	return {
 		publication,
