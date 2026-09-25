@@ -61,6 +61,45 @@ services:
     networks:
       - cap-network
 
+  instant-finish-origin:
+    build:
+      context: ./apps/instant-finish-origin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ORIGIN_BIND: 0.0.0.0
+      ORIGIN_PORT: "3020"
+      ORIGIN_HOST_PUBLISH: 127.0.0.1
+      ORIGIN_CACHE: /var/cache/origin
+      ORIGIN_WARM_TTL_S: "600"
+      S3_INTERNAL_ENDPOINT: http://minio:9000
+      S3_BUCKET: cap
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-cap-admin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-cap-minio-pwd-456}
+      S3_REGION: us-east-1
+      ORIGIN_DATABASE_URL: ${ORIGIN_DATABASE_URL:-}
+      ORIGIN_GRANT_SECRET: ${ORIGIN_GRANT_SECRET:-}
+      ORIGIN_SERVICE_TOKEN: ${ORIGIN_SERVICE_TOKEN:-}
+    ports:
+      - "127.0.0.1:3020:3020"
+    volumes:
+      - instant-finish-origin-cache:/var/cache/origin
+    cpus: "2.0"
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3020/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - cap-network
+
   mysql:
     container_name: cap-mysql
     image: mysql:8.0
@@ -129,6 +168,7 @@ services:
 volumes:
   cap-mysql-data:
   cap-minio-data:
+  instant-finish-origin-cache:
 
 networks:
   cap-network:
