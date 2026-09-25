@@ -20,6 +20,15 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import mysql from "mysql2/promise";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+vi.mock("@cap/env", () => ({
+	buildEnv: { NEXT_PUBLIC_WEB_URL: "http://127.0.0.1:30410" },
+	serverEnv: () => ({ NEXTAUTH_SECRET: "test-secret-with-enough-entropy" }),
+}));
+vi.mock("@/lib/server", () => ({
+	runPromise: async (effect: unknown) => effect,
+}));
 import {
 	claimArtifactLease,
 	publishInstantFinishRevision,
