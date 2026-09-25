@@ -13,6 +13,7 @@ export const REVISION_MEDIA_CACHE_CONTROL = "private, no-store";
 export const REVISION_MEDIA_REFERRER_POLICY = "no-referrer";
 
 export const ORIGIN_SERVICE_HEADER = "x-cap-origin-service";
+export const ORIGIN_SERVICE_TTL_SECONDS = 30;
 const MIN_SECRET_BYTES = 32;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const GRANT_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -291,7 +292,7 @@ export function signInternalServiceRequest(
 		v: 1,
 		aud: "origin-service",
 		iat,
-		exp: iat + 30,
+		exp: iat + ORIGIN_SERVICE_TTL_SECONDS,
 		nonce: randomBytes(12).toString("base64url"),
 	};
 	const encoded = Buffer.from(JSON.stringify(claims), "utf8").toString(
@@ -331,6 +332,13 @@ export function verifyInternalServiceRequest(
 		return false;
 	}
 	if (claims.aud !== "origin-service" || claims.v !== 1) return false;
+	if (
+		!Number.isSafeInteger(claims.iat) ||
+		!Number.isSafeInteger(claims.exp) ||
+		claims.exp - claims.iat !== ORIGIN_SERVICE_TTL_SECONDS
+	) {
+		return false;
+	}
 	const now = input.now ?? Math.floor(Date.now() / 1000);
 	return (
 		claims.iat <= now + REVISION_MEDIA_GRANT_SKEW_SECONDS && now <= claims.exp
