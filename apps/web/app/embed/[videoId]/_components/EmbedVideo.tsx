@@ -28,6 +28,8 @@ import {
 	parseVTT,
 	type TranscriptEntry,
 } from "@/app/s/[videoId]/_components/utils/transcript-utils";
+import type { ClientRevisionPlayback } from "@/lib/revision-playback";
+import { revisionDiscreteSeek } from "@/lib/revision-seek";
 import type { SharePageBranding } from "@/lib/share-branding";
 import { usePlayerJsReceiver } from "./use-player-js-receiver";
 
@@ -68,6 +70,7 @@ export const EmbedVideo = forwardRef<
 		defaultPlaybackSpeed?: number;
 		viewerSettings?: ViewerSettings | null;
 		showPlaybackStatusBadge?: boolean;
+		revisionPlayback?: ClientRevisionPlayback | null;
 	}
 >(
 	(
@@ -85,6 +88,7 @@ export const EmbedVideo = forwardRef<
 			defaultPlaybackSpeed,
 			viewerSettings,
 			showPlaybackStatusBadge = false,
+			revisionPlayback = null,
 		},
 		ref,
 	) => {
@@ -109,9 +113,11 @@ export const EmbedVideo = forwardRef<
 		const captionsDisabled = viewerSettings?.disableCaptions ?? false;
 		const chaptersDisabled = viewerSettings?.disableChapters ?? false;
 
+		const revisionHls =
+			revisionPlayback?.mode === "hls" ? revisionPlayback : null;
 		const { data: transcriptContent, error: transcriptError } = useTranscript(
 			data.id,
-			captionsDisabled ? null : data.transcriptionStatus,
+			revisionPlayback || captionsDisabled ? null : data.transcriptionStatus,
 		);
 
 		useEffect(() => {
@@ -195,12 +201,15 @@ export const EmbedVideo = forwardRef<
 
 		let videoSrc: string;
 		const rawFallbackSrc =
-			data.source.type === "webMP4"
-				? `/api/playlist?userId=${data.ownerId}&videoId=${data.id}&videoType=raw-preview`
-				: undefined;
+			revisionPlayback || data.source.type !== "webMP4"
+				? undefined
+				: `/api/playlist?userId=${data.ownerId}&videoId=${data.id}&videoType=raw-preview`;
 		let enableCrossOrigin = false;
 
-		if (isSegmentsSource) {
+		if (revisionHls) {
+			videoSrc = revisionHls.playlistUrl;
+			enableCrossOrigin = true;
+		} else if (isSegmentsSource) {
 			videoSrc = `/api/playlist?userId=${data.ownerId}&videoId=${data.id}&videoType=segments-master`;
 		} else if (isMp4Source) {
 			videoSrc = `/api/playlist?userId=${data.ownerId}&videoId=${data.id}&videoType=mp4`;
@@ -232,7 +241,10 @@ export const EmbedVideo = forwardRef<
 					? Math.max(player.duration - 0.001, 0)
 					: startTime;
 				try {
-					player.currentTime = Math.min(startTime, limit);
+					const target = Math.min(startTime, limit);
+					if (!revisionDiscreteSeek(player, target)) {
+						player.currentTime = target;
+					}
 				} catch (error) {
 					console.warn("Failed to seek embed to start time", error);
 				}
@@ -265,7 +277,14 @@ export const EmbedVideo = forwardRef<
 						/>
 					) : isTransitioning ? (
 						<PreparingVideoOverlay className="w-full h-full" />
-					) : isMp4Source ? (
+					) : revisionPlayback?.mode === "unavailable" ? (
+						<div
+							className="flex h-full items-center justify-center bg-black px-6 text-center text-sm text-white"
+							data-testid="revision-unavailable"
+						>
+							This edit is not available yet
+						</div>
+					) : isMp4Source && !revisionHls ? (
 						<CapVideoPlayer
 							videoId={data.id}
 							mediaPlayerClassName="w-full h-full"
@@ -287,15 +306,34 @@ export const EmbedVideo = forwardRef<
 							videoId={data.id}
 							mediaPlayerClassName="w-full h-full"
 							videoSrc={videoSrc}
-							duration={data.duration}
-							disableCaptions={captionsDisabled}
-							chaptersSrc={chaptersDisabled ? "" : chaptersUrl || ""}
-							captionsSrc={captionsDisabled ? "" : subtitleUrl || ""}
+							duration={revisionHls?.duration ?? data.duration}
+							disableCaptions={captionsDisabled || Boolean(revisionPlayback)}
+							chaptersSrc={
+								revisionHls?.chapters?.length
+									? chaptersUrl || ""
+									: chaptersDisabled
+										? ""
+										: chaptersUrl || ""
+							}
+							captionsSrc={
+								revisionHls?.captionsUrl ??
+								(captionsDisabled ? "" : subtitleUrl || "")
+							}
 							videoRef={videoRef}
 							autoplay={autoplay}
 							defaultPlaybackSpeed={defaultPlaybackSpeed}
-							hasActiveUpload={data.hasActiveUpload}
-							isLiveSegments={isSegmentsSource}
+							hasActiveUpload={revisionPlayback ? false : data.hasActiveUpload}
+							isLiveSegments={revisionPlayback ? false : isSegmentsSource}
+							revisionPlayback={
+								revisionHls
+									? {
+											videoId: revisionHls.videoId,
+											revisionId: revisionHls.revisionId,
+										}
+									: null
+							}
+							suppressGlobalPreview={Boolean(revisionHls)}
+							posterSrc={revisionHls?.thumbnailUrl ?? null}
 						/>
 					)}
 				</div>

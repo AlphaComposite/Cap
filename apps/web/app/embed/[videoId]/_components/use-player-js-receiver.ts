@@ -1,6 +1,7 @@
 "use client";
 
 import { type RefObject, useEffect } from "react";
+import { revisionDiscreteSeek } from "@/lib/revision-seek";
 
 const CONTEXT = "player.js";
 const VERSION = "0.0.11";
@@ -195,7 +196,10 @@ export const createPlayerJsReceiver = ({
 					const duration = Number.isFinite(video.duration)
 						? video.duration
 						: message.value;
-					video.currentTime = Math.max(0, Math.min(duration, message.value));
+					const target = Math.max(0, Math.min(duration, message.value));
+					if (!revisionDiscreteSeek(video, target)) {
+						video.currentTime = target;
+					}
 				}
 				break;
 			case "getCurrentTime":
