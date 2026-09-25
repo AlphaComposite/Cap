@@ -125,6 +125,7 @@ import {
 } from "@/lib/permissions/roles";
 import { normalizePlaybackSpeed } from "@/lib/playback-speed";
 import { isRateLimited, RATE_LIMIT_IDS } from "@/lib/rate-limit";
+import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import { transcribeVideo } from "@/lib/transcribe";
 import { startVideoProcessingWorkflow } from "@/lib/video-processing";
 import { isAiGenerationEnabled } from "@/utils/flags";
@@ -7445,6 +7446,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.update(Db.videos)
 									.set({ password: nextPassword, updatedAt: now })
 									.where(eq(Db.videos.id, path.id));
+								await bumpPolicyEpoch(path.id, tx);
 								return {
 									state: "success",
 									response: mutationResponse(

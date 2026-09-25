@@ -12,6 +12,7 @@ import {
 import type { Organisation, Video } from "@cap/web-domain";
 import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { bumpPolicyEpochForVideos } from "@/lib/revision-media-grant";
 
 export async function removeVideosFromOrganization(
 	organizationId: Organisation.OrganisationId,
@@ -79,6 +80,8 @@ export async function removeVideosFromOrganization(
 				message: "No matching shared videos found in organization",
 			};
 		}
+
+		await bumpPolicyEpochForVideos(existingVideoIds);
 
 		await db()
 			.delete(sharedVideos)
