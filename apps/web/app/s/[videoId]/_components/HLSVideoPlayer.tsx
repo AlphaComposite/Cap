@@ -392,7 +392,7 @@ export function HLSVideoPlayer({
 			video.removeEventListener("play", handlePlay);
 			video.removeEventListener("error", handleError);
 		};
-	}, [playbackSrc, videoRef.current, isLiveSegments, isBackgroundPreview]);
+	}, [videoRef.current, isLiveSegments, isBackgroundPreview]);
 
 	useEffect(() => {
 		const video = videoRef.current;

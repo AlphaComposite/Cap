@@ -1,210 +1,180 @@
 {
-  "description": "Shared grant and service-MAC vectors. Secrets are test fixtures, not production keys.",
-  "grantSkewSeconds": 5,
-  "grantTtlSeconds": 60,
-  "serviceSkewSeconds": 5,
-  "serviceTtlSeconds": 30,
-  "keys": {
-    "k1": "grant-secret-grant-secret-grant-01",
-    "k2": "grant-secret-rotated-grant-secret-02"
-  },
-  "serviceSecret": "service-token-service-token-svc01",
-  "cases": [
-    {
-      "id": "valid",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k1",
-        "k2"
-      ],
-      "now": 1700000010,
-      "expect": "accept"
-    },
-    {
-      "id": "exp_boundary_accept",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k1"
-      ],
-      "now": 1700000065,
-      "expect": "accept",
-      "note": "reject only when now > exp + skew"
-    },
-    {
-      "id": "exp_boundary_reject",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k1"
-      ],
-      "now": 1700000066,
-      "expect": "reject"
-    },
-    {
-      "id": "iat_future_skew_accept",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k1"
-      ],
-      "now": 1699999995,
-      "expect": "accept"
-    },
-    {
-      "id": "iat_future_skew_reject",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k1"
-      ],
-      "now": 1699999994,
-      "expect": "reject"
-    },
-    {
-      "id": "bad_kid",
-      "kind": "grant",
-      "token": "k9.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k1",
-        "k2"
-      ],
-      "now": 1700000010,
-      "expect": "reject"
-    },
-    {
-      "id": "rotated_key_still_present",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k2",
-        "k1"
-      ],
-      "now": 1700000010,
-      "expect": "accept"
-    },
-    {
-      "id": "rotated_key_removed",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
-      "ring": [
-        "k2"
-      ],
-      "now": 1700000010,
-      "expect": "reject"
-    },
-    {
-      "id": "rotated_key_new_kid",
-      "kind": "grant",
-      "token": "k2.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.dotywnro27F-xpwKRZPDiWsp12syIjfx_EmE3tzSRRU",
-      "ring": [
-        "k2",
-        "k1"
-      ],
-      "now": 1700000010,
-      "expect": "accept"
-    },
-    {
-      "id": "unsafe_integer",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjo5MDA3MTk5MjU0NzQwOTkyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.iPRVqjGDKYl_3dxtGapjQuA3_uywsPgZnQT7N9f4-48",
-      "ring": [
-        "k1"
-      ],
-      "now": 1700000010,
-      "expect": "reject"
-    },
-    {
-      "id": "non_integer",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoxLjUsInBvbGljeUVwb2NoIjozLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDA2MCwiZ3JhbnRJZCI6ImdyYW50LW9yaWdpbi0wMDAxIn0.Rw8GWoxXoL7fEn0jcV_WIAreMf2O6QRt-E3X1vb4ZJs",
-      "ring": [
-        "k1"
-      ],
-      "now": 1700000010,
-      "expect": "reject"
-    },
-    {
-      "id": "bad_video_id",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoiYmFkL2lkeHgiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.ERjtBRlZuhJ1xt9KmKQbtyORjZtNpganR9FkvxP9PhE",
-      "ring": [
-        "k1"
-      ],
-      "now": 1700000010,
-      "expect": "reject"
-    },
-    {
-      "id": "bad_grant_id",
-      "kind": "grant",
-      "token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJzaG9ydC1pZCJ9.YSBwMevUlxRWpV5dlSGnuFh9ZZAAMclx7pmZtVO33ms",
-      "ring": [
-        "k1"
-      ],
-      "now": 1700000010,
-      "expect": "reject"
-    },
-    {
-      "id": "service_valid",
-      "kind": "service",
-      "token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
-      "method": "POST",
-      "path": "/internal/sources/vidorigin01/prepare",
-      "body": "{\"sourceId\":\"sourceid01\"}",
-      "now": 1700000005,
-      "expect": "accept"
-    },
-    {
-      "id": "service_method_replay",
-      "kind": "service",
-      "token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
-      "method": "GET",
-      "path": "/internal/sources/vidorigin01/prepare",
-      "body": "{\"sourceId\":\"sourceid01\"}",
-      "now": 1700000005,
-      "expect": "reject"
-    },
-    {
-      "id": "service_path_replay",
-      "kind": "service",
-      "token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
-      "method": "POST",
-      "path": "/internal/revisions/revorigin01/prepare",
-      "body": "{\"sourceId\":\"sourceid01\"}",
-      "now": 1700000005,
-      "expect": "reject"
-    },
-    {
-      "id": "service_body_replay",
-      "kind": "service",
-      "token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
-      "method": "POST",
-      "path": "/internal/sources/vidorigin01/prepare",
-      "body": "{\"sourceId\":\"other-body\"}",
-      "now": 1700000005,
-      "expect": "reject"
-    },
-    {
-      "id": "service_ttl_bound",
-      "kind": "service",
-      "token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMxLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.9tzvQVUGhoxINHmrf0h70VdlSyKYwnOiWr2MvRdL67U",
-      "method": "POST",
-      "path": "/internal/sources/vidorigin01/prepare",
-      "body": "{\"sourceId\":\"sourceid01\"}",
-      "now": 1700000005,
-      "expect": "reject",
-      "note": "exp - iat must equal 30"
-    },
-    {
-      "id": "service_same_request_within_ttl",
-      "kind": "service",
-      "token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
-      "method": "POST",
-      "path": "/internal/sources/vidorigin01/prepare",
-      "body": "{\"sourceId\":\"sourceid01\"}",
-      "now": 1700000029,
-      "expect": "accept"
-    }
-  ]
+	"description": "Shared grant and service-MAC vectors. Secrets are test fixtures, not production keys.",
+	"grantSkewSeconds": 5,
+	"grantTtlSeconds": 60,
+	"serviceSkewSeconds": 5,
+	"serviceTtlSeconds": 30,
+	"keys": {
+		"k1": "grant-secret-grant-secret-grant-01",
+		"k2": "grant-secret-rotated-grant-secret-02"
+	},
+	"serviceSecret": "service-token-service-token-svc01",
+	"cases": [
+		{
+			"id": "valid",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k1", "k2"],
+			"now": 1700000010,
+			"expect": "accept"
+		},
+		{
+			"id": "exp_boundary_accept",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k1"],
+			"now": 1700000065,
+			"expect": "accept",
+			"note": "reject only when now > exp + skew"
+		},
+		{
+			"id": "exp_boundary_reject",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k1"],
+			"now": 1700000066,
+			"expect": "reject"
+		},
+		{
+			"id": "iat_future_skew_accept",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k1"],
+			"now": 1699999995,
+			"expect": "accept"
+		},
+		{
+			"id": "iat_future_skew_reject",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k1"],
+			"now": 1699999994,
+			"expect": "reject"
+		},
+		{
+			"id": "bad_kid",
+			"kind": "grant",
+			"token": "k9.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k1", "k2"],
+			"now": 1700000010,
+			"expect": "reject"
+		},
+		{
+			"id": "rotated_key_still_present",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k2", "k1"],
+			"now": 1700000010,
+			"expect": "accept"
+		},
+		{
+			"id": "rotated_key_removed",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.znw8ALlMQ4x0ig1oswaLWaioeV0EKmRfREZ_6QWnBY8",
+			"ring": ["k2"],
+			"now": 1700000010,
+			"expect": "reject"
+		},
+		{
+			"id": "rotated_key_new_kid",
+			"kind": "grant",
+			"token": "k2.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.dotywnro27F-xpwKRZPDiWsp12syIjfx_EmE3tzSRRU",
+			"ring": ["k2", "k1"],
+			"now": 1700000010,
+			"expect": "accept"
+		},
+		{
+			"id": "unsafe_integer",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjo5MDA3MTk5MjU0NzQwOTkyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.iPRVqjGDKYl_3dxtGapjQuA3_uywsPgZnQT7N9f4-48",
+			"ring": ["k1"],
+			"now": 1700000010,
+			"expect": "reject"
+		},
+		{
+			"id": "non_integer",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoxLjUsInBvbGljeUVwb2NoIjozLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDA2MCwiZ3JhbnRJZCI6ImdyYW50LW9yaWdpbi0wMDAxIn0.Rw8GWoxXoL7fEn0jcV_WIAreMf2O6QRt-E3X1vb4ZJs",
+			"ring": ["k1"],
+			"now": 1700000010,
+			"expect": "reject"
+		},
+		{
+			"id": "bad_video_id",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoiYmFkL2lkeHgiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJncmFudC1vcmlnaW4tMDAwMSJ9.ERjtBRlZuhJ1xt9KmKQbtyORjZtNpganR9FkvxP9PhE",
+			"ring": ["k1"],
+			"now": 1700000010,
+			"expect": "reject"
+		},
+		{
+			"id": "bad_grant_id",
+			"kind": "grant",
+			"token": "k1.eyJ2IjoxLCJ2aWRlb0lkIjoidmlkb3JpZ2luMDEiLCJyZXZpc2lvbklkIjoicmV2b3JpZ2luMDEiLCJwdWJsaWNhdGlvbkVwb2NoIjoyLCJwb2xpY3lFcG9jaCI6MywiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDAwNjAsImdyYW50SWQiOiJzaG9ydC1pZCJ9.YSBwMevUlxRWpV5dlSGnuFh9ZZAAMclx7pmZtVO33ms",
+			"ring": ["k1"],
+			"now": 1700000010,
+			"expect": "reject"
+		},
+		{
+			"id": "service_valid",
+			"kind": "service",
+			"token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
+			"method": "POST",
+			"path": "/internal/sources/vidorigin01/prepare",
+			"body": "{\"sourceId\":\"sourceid01\"}",
+			"now": 1700000005,
+			"expect": "accept"
+		},
+		{
+			"id": "service_method_replay",
+			"kind": "service",
+			"token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
+			"method": "GET",
+			"path": "/internal/sources/vidorigin01/prepare",
+			"body": "{\"sourceId\":\"sourceid01\"}",
+			"now": 1700000005,
+			"expect": "reject"
+		},
+		{
+			"id": "service_path_replay",
+			"kind": "service",
+			"token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
+			"method": "POST",
+			"path": "/internal/revisions/revorigin01/prepare",
+			"body": "{\"sourceId\":\"sourceid01\"}",
+			"now": 1700000005,
+			"expect": "reject"
+		},
+		{
+			"id": "service_body_replay",
+			"kind": "service",
+			"token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
+			"method": "POST",
+			"path": "/internal/sources/vidorigin01/prepare",
+			"body": "{\"sourceId\":\"other-body\"}",
+			"now": 1700000005,
+			"expect": "reject"
+		},
+		{
+			"id": "service_ttl_bound",
+			"kind": "service",
+			"token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMxLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.9tzvQVUGhoxINHmrf0h70VdlSyKYwnOiWr2MvRdL67U",
+			"method": "POST",
+			"path": "/internal/sources/vidorigin01/prepare",
+			"body": "{\"sourceId\":\"sourceid01\"}",
+			"now": 1700000005,
+			"expect": "reject",
+			"note": "exp - iat must equal 30"
+		},
+		{
+			"id": "service_same_request_within_ttl",
+			"kind": "service",
+			"token": "eyJ2IjoxLCJhdWQiOiJvcmlnaW4tc2VydmljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDMwLCJub25jZSI6InVOTS1aMi1UY25oMlVVM28ifQ.RcGgiM0a9QwqZWI-mf8rsYufQ0ivV3I95MoEolkoVt4",
+			"method": "POST",
+			"path": "/internal/sources/vidorigin01/prepare",
+			"body": "{\"sourceId\":\"sourceid01\"}",
+			"now": 1700000029,
+			"expect": "accept"
+		}
+	]
 }

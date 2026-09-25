@@ -2,6 +2,7 @@ import { db } from "@cap/database";
 import { getCurrentUser } from "@cap/database/auth/session";
 import {
 	editIntent,
+	editRevision,
 	videoEdits,
 	videoPublication,
 	videos,
@@ -109,13 +110,23 @@ export default async function EditVideoPage(props: {
 	const [publishedIntent] =
 		flagged && !existingEdit
 			? await db()
-					.select({ canonicalSpec: editIntent.canonicalSpec })
+					.select({
+						canonicalSpec: editIntent.canonicalSpec,
+						metadataSnapshot: editRevision.metadataSnapshot,
+					})
 					.from(editIntent)
 					.innerJoin(
 						videoPublication,
 						and(
 							eq(videoPublication.videoId, editIntent.videoId),
-							eq(videoPublication.generation, editIntent.generation),
+							eq(videoPublication.currentGeneration, editIntent.generation),
+						),
+					)
+					.innerJoin(
+						editRevision,
+						and(
+							eq(editRevision.revisionId, videoPublication.currentRevisionId),
+							eq(editRevision.generation, editIntent.generation),
 						),
 					)
 					.where(eq(editIntent.videoId, videoId))
@@ -154,7 +165,11 @@ export default async function EditVideoPage(props: {
 
 	return (
 		<EditVideoClient
-			chapters={video.metadata?.chapters ?? []}
+			chapters={
+				publishedIntent?.metadataSnapshot?.chapters ??
+				video.metadata?.chapters ??
+				[]
+			}
 			hasExistingEdits={hasExistingEdits}
 			initialEditSpec={initialEditSpec}
 			playbackSrc={playback.playbackSrc}

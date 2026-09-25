@@ -41,6 +41,13 @@ def mezz_command(source: Path, dest: Path, timescale: int) -> list[str]:
     ]
 
 
+def _duration_s(probed: Probe) -> float:
+    if not probed.packets or probed.timescale <= 0:
+        return 0.0
+    ticks = max(row.pts + max(row.dur, 0) for row in probed.packets)
+    return ticks / probed.timescale
+
+
 def build_mezzanine(source: Path, dest: Path) -> dict:
     """Build A1 beside the immutable original. Does not replace the original and is not a Finish path."""
     original = probe(source)
@@ -55,7 +62,13 @@ def build_mezzanine(source: Path, dest: Path) -> dict:
     if "-vf" in cmd or "fps=" in " ".join(cmd):
         raise MezzanineError("A1 command drifted")
     try:
-        result = limits.run_cmd(cmd, limits.MEZZ_TIMEOUT_S, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        result = limits.run_cmd(
+            cmd,
+            limits.timeout_for_duration(_duration_s(original)),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
     except limits.InputRejected as exc:
         if tmp.exists():
             tmp.unlink()
