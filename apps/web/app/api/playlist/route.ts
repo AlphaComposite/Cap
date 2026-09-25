@@ -21,6 +21,7 @@ import {
 	resolveMobileRequestOrigin,
 	resolveMobileWebResourceUrl,
 } from "@/lib/mobile-request-origin";
+import { decidePlaylistPresign } from "@/lib/revision-media-grant";
 import { getSegmentPlaybackState } from "@/lib/segment-playback";
 import { apiToHandler } from "@/lib/server";
 import { CACHE_CONTROL_HEADERS } from "@/utils/helpers";
@@ -196,6 +197,41 @@ const getPlaylistResponse = (
 		if (urlParams.videoType === "raw-preview" || isSegmentsRequest) {
 			if (yield* isVideoEdited(video)) {
 				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
+			const decision = yield* Effect.promise(() =>
+				decidePlaylistPresign({
+					videoId: video.id,
+					ownerId: video.ownerId,
+					kind: "raw-or-segments",
+				}),
+			);
+			if (decision === "not-found") {
+				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
+			if (decision === "gone") {
+				return HttpServerResponse.text("", {
+					status: 410,
+					headers: { "cache-control": "private, no-store" },
+				});
+			}
+		}
+
+		if (urlParams.videoType === "mp4" || isMp4Source) {
+			const decision = yield* Effect.promise(() =>
+				decidePlaylistPresign({
+					videoId: video.id,
+					ownerId: video.ownerId,
+					kind: "mp4",
+				}),
+			);
+			if (decision === "not-found") {
+				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
+			if (decision === "gone") {
+				return HttpServerResponse.text("", {
+					status: 410,
+					headers: { "cache-control": "private, no-store" },
+				});
 			}
 		}
 

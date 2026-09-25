@@ -53,6 +53,7 @@ import {
 } from "@/lib/permissions/roles";
 import { resolveDefaultPlaybackSpeed } from "@/lib/playback-speed";
 import { getPublicShareVideo } from "@/lib/public-share-video";
+import { loadRevisionPlayback } from "@/lib/revision-playback-load";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
 import {
@@ -268,33 +269,43 @@ export async function generateMetadata(
 	).toString();
 
 	return Effect.flatMap(Videos, (v) => v.getByIdForViewing(videoId)).pipe(
-		Effect.map(
-			Option.match({
-				onNone: () =>
-					awaitRecording
-						? {
-								title: "Cap: Preparing Video",
-								description: "This recording is being made available.",
-								robots: "noindex, nofollow",
-							}
-						: notFound(),
-				onSome: ([video]) => {
-					return {
-						...buildShareVideoMetadata({
-							videoId,
-							name: video.name,
-							sourceType: video.source.type,
-							webUrl,
-							canonicalWebUrl: buildEnv.NEXT_PUBLIC_WEB_URL,
-							advertiseIframelyPlayer: shouldAdvertiseIframelyPlayer,
-						}),
-						robots: canRenderSocialPreview
-							? "index, follow"
-							: "noindex, nofollow",
-					};
-				},
-			}),
-		),
+		Effect.flatMap((videoOption): Effect.Effect<Metadata> => {
+			if (Option.isNone(videoOption)) {
+				if (!awaitRecording) return Effect.sync(() => notFound());
+				return Effect.succeed({
+					title: "Cap: Preparing Video",
+					description: "This recording is being made available.",
+					robots: "noindex, nofollow",
+				});
+			}
+			const [video] = videoOption.value;
+			return Effect.promise(async () => {
+				const loaded = await loadRevisionPlayback({
+					videoId,
+					ownerId: video.ownerId,
+					origin: webUrl,
+					isScreenshot: false,
+					hasActiveUpload: false,
+					sourceType: video.source.type,
+				});
+				return {
+					...buildShareVideoMetadata({
+						videoId,
+						name: video.name,
+						sourceType: video.source.type,
+						webUrl,
+						canonicalWebUrl: buildEnv.NEXT_PUBLIC_WEB_URL,
+						advertiseIframelyPlayer: shouldAdvertiseIframelyPlayer,
+						revisionStreamUrl: loaded.publicPlaylistUrl ?? undefined,
+						revisionThumbnailUnavailable: loaded.thumbnailUnavailable,
+						revisionUnavailable: loaded.plan.player === "unavailable",
+					}),
+					robots: canRenderSocialPreview
+						? "index, follow"
+						: "noindex, nofollow",
+				} satisfies Metadata;
+			});
+		}),
 		Effect.catchTags({
 			PolicyDenied: () =>
 				Effect.succeed({
@@ -533,14 +544,22 @@ async function AuthorizedContent({
 				);
 				return false;
 			});
-	const initialPlaybackUrlPromise =
-		!video.isScreenshot &&
-		!hasActiveUpload &&
-		(video.source.type === "desktopMP4" || video.source.type === "webMP4")
-			? overShareLimitPromise.then((overLimit) =>
-					overLimit ? null : getSharePlaybackUrl(video),
-				)
-			: undefined;
+	const revisionLoadPromise = (async () => {
+		const origin = await resolveShareWebUrl(await headers());
+		return loadRevisionPlayback({
+			videoId,
+			ownerId: video.owner.id,
+			origin,
+			isScreenshot: video.isScreenshot === true,
+			hasActiveUpload,
+			sourceType: video.source.type,
+		});
+	})();
+	const initialPlaybackUrlPromise = revisionLoadPromise.then(async (loaded) => {
+		if (!loaded.plan.prefetchResultMp4) return null;
+		const overLimit = await overShareLimitPromise;
+		return overLimit ? null : getSharePlaybackUrl(video);
+	});
 
 	const aiGenerationEnabledPromise = isAiGenerationEnabled(video.owner);
 	const imagesPromise = Effect.gen(function* () {
@@ -783,6 +802,8 @@ async function AuthorizedContent({
 		videoHasEdits,
 		ownerIsOverShareLimit,
 		resolvedImages,
+		_viewNotification,
+		revisionLoaded,
 	] = await Promise.all([
 		spacesDataPromise,
 		sharedSpacesPromise,
@@ -797,6 +818,7 @@ async function AuthorizedContent({
 		overShareLimitPromise,
 		imagesPromise,
 		viewNotificationPromise,
+		revisionLoadPromise,
 	]);
 
 	const rules = resolveEffectiveVideoRules({
@@ -841,6 +863,11 @@ async function AuthorizedContent({
 
 	const videoWithOrganizationInfo = {
 		...video,
+		duration:
+			revisionLoaded.playback?.mode === "hls" &&
+			revisionLoaded.playback.duration != null
+				? revisionLoaded.playback.duration
+				: video.duration,
 		metadata: filterVideoMetadataForViewer(metadata, rules.settings, isOwner),
 		hasActiveUpload,
 		ownerIsOverShareLimit,
@@ -913,7 +940,13 @@ async function AuthorizedContent({
 						spacesData={spacesData}
 						branding={getSharePageBranding(videoWithOrganizationInfo)}
 						canManageSharePageBranding={canManageSharePageBranding}
-						canDownload={canDownloadVideo}
+						canDownload={
+							revisionLoaded.playback
+								? revisionLoaded.playback.mode === "hls" &&
+									revisionLoaded.playback.downloadReady &&
+									canDownloadVideo
+								: canDownloadVideo
+						}
 						hasEdits={videoHasEdits}
 						// Caught separately from the copy the sidebar consumes: the
 						// header renders for everyone, and a failed count is worth
@@ -922,7 +955,12 @@ async function AuthorizedContent({
 					/>
 				}
 				data={videoWithOrganizationInfo}
-				initialPlaybackUrl={initialPlaybackUrlPromise}
+				initialPlaybackUrl={
+					revisionLoaded.plan.prefetchResultMp4
+						? initialPlaybackUrlPromise
+						: undefined
+				}
+				revisionPlayback={revisionLoaded.playback}
 				screenshotImageUrl={screenshotImageUrl}
 				videoSettings={rules.settings}
 				comments={commentsPromise}
@@ -934,7 +972,7 @@ async function AuthorizedContent({
 				viewerSignedIn={user !== null}
 				initialView={initialShareView}
 				canRecordMedia={canRecordMedia}
-				isEditProcessing={isEditProcessing}
+				isEditProcessing={revisionLoaded.playback ? false : isEditProcessing}
 				recordingStopped={recordingStopped}
 				defaultPlaybackSpeed={defaultPlaybackSpeed}
 				initialAiData={initialAiData}

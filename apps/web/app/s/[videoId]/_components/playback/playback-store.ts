@@ -12,6 +12,8 @@
  * `loadedmetadata`, so scrubbing stays live without burning frames.
  */
 
+import { revisionDiscreteSeek } from "@/lib/revision-seek";
+
 export type TimeSubscriber = (time: number) => void;
 export type PlayingSubscriber = () => void;
 
@@ -184,6 +186,10 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 		const clamped = isFiniteDuration(total)
 			? Math.max(0, Math.min(total - 0.001, target))
 			: Math.max(0, target);
+		if (revisionDiscreteSeek(element, clamped)) {
+			sample(true);
+			return;
+		}
 		try {
 			element.currentTime = clamped;
 		} catch (error) {

@@ -28,6 +28,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { resolveDefaultPlaybackSpeed } from "@/lib/playback-speed";
+import { applyRevisionCommentTimes } from "@/lib/revision-playback";
+import { loadRevisionPlayback } from "@/lib/revision-playback-load";
 import * as EffectRuntime from "@/lib/server";
 import { getSharePageBranding } from "@/lib/share-branding";
 import { buildShareVideoMetadata } from "@/lib/share-video-metadata";
@@ -44,20 +46,32 @@ export async function generateMetadata(
 	const videoId = params.videoId as Video.VideoId;
 
 	return Effect.flatMap(Videos, (v) => v.getByIdForViewing(videoId)).pipe(
-		Effect.map(
-			Option.match({
-				onNone: () => notFound(),
-				onSome: ([video]) => ({
+		Effect.flatMap((videoOption): Effect.Effect<Metadata> => {
+			if (Option.isNone(videoOption)) return Effect.sync(() => notFound());
+			const [video] = videoOption.value;
+			return Effect.promise(async () => {
+				const loaded = await loadRevisionPlayback({
+					videoId,
+					ownerId: video.ownerId,
+					origin: buildEnv.NEXT_PUBLIC_WEB_URL,
+					isScreenshot: false,
+					hasActiveUpload: false,
+					sourceType: video.source.type,
+				});
+				return {
 					...buildShareVideoMetadata({
 						videoId,
 						name: video.name,
 						sourceType: video.source.type,
 						webUrl: buildEnv.NEXT_PUBLIC_WEB_URL,
+						revisionStreamUrl: loaded.publicPlaylistUrl ?? undefined,
+						revisionThumbnailUnavailable: loaded.thumbnailUnavailable,
+						revisionUnavailable: loaded.plan.player === "unavailable",
 					}),
-					robots: "index, follow",
-				}),
-			}),
-		),
+					robots: "index, follow" as const,
+				} satisfies Metadata;
+			});
+		}),
 		Effect.catchTags({
 			PolicyDenied: () =>
 				Effect.succeed({
@@ -390,14 +404,43 @@ async function EmbedContent({
 		});
 	}).pipe(EffectRuntime.runPromise);
 
+	const revisionLoaded = await loadRevisionPlayback({
+		videoId: video.id,
+		ownerId: video.ownerId,
+		origin: buildEnv.NEXT_PUBLIC_WEB_URL,
+		isScreenshot: video.isScreenshot,
+		hasActiveUpload: Boolean(video.hasActiveUpload),
+		sourceType: video.source.type,
+	});
+	const revisionPlayback = revisionLoaded.playback;
+	const embedComments = revisionPlayback
+		? applyRevisionCommentTimes(
+				commentsQuery,
+				revisionPlayback.mode === "hls"
+					? revisionPlayback.commentTimestamps
+					: null,
+			)
+		: commentsQuery;
+	const embedVideo =
+		revisionPlayback?.mode === "hls" && revisionPlayback.duration != null
+			? { ...video, duration: revisionPlayback.duration }
+			: video;
+
 	return (
 		<EmbedVideo
-			data={video}
+			data={embedVideo}
+			revisionPlayback={revisionPlayback}
 			branding={branding}
 			user={user}
-			comments={commentsQuery}
+			comments={embedComments}
 			chapters={
-				rules.settings.disableChapters ? [] : initialAiData?.chapters || []
+				revisionPlayback?.mode === "hls"
+					? (revisionPlayback.chapters ?? [])
+					: revisionPlayback
+						? []
+						: rules.settings.disableChapters
+							? []
+							: initialAiData?.chapters || []
 			}
 			ownerName={videoOwner[0]?.name || null}
 			ownerImageUrl={ownerImageUrl}
