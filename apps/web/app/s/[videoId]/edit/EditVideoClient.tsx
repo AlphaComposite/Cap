@@ -1158,18 +1158,22 @@ export function EditVideoClient({
 				router.refresh();
 				return;
 			}
-			if (plan === "conflict") {
-				toast.error("A newer draft exists. Retry Done.");
-				setIsSaving(false);
-				return;
-			}
-			toast.error(
-				"status" in published ? published.message : "Failed to publish edit",
-			);
+			toast.error("Failed to publish edit");
 			setIsSaving(false);
 		} catch (error) {
+			const status =
+				typeof error === "object" &&
+				error !== null &&
+				"status" in error &&
+				typeof error.status === "number"
+					? error.status
+					: 0;
 			toast.error(
-				error instanceof Error ? error.message : "Failed to start video edit",
+				status === 409
+					? "A newer draft exists. Retry Done."
+					: error instanceof Error
+						? error.message
+						: "Failed to start video edit",
 			);
 			setIsSaving(false);
 		}
@@ -1179,11 +1183,10 @@ export function EditVideoClient({
 		hasTimelineChanges,
 		initialEditSpec,
 		instantFinish?.draftVersion,
-		instantFinish?.generation,
+		instantFinish?.enabled,
 		isSaving,
 		router,
 		video.id,
-		video.ownerId,
 	]);
 
 	const handleCancel = useCallback(() => {
