@@ -123,6 +123,18 @@ const nextConfig = {
 			},
 		];
 	},
+	async headers() {
+		return [
+			{
+				source: "/s/:path*",
+				headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+			},
+			{
+				source: "/embed/:path*",
+				headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+			},
+		];
+	},
 	async redirects() {
 		return [
 			{
