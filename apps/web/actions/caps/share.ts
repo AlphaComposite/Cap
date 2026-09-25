@@ -14,6 +14,7 @@ import {
 import type { Organisation, Space, Video } from "@cap/web-domain";
 import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 
 interface ShareCapParams {
 	capId: Video.VideoId;
@@ -70,6 +71,8 @@ export async function shareCap({
 			);
 
 		const organizationIds = directOrgIds;
+
+		await bumpPolicyEpoch(capId);
 
 		const currentSharedOrganizations = await db()
 			.select()

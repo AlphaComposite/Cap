@@ -2,6 +2,8 @@ import { provideOptionalAuth, Storage, Videos } from "@cap/web-backend";
 import { Video } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import { type NextRequest, NextResponse } from "next/server";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { revisionArtifactUrl } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -31,14 +33,30 @@ export async function GET(request: NextRequest) {
 	}
 
 	const videoId = Video.VideoId.make(rawVideoId);
-	let previewUrl: string | null;
+	let preview: { url: string | null; flagged: boolean } = {
+		url: null,
+		flagged: false,
+	};
 	try {
-		previewUrl = await Effect.gen(function* () {
+		preview = await Effect.gen(function* () {
 			const videos = yield* Videos;
 			const maybeVideo = yield* videos.getByIdForViewing(videoId);
-			if (Option.isNone(maybeVideo)) return null;
+			if (Option.isNone(maybeVideo)) return { url: null, flagged: false };
 
 			const [video] = maybeVideo.value;
+			const flagged = isInstantFinishEnabledForOwner(video.ownerId);
+			if (flagged) {
+				const url = yield* Effect.promise(() =>
+					revisionArtifactUrl({
+						videoId: video.id,
+						ownerId: video.ownerId,
+						artifact: "thumbnail",
+						child: "thumbnail.jpg",
+						origin: request.nextUrl.origin,
+					}),
+				);
+				return { url, flagged: true };
+			}
 			const [bucket] = yield* Storage.getAccessForVideo(video);
 			const previewKey = getPreviewGifKey(video.ownerId, video.id);
 			const hasPreview = yield* bucket.headObject(previewKey).pipe(
@@ -46,23 +64,31 @@ export async function GET(request: NextRequest) {
 				Effect.catchAll(() => Effect.succeed(false)),
 			);
 
-			if (!hasPreview) return null;
+			if (!hasPreview) return { url: null, flagged: false };
 
-			return yield* bucket.getSignedObjectUrl(previewKey, {
-				expiresIn: PREVIEW_GIF_EXPIRES_SECONDS,
-			});
+			return {
+				url: yield* bucket.getSignedObjectUrl(previewKey, {
+					expiresIn: PREVIEW_GIF_EXPIRES_SECONDS,
+				}),
+				flagged: false,
+			};
 		}).pipe(provideOptionalAuth, runPromise);
 	} catch (error) {
 		console.warn("[video/preview] Failed to resolve preview GIF:", error);
 		return new NextResponse(null, { status: 404 });
 	}
 
-	if (!previewUrl) {
+	if (!preview.url) {
+		if (preview.flagged) return new NextResponse(null, { status: 404 });
 		return getFallbackResponse(request, rawVideoId);
 	}
 
-	const response = NextResponse.redirect(previewUrl, 302);
-	response.headers.set("Cache-Control", "public, max-age=300");
+	const response = NextResponse.redirect(preview.url, 302);
+	response.headers.set(
+		"Cache-Control",
+		preview.flagged ? "private, no-store" : "public, max-age=300",
+	);
+	if (preview.flagged) response.headers.set("Referrer-Policy", "no-referrer");
 	return response;
 }
 

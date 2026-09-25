@@ -7,6 +7,11 @@ import { Storage } from "@cap/web-backend";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import {
+	ownerOriginalPath,
+	revisionArtifactUrl,
+} from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 import { canUserDownloadVideo } from "@/lib/video-download-permissions";
 import { decodeStorageVideo } from "@/lib/video-storage";
@@ -44,6 +49,26 @@ export async function downloadVideo(videoId: Video.VideoId) {
 
 	if (video.ownerId !== userId) {
 		throw new Error("You don't have permission to download this video");
+	}
+
+	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		const downloadUrl = await revisionArtifactUrl({
+			videoId,
+			ownerId: video.ownerId,
+			artifact: "download",
+			child: "download.mp4",
+		});
+		if (!downloadUrl) {
+			return {
+				success: false as const,
+				error: "Preparing download...",
+			};
+		}
+		return {
+			success: true as const,
+			downloadUrl,
+			filename: `${video.name}.mp4`,
+		};
 	}
 
 	try {
@@ -97,6 +122,33 @@ export async function getVideoDownloadInfo(
 
 	if (!allowed) {
 		throw new Error("You don't have permission to download this video");
+	}
+
+	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		if (variant === "original") {
+			return {
+				success: true as const,
+				downloadUrl: ownerOriginalPath(videoId),
+				filename: `${video.name} (original).mp4`,
+			};
+		}
+		const downloadUrl = await revisionArtifactUrl({
+			videoId,
+			ownerId: video.ownerId,
+			artifact: "download",
+			child: "download.mp4",
+		});
+		if (!downloadUrl) {
+			return {
+				success: false,
+				error: "Preparing download...",
+			};
+		}
+		return {
+			success: true as const,
+			downloadUrl,
+			filename: `${video.name}.mp4`,
+		};
 	}
 
 	if (variant === "current") {

@@ -428,6 +428,11 @@ const makeS3Access = (s3: S3BucketAccess) => ({
 		key: string,
 		signingArgs?: Parameters<S3BucketAccess["getInternalSignedObjectUrl"]>[1],
 	) => mapStorageError(s3.getInternalSignedObjectUrl(key, signingArgs)),
+	getObjectResponse: (
+		key: string,
+		range?: string | null,
+		verification?: { objectIdentity?: string; signal?: AbortSignal },
+	) => mapStorageError(s3.getObjectResponse(key, range, verification)),
 	getObject: (key: string) => mapStorageError(s3.getObject(key)),
 	listObjects: (input: {
 		prefix?: string;
@@ -1119,7 +1124,13 @@ function withPublishedRecordingOutput<
 			) => access.getObjectResponse(resolve(key), range, verification),
 		});
 	}
-	return Object.assign({}, access, shared);
+	return Object.assign({}, access, shared, {
+		getObjectResponse: (
+			key: string,
+			range?: string | null,
+			verification?: { objectIdentity?: string; signal?: AbortSignal },
+		) => access.getObjectResponse(resolve(key), range, verification),
+	});
 }
 
 type WritableStorageAccess = {

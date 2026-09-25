@@ -18,6 +18,7 @@ import { Effect, Option } from "effect";
 import { revalidatePath } from "next/cache";
 import { isOrganizationOwnerPro } from "@/lib/org-pro";
 import { normalizeSpaceRole } from "@/lib/permissions/roles";
+import { bumpPolicyEpochForSpace } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 import { getSpaceAccess } from "./space-authorization";
 import {
@@ -115,6 +116,10 @@ export async function updateSpace(formData: FormData) {
 		spaceUpdate.password = await hashPassword(password.trim());
 	} else if (passwordAction === "remove") {
 		spaceUpdate.password = null;
+	}
+
+	if (passwordAction === "set" || passwordAction === "remove") {
+		await bumpPolicyEpochForSpace(id);
 	}
 
 	await db().update(spaces).set(spaceUpdate).where(eq(spaces.id, id));
