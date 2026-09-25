@@ -1,24 +1,19 @@
 import { db } from "@cap/database";
 import {
 	comments,
-	editIntent,
 	editRevision,
 	sourceObject,
 	videoPublication,
 	videos,
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { ownerOriginalPath } from "@/lib/revision-media-grant";
-import {
-	deriveRevisionChapters,
-	previousEditionSpec,
-	RevisionPublicationError,
-} from "@/lib/revision-publication-metadata";
+import { pageMetadataForRevision } from "@/lib/revision-metadata-snapshot";
+import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import { prepareSourceOnEditorOpen } from "@/lib/revision-publication-origin";
 import { getEditSourceKey } from "@/lib/video-edit-processing";
-import { getEditSpecOutputDuration } from "@/lib/video-edits";
 
 type Database = ReturnType<typeof db>;
 
@@ -26,6 +21,7 @@ export type PublicationProjection = {
 	videoId: string;
 	currentRevisionId: string | null;
 	generation: number;
+	currentGeneration: number | null;
 	publicationEpoch: number;
 	policyEpoch: number;
 	latestDraftVersion: number;
@@ -134,6 +130,7 @@ export async function readPublicationProjection(
 		videoId: row.videoId,
 		currentRevisionId: row.currentRevisionId,
 		generation: row.generation,
+		currentGeneration: row.currentGeneration,
 		publicationEpoch: row.publicationEpoch,
 		policyEpoch: row.policyEpoch,
 		latestDraftVersion: row.latestDraftVersion,
@@ -176,41 +173,12 @@ export async function getInstantFinishPublicationDto(input: {
 		.select()
 		.from(editRevision)
 		.where(eq(editRevision.revisionId, projection.currentRevisionId));
-	const [intent] = revision
-		? await database
-				.select({ canonicalSpec: editIntent.canonicalSpec })
-				.from(editIntent)
-				.where(
-					sql`${editIntent.videoId} = ${input.videoId} and ${editIntent.generation} = ${revision.generation}`,
-				)
-		: [];
-	const spec = intent?.canonicalSpec;
-	const duration = spec
-		? getEditSpecOutputDuration(spec)
-		: (input.durationFallback ?? null);
-	const [video] = await database
-		.select({ metadata: videos.metadata })
-		.from(videos)
-		.where(eq(videos.id, asVideoId(input.videoId)));
-	const storedChapters = video?.metadata?.chapters ?? [];
-	const nextSpec = spec?.version === 2 ? spec : null;
-	const chapters = nextSpec
-		? deriveRevisionChapters({
-				storedChapters,
-				previousSpec: previousEditionSpec({
-					currentSpec: nextSpec,
-					rollbackSpec: null,
-					sourceDuration: nextSpec.sourceDuration,
-				}),
-				nextSpec,
-			})
-		: [];
-	const thumbnail =
-		nextSpec && nextSpec.keepRanges[0]?.start === 0
-			? "source-zero"
-			: nextSpec
-				? "seg0-first-frame"
-				: "unavailable";
+	const snapshot = revision?.metadataSnapshot ?? null;
+	const page = pageMetadataForRevision({
+		snapshot,
+		liveMetadata: null,
+	});
+	const duration = page.durationSeconds ?? input.durationFallback ?? null;
 	const commentRows = await database
 		.select({ id: comments.id, timestamp: comments.timestamp })
 		.from(comments)
@@ -221,24 +189,24 @@ export async function getInstantFinishPublicationDto(input: {
 	return {
 		enabled: true,
 		currentRevisionId: projection.currentRevisionId,
-		generation: projection.generation,
+		generation: projection.currentGeneration ?? projection.generation,
 		duration,
 		draftVersion: projection.latestDraftVersion,
 		draftSession: projection.draftSession,
 		revisionMetadata: {
 			duration,
-			chapters: nextSpec ? chapters : [],
-			captionsAvailable: true,
+			chapters: page.chapters,
+			captionsAvailable: page.captionsVtt != null,
 			commentTimestamps,
-			thumbnailAvailable: thumbnail !== "unavailable",
+			thumbnailAvailable: page.thumbnail !== "unavailable",
 			downloadReady: false,
 			playlistPath: `/media/${input.videoId}/r/${projection.currentRevisionId}/playlist.m3u8`,
 			summaryStatus: "persisted",
 			summaryDerived: false,
-			summaryText: input.summaryText ?? video?.metadata?.summary ?? null,
-			captions: "revision",
-			chaptersStatus: nextSpec ? "revision" : "unavailable",
-			thumbnail,
+			summaryText: page.summaryText,
+			captions: page.captionsVtt != null ? "revision" : "unavailable",
+			chaptersStatus: snapshot ? "revision" : "unavailable",
+			thumbnail: page.thumbnail,
 			download: "preparing",
 			commentClock: "output-time",
 			removedRangeComments: "hidden",
