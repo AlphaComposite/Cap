@@ -29,7 +29,7 @@ DECODER_IDLE_TTL_S = 600.0
 _IMPL_IDS: dict | None = None
 _DECODERS: dict[str, tuple] = {}
 _DECODER_USED: dict[str, float] = {}
-_DECODER_GUARD = threading.Lock()
+_DECODER_GUARD = threading.RLock()
 _WARM: dict[str, dict] = {}
 _WARM_LOCK = threading.Lock()
 WARM_LOG: list[dict] = []
@@ -541,8 +541,24 @@ def _decoder(mezz: Path):
             stream.thread_type = "SLICE"
             found = (container, stream, threading.Lock())
             _DECODERS[key] = found
+            _evict_decoders()
         _DECODER_USED[key] = time.perf_counter()
         return found
+
+
+def _evict_decoders() -> None:
+    import limits
+
+    _evict_idle()
+    while len(_DECODERS) > limits.DECODER_MAX:
+        oldest = min(_DECODER_USED, key=lambda item: _DECODER_USED[item])
+        found = _DECODERS.pop(oldest, None)
+        _DECODER_USED.pop(oldest, None)
+        if found is None:
+            continue
+        container, _stream, lock = found
+        with lock:
+            container.close()
 
 
 def close_source(mezz: Path | None = None) -> None:
@@ -575,6 +591,7 @@ def _evict_idle(ttl: float | None = None) -> int:
 
 def _log_warm(event: str, source_id: str, **fields: object) -> None:
     WARM_LOG.append({"event": event, "keyed": "source", "source_id": source_id, **fields})
+    del WARM_LOG[:-256]
     sys.stderr.write(
         f"warm event={event} keyed=source ttl_s={fields.get('ttl_s')} expires_at={fields.get('expires_at')}\n"
     )

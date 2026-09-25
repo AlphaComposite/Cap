@@ -1,7 +1,11 @@
 """Read-only publication projection. A owns the tables; this process never writes them."""
 from __future__ import annotations
 
+import os
+import queue
+import threading
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,7 @@ class PublicationRow:
     generation: int
     publication_epoch: int
     policy_epoch: int
+    current_generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,40 @@ class SourceRow:
     relocation_state: str
 
 
+@dataclass(frozen=True)
+class AuthorizeSnapshot:
+    video: VideoRow
+    publication: PublicationRow | None
+    revision: RevisionRow | None
+    source_sha256: str | None
+    source_live_key: str | None
+
+
+AUTHORIZE_SQL = (
+    "SELECT v.id AS video_id, v.is_public AS is_public, v.has_password AS has_password, "
+    "v.bucket AS bucket, p.currentRevisionId AS current_revision_id, "
+    "p.generation AS allocated_generation, p.currentGeneration AS current_generation, "
+    "p.publicationEpoch AS publication_epoch, p.policyEpoch AS policy_epoch, "
+    "r.revisionId AS revision_id, r.videoId AS revision_video_id, r.intentId AS intent_id, "
+    "r.sourceId AS source_id, r.generation AS revision_generation, r.state AS revision_state, "
+    "s.sha256 AS source_sha256, s.liveKey AS source_live_key "
+    "FROM origin_video v "
+    "LEFT JOIN video_publication p ON p.videoId = v.id "
+    "LEFT JOIN edit_revision r ON r.revisionId = %s AND r.videoId = v.id "
+    "LEFT JOIN source_object s ON s.videoId = v.id "
+    "WHERE v.id = %s"
+)
+
+RECHECK_SQL = (
+    "SELECT p.currentRevisionId AS current_revision_id, p.currentGeneration AS current_generation, "
+    "p.publicationEpoch AS publication_epoch, p.policyEpoch AS policy_epoch, "
+    "r.generation AS revision_generation, r.state AS revision_state "
+    "FROM video_publication p "
+    "JOIN edit_revision r ON r.revisionId = %s AND r.videoId = p.videoId "
+    "WHERE p.videoId = %s"
+)
+
+
 class PublicationStore:
     def video(self, video_id: str) -> VideoRow | None:
         raise NotImplementedError
@@ -50,6 +89,12 @@ class PublicationStore:
         raise NotImplementedError
 
     def source(self, video_id: str) -> SourceRow | None:
+        raise NotImplementedError
+
+    def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
+        raise NotImplementedError
+
+    def recheck(self, video_id: str, revision_id: str) -> dict | None:
         raise NotImplementedError
 
 
@@ -72,6 +117,33 @@ class MemoryPublication(PublicationStore):
     def source(self, video_id: str) -> SourceRow | None:
         return self.sources.get(video_id)
 
+    def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
+        video = self.video(video_id)
+        if video is None:
+            return None
+        source = self.source(video_id)
+        return AuthorizeSnapshot(
+            video,
+            self.publication(video_id),
+            self.revision(revision_id),
+            None if source is None else source.sha256,
+            None if source is None else source.live_key,
+        )
+
+    def recheck(self, video_id: str, revision_id: str) -> dict | None:
+        pub = self.publication(video_id)
+        rev = self.revision(revision_id)
+        if pub is None or rev is None or rev.video_id != video_id:
+            return None
+        return {
+            "current_generation": pub.current_generation,
+            "current_revision_id": pub.current_revision_id,
+            "policy_epoch": pub.policy_epoch,
+            "publication_epoch": pub.publication_epoch,
+            "revision_generation": rev.generation,
+            "revision_state": rev.state,
+        }
+
     def put_video(self, row: VideoRow) -> None:
         self.videos[row.video_id] = row
 
@@ -85,17 +157,24 @@ class MemoryPublication(PublicationStore):
         self.sources[row.video_id] = row
 
 
-class MySQLPublication(PublicationStore):
-    def __init__(self, url: str) -> None:
+class ConnectionPool:
+    def __init__(self, url: str, size: int | None = None) -> None:
         self.url = url
+        self.size = size if size is not None else int(os.environ.get("ORIGIN_DB_POOL", "4"))
+        if self.size < 1:
+            raise RuntimeError("origin db pool must be at least 1")
+        self._idle: queue.Queue = queue.Queue(maxsize=self.size)
+        self._created = 0
+        self._lock = threading.Lock()
+        self.connects = 0
 
-    def _conn(self):
+    def _connect(self):
         import pymysql
-        from urllib.parse import urlparse
 
         parsed = urlparse(self.url)
         if parsed.scheme not in {"mysql", "mysql+pymysql"}:
             raise RuntimeError("publication URL must be mysql")
+        self.connects += 1
         return pymysql.connect(
             host=parsed.hostname or "127.0.0.1",
             port=parsed.port or 3306,
@@ -110,40 +189,51 @@ class MySQLPublication(PublicationStore):
             connect_timeout=5,
         )
 
+    def acquire(self):
+        try:
+            return self._idle.get_nowait()
+        except queue.Empty:
+            with self._lock:
+                if self._created < self.size:
+                    self._created += 1
+                    return self._connect()
+        return self._idle.get(timeout=2)
+
+    def release(self, conn) -> None:
+        try:
+            conn.ping(reconnect=True)
+            self._idle.put_nowait(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._created = max(0, self._created - 1)
+
+
+class MySQLPublication(PublicationStore):
+    def __init__(self, url: str, pool: ConnectionPool | None = None) -> None:
+        self.url = url
+        self.pool = pool or ConnectionPool(url)
+
     def _one(self, sql: str, args: tuple) -> dict | None:
-        conn = self._conn()
+        conn = self.pool.acquire()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, args)
-                row = cur.fetchone()
-            return row
+                fetched = cur.fetchone()
+                return fetched if isinstance(fetched, dict) else None
         finally:
-            conn.close()
+            self.pool.release(conn)
 
     def video(self, video_id: str) -> VideoRow | None:
-        row = self._one(
-            "SELECT id, `public`, password IS NOT NULL AS has_password, bucket FROM videos WHERE id=%s",
-            (video_id,),
-        )
-        if row is None:
-            return None
-        return VideoRow(row["id"], bool(row["public"]), bool(row["has_password"]), row.get("bucket"))
+        snap = self.authorize(video_id, "")
+        return None if snap is None else snap.video
 
     def publication(self, video_id: str) -> PublicationRow | None:
-        row = self._one(
-            "SELECT videoId, currentRevisionId, generation, publicationEpoch, policyEpoch "
-            "FROM video_publication WHERE videoId=%s",
-            (video_id,),
-        )
-        if row is None:
-            return None
-        return PublicationRow(
-            row["videoId"],
-            row["currentRevisionId"],
-            int(row["generation"]),
-            int(row["publicationEpoch"]),
-            int(row["policyEpoch"]),
-        )
+        snap = self.authorize(video_id, "")
+        return None if snap is None else snap.publication
 
     def revision(self, revision_id: str) -> RevisionRow | None:
         row = self._one(
@@ -170,3 +260,48 @@ class MySQLPublication(PublicationStore):
         if row is None:
             return None
         return SourceRow(row["videoId"], row["liveKey"], row["sha256"], row["relocationState"])
+
+    def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
+        row = self._one(AUTHORIZE_SQL, (revision_id, video_id))
+        if row is None:
+            return None
+        publication = None
+        if row.get("publication_epoch") is not None:
+            publication = PublicationRow(
+                video_id,
+                row.get("current_revision_id"),
+                int(row["allocated_generation"]),
+                int(row["publication_epoch"]),
+                int(row["policy_epoch"]),
+                None if row.get("current_generation") is None else int(row["current_generation"]),
+            )
+        revision = None
+        if row.get("revision_id"):
+            revision = RevisionRow(
+                row["revision_id"],
+                row["revision_video_id"],
+                row["intent_id"],
+                row["source_id"],
+                int(row["revision_generation"]),
+                row["revision_state"],
+            )
+        return AuthorizeSnapshot(
+            VideoRow(row["video_id"], bool(row["is_public"]), bool(row["has_password"]), row.get("bucket")),
+            publication,
+            revision,
+            row.get("source_sha256"),
+            row.get("source_live_key"),
+        )
+
+    def recheck(self, video_id: str, revision_id: str) -> dict | None:
+        row = self._one(RECHECK_SQL, (revision_id, video_id))
+        if row is None:
+            return None
+        return {
+            "current_generation": None if row.get("current_generation") is None else int(row["current_generation"]),
+            "current_revision_id": row.get("current_revision_id"),
+            "policy_epoch": int(row["policy_epoch"]),
+            "publication_epoch": int(row["publication_epoch"]),
+            "revision_generation": int(row["revision_generation"]),
+            "revision_state": row["revision_state"],
+        }
