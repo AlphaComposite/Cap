@@ -20,6 +20,11 @@ vi.mock("@cap/database/schema", () => ({
 	videos: { name: "video", id: "id" },
 	videoUploads: { name: "upload", videoId: "videoId" },
 	videoEdits: { name: "edit", videoId: "videoId" },
+	sourceObject: {
+		name: "source_object",
+		liveKey: { name: "live_key" },
+		videoId: { name: "video_id" },
+	},
 }));
 vi.mock("@cap/database", () => {
 	const client = {
