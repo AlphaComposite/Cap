@@ -7,7 +7,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.lock /app/requirements.lock
 RUN pip install --no-cache-dir -r /app/requirements.lock
-COPY grant.py publication.py storage.py index.py mezzanine.py lib_audio.py lib_origin.py server.py /app/
+COPY grant.py publication.py storage.py index.py mezzanine.py lib_audio.py lib_origin.py service_auth.py server.py /app/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 0555 /entrypoint.sh
 
