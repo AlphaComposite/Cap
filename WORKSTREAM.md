@@ -1,6 +1,6 @@
 # W-C revision player
 
-Branch `wire/c-player` in `/srv/styrir/worktrees/cap-fzp-8-wire-c-player`, base `a17a3348fa`. Local commit only. No push, no Beads, no production containers, no live MySQL/MinIO, no `/etc/nginx`.
+Branch `wire/c-player` in `/srv/styrir/worktrees/cap-fzp-8-wire-c-player`, base `a17a3348fa`. Implementation commit `3f906db8afc59c6b9e364b31277d88a3807eac23` (`feat: play flagged edits as revision HLS`). Local only. No push, no Beads, no production containers, no live MySQL/MinIO, no `/etc/nginx`.
 
 ## What landed
 
