@@ -8,6 +8,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireOrganizationSettingsManager } from "@/actions/organization/authorization";
 import { getSpaceAccess } from "@/actions/organization/space-authorization";
+import { bumpPolicyEpochForVideos } from "@/lib/revision-media-grant";
 
 export async function removeVideosFromSpace(
 	spaceId: Space.SpaceIdOrOrganisationId,
@@ -47,6 +48,8 @@ export async function removeVideosFromSpace(
 		if (validVideoIds.length === 0) {
 			throw new Error("No valid videos found");
 		}
+
+		await bumpPolicyEpochForVideos(validVideoIds);
 
 		if (isAllSpacesEntry) {
 			await db()

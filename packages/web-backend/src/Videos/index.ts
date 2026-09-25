@@ -21,6 +21,8 @@ import {
 	isInternalRecordingKey,
 } from "../Storage/recording-output.ts";
 import { Tinybird } from "../Tinybird/index.ts";
+import { isInstantFinishEnabledForOwner } from "./instantFinishFlag.ts";
+import { bumpPolicyEpochIfFlagged } from "./policyEpoch.ts";
 import { VideosPolicy } from "./VideosPolicy.ts";
 import type { CreateVideoInput as RepoCreateVideoInput } from "./VideosRepo.ts";
 import { VideosRepo } from "./VideosRepo.ts";
@@ -302,6 +304,9 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				if (Option.isNone(maybeVideo))
 					return yield* Effect.fail(new Video.NotFoundError());
 				const [video] = maybeVideo.value;
+				yield* db.use((client) =>
+					bumpPolicyEpochIfFlagged(client, video.id, video.ownerId),
+				);
 
 				const [bucket] = yield* storage.getAccessForVideo(video);
 
@@ -707,6 +712,7 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				if (Option.isNone(maybeVideo))
 					return yield* Effect.fail(new Video.NotFoundError());
 				const [video] = maybeVideo.value;
+				if (isInstantFinishEnabledForOwner(video.ownerId)) return Option.none();
 
 				const [bucket] = yield* storage.getAccessForVideo(video);
 				const [videoRow] = yield* db.use((db) =>
@@ -787,6 +793,7 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				const maybeVideo = yield* policy.getViewableById(videoId);
 				if (Option.isNone(maybeVideo)) return Option.none();
 				const [video] = maybeVideo.value;
+				if (isInstantFinishEnabledForOwner(video.ownerId)) return Option.none();
 
 				const [bucket] = yield* storage.getAccessForVideo(video);
 				const publishedThumbnail = getPublishedRecordingThumbnailKey(video);

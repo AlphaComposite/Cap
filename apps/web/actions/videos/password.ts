@@ -12,6 +12,7 @@ import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { setVerifiedPasswordCookie } from "@/lib/password-cookie";
+import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 
 export async function setVideoPassword(
 	videoId: Video.VideoId,
@@ -34,10 +35,13 @@ export async function setVideoPassword(
 		}
 
 		const hashed = await hashPassword(password);
-		await db()
-			.update(videos)
-			.set({ password: hashed })
-			.where(eq(videos.id, videoId));
+		await db().transaction(async (tx) => {
+			await tx
+				.update(videos)
+				.set({ password: hashed })
+				.where(eq(videos.id, videoId));
+			await bumpPolicyEpoch(videoId, tx);
+		});
 
 		revalidatePath("/dashboard/caps");
 		revalidatePath("/dashboard/shared-caps");
@@ -67,10 +71,13 @@ export async function removeVideoPassword(videoId: Video.VideoId) {
 			throw new Error("Unauthorized");
 		}
 
-		await db()
-			.update(videos)
-			.set({ password: null })
-			.where(eq(videos.id, videoId));
+		await db().transaction(async (tx) => {
+			await tx
+				.update(videos)
+				.set({ password: null })
+				.where(eq(videos.id, videoId));
+			await bumpPolicyEpoch(videoId, tx);
+		});
 
 		revalidatePath("/dashboard/caps");
 		revalidatePath("/dashboard/shared-caps");

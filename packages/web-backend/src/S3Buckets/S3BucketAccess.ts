@@ -191,6 +191,62 @@ export const createS3BucketAccess = Effect.gen(function* () {
 					),
 				),
 			).pipe(Effect.withSpan("getInternalSignedObjectUrl")),
+		getObjectResponse: (
+			key: string,
+			range?: string | null,
+			verification?: { objectIdentity?: string; signal?: AbortSignal },
+		) =>
+			wrapS3Promise(
+				provider.getInternal.pipe(
+					Effect.map(async (client) => {
+						if (verification?.objectIdentity) {
+							const head = await client.send(
+								new S3.HeadObjectCommand({
+									Bucket: provider.bucket,
+									Key: key,
+								}),
+								{ abortSignal: verification.signal },
+							);
+							if (head.ETag !== verification.objectIdentity) {
+								const changed = new Error("Object changed");
+								Object.assign(changed, {
+									_tag: "RecordingObjectReadError",
+									status: 412,
+								});
+								throw changed;
+							}
+						}
+						const response = await client.send(
+							new S3.GetObjectCommand({
+								Bucket: provider.bucket,
+								Key: key,
+								Range: range ?? undefined,
+							}),
+							{ abortSignal: verification?.signal },
+						);
+						const headers = new Headers();
+						headers.set("Cache-Control", "private, no-store");
+						headers.set("Accept-Ranges", "bytes");
+						if (response.ContentType) {
+							headers.set("Content-Type", response.ContentType);
+						}
+						if (response.ContentLength !== undefined) {
+							headers.set("Content-Length", String(response.ContentLength));
+						}
+						if (response.ContentRange) {
+							headers.set("Content-Range", response.ContentRange);
+						}
+						if (response.ETag) headers.set("ETag", response.ETag);
+						const status =
+							response.$metadata.httpStatusCode ??
+							(response.ContentRange ? 206 : 200);
+						return new Response(response.Body?.transformToWebStream() ?? null, {
+							status,
+							headers,
+						});
+					}),
+				),
+			).pipe(Effect.withSpan("getObjectResponse")),
 		getObject: (key: string) =>
 			wrapS3Promise(
 				provider.getInternal.pipe(

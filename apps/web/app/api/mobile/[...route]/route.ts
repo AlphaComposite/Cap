@@ -57,12 +57,18 @@ import {
 	hasPendingAccountDeletion,
 } from "@/lib/account-deletion-request";
 import { queueDesktopSegmentsFinalization } from "@/lib/desktop-segments-finalization";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	resolveMobileRequestOrigin,
 	resolveMobileWebResourceUrl,
 } from "@/lib/mobile-request-origin";
 import { createNotification } from "@/lib/Notification";
 import { isRateLimited, RATE_LIMIT_IDS } from "@/lib/rate-limit";
+import {
+	bumpPolicyEpoch,
+	issueAuthorizedRevisionPlayback,
+	revisionArtifactUrl,
+} from "@/lib/revision-media-grant";
 import { apiToHandler } from "@/lib/server";
 import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
 import { startVideoProcessingWorkflow } from "@/lib/video-processing";
@@ -389,6 +395,16 @@ const getMobileThumbnailUrl = Effect.fn("Mobile.getThumbnailUrl")(function* (
 	if (Option.isNone(maybeVideo)) return null;
 
 	const [video] = maybeVideo.value;
+	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		return yield* Effect.promise(() =>
+			revisionArtifactUrl({
+				videoId: video.id,
+				ownerId: video.ownerId,
+				artifact: "thumbnail",
+				child: "thumbnail.jpg",
+			}),
+		);
+	}
 	const [bucket] = yield* storage.getAccessForVideo(video);
 	const publishedThumbnail = getPublishedRecordingThumbnailKey(video);
 	if (publishedThumbnail) {
@@ -2159,6 +2175,23 @@ const getPlayback = Effect.fn("Mobile.getPlayback")(function* (
 		return yield* Effect.fail(new HttpApiError.NotFound());
 	}
 	const [video] = maybeVideo.value;
+	const revisionPlayback = yield* Effect.promise(() =>
+		issueAuthorizedRevisionPlayback({
+			videoId: video.id,
+			ownerId: video.ownerId,
+			origin: publicOrigin,
+		}),
+	);
+	if (revisionPlayback.enabled) {
+		if (!revisionPlayback.url) {
+			return yield* Effect.fail(new HttpApiError.NotFound());
+		}
+		return {
+			kind: "hls" as const,
+			url: revisionPlayback.url,
+			transcriptUrl: revisionPlayback.transcriptUrl,
+		};
+	}
 
 	const [bucket] = yield* storage.getAccessForVideo(video);
 	const source = Video.Video.getSource(video);
@@ -2910,6 +2943,7 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 								const publicOrigin = getMobilePublicOrigin(request);
 								const user = yield* CurrentUser;
 								yield* assertMobileVideoOwner(path.id);
+								yield* Effect.promise(() => bumpPolicyEpoch(path.id));
 								yield* database.use((db) =>
 									db
 										.update(Db.videos)
@@ -2978,6 +3012,7 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 										})
 									: null;
 
+								yield* Effect.promise(() => bumpPolicyEpoch(path.id));
 								yield* database.use((db) =>
 									db
 										.update(Db.videos)

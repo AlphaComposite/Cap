@@ -13,6 +13,7 @@ import type { Space } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { revalidatePath } from "next/cache";
+import { bumpPolicyEpochForVideos } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 import { requireSpaceManager } from "./space-authorization";
 
@@ -57,6 +58,12 @@ export async function deleteSpace(
 				error: "You don't have permission to delete this space",
 			};
 		}
+
+		const linked = await db()
+			.select({ videoId: spaceVideos.videoId })
+			.from(spaceVideos)
+			.where(eq(spaceVideos.spaceId, spaceId));
+		await bumpPolicyEpochForVideos(linked.map((row) => row.videoId));
 
 		await db().delete(spaceVideos).where(eq(spaceVideos.spaceId, spaceId));
 
