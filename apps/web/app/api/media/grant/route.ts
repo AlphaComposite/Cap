@@ -13,13 +13,23 @@ const headers = {
 	"Referrer-Policy": REVISION_MEDIA_REFERRER_POLICY,
 };
 
-async function refresh(request: NextRequest) {
-	const rawVideoId = request.nextUrl.searchParams.get("videoId");
-	if (!rawVideoId || !/^[A-Za-z0-9_-]{1,128}$/.test(rawVideoId)) {
-		return NextResponse.json(
-			{ error: "missing_video" },
-			{ status: 400, headers },
-		);
+const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
+
+export async function POST(request: NextRequest) {
+	let rawVideoId = "";
+	let requestedRevisionId: string | null = null;
+	try {
+		const body = (await request.json()) as {
+			videoId?: unknown;
+			revisionId?: unknown;
+		};
+		if (typeof body.videoId === "string") rawVideoId = body.videoId;
+		if (typeof body.revisionId === "string") requestedRevisionId = body.revisionId;
+	} catch {
+		return NextResponse.json({ error: "missing_video" }, { status: 400, headers });
+	}
+	if (!idPattern.test(rawVideoId)) {
+		return NextResponse.json({ error: "missing_video" }, { status: 400, headers });
 	}
 	const origin = new URL(request.url).origin;
 	try {
@@ -42,20 +52,17 @@ async function refresh(request: NextRequest) {
 				enabled: true,
 				videoId: minted.videoId,
 				revisionId: minted.revisionId,
+				changed:
+					requestedRevisionId !== null &&
+					requestedRevisionId !== minted.revisionId,
+				grant: minted.grant,
 				publicationEpoch: minted.publicationEpoch,
 				policyEpoch: minted.policyEpoch,
-				playbackUrl: minted.playbackUrl,
 				expiresAt: minted.expiresAt,
 			},
 			{ status: 200, headers },
 		);
 	} catch {
-		return NextResponse.json(
-			{ error: "grant_failed" },
-			{ status: 503, headers },
-		);
+		return NextResponse.json({ error: "grant_failed" }, { status: 503, headers });
 	}
 }
-
-export const GET = refresh;
-export const POST = refresh;

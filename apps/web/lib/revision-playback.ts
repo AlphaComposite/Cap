@@ -1,4 +1,4 @@
-import type { RevisionPublicationDto } from "./revision-publication";
+import type { InstantFinishPublicationDto } from "./revision-publication-read";
 
 export const REVISION_HLS_CONTENT_TYPE = "application/vnd.apple.mpegurl";
 
@@ -109,7 +109,7 @@ export function replacePlaylistGrant(url: string, grant: string): string {
 }
 
 export function buildClientRevisionPlayback(input: {
-	publication: RevisionPublicationDto;
+	publication: InstantFinishPublicationDto;
 	videoId: string;
 	origin: string;
 	grant: string | null;

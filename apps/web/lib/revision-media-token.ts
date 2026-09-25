@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const REVISION_MEDIA_GRANT_TTL_SECONDS = 60;
 export const REVISION_MEDIA_GRANT_SKEW_SECONDS = 5;
@@ -7,8 +7,8 @@ export const REVISION_MEDIA_GRANT_VERSION = 1 as const;
 export const REVISION_MEDIA_CACHE_CONTROL = "private, no-store";
 export const REVISION_MEDIA_REFERRER_POLICY = "no-referrer";
 
-const GRANT_KEY_DOMAIN = "cap-revision-media-grant-v1";
-const SERVICE_KEY_DOMAIN = "cap-revision-origin-service-v1";
+export const ORIGIN_SERVICE_HEADER = "x-cap-origin-service";
+const MIN_SECRET_BYTES = 32;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const GRANT_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -76,27 +76,26 @@ const parseKeyRing = (raw: string | undefined): GrantKey[] => {
 	return keys;
 };
 
-const derivedSecret = (root: string, domain: string) =>
-	createHmac("sha256", root).update(domain).digest("base64url");
+const usableSecret = (secret: string) => secret.length >= MIN_SECRET_BYTES;
 
 export function resolveGrantKeys(
 	env: NodeJS.ProcessEnv = process.env,
 ): GrantKey[] {
-	const configured = parseKeyRing(env.REVISION_MEDIA_GRANT_KEYS);
-	if (configured.length > 0) return configured;
-	const root = env.NEXTAUTH_SECRET;
-	if (!root) return [];
-	return [{ id: "derived", secret: derivedSecret(root, GRANT_KEY_DOMAIN) }];
+	return parseKeyRing(env.REVISION_MEDIA_GRANT_KEYS).filter((key) =>
+		usableSecret(key.secret),
+	);
 }
 
 export function resolveServiceSecret(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | null {
 	const dedicated = env.REVISION_ORIGIN_SERVICE_SECRET;
-	if (dedicated && dedicated.length > 0) return dedicated;
-	const root = env.NEXTAUTH_SECRET;
-	if (!root) return null;
-	return derivedSecret(root, SERVICE_KEY_DOMAIN);
+	if (!dedicated || !usableSecret(dedicated)) return null;
+	return dedicated;
+}
+
+export function originBodySha256(body: string | Uint8Array = ""): string {
+	return createHash("sha256").update(body).digest("hex");
 }
 
 const hmac = (secret: string, payload: string) =>
@@ -151,8 +150,8 @@ export function signRevisionMediaGrant(
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
 	const keys = resolveGrantKeys(env);
-	const secret = keys[0]?.secret;
-	if (!secret) throw new Error("revision media grant key is not configured");
+	const key = keys[0];
+	if (!key) throw new Error("revision media grant key is not configured");
 	const iat = input.now ?? Math.floor(Date.now() / 1000);
 	const payload: RevisionMediaGrantPayload = {
 		v: 1,
@@ -167,7 +166,7 @@ export function signRevisionMediaGrant(
 	const encoded = Buffer.from(canonicalGrantJson(payload), "utf8").toString(
 		"base64url",
 	);
-	return `${encoded}.${hmac(secret, encoded)}`;
+	return `${key.id}.${encoded}.${hmac(key.secret, encoded)}`;
 }
 
 export type VerifiedGrant =
@@ -183,11 +182,11 @@ export function verifyRevisionMediaGrant(
 	} = {},
 ): VerifiedGrant {
 	const parts = token.split(".");
-	if (parts.length !== 2 || !parts[0] || !parts[1]) {
+	if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
 		return { ok: false, denial: "malformed" };
 	}
-	const [encoded, signature] = parts;
-	const keys = resolveGrantKeys(options.env);
+	const [kid, encoded, signature] = parts;
+	const keys = resolveGrantKeys(options.env).filter((key) => key.id === kid);
 	if (!signatureMatches(encoded, signature, keys)) {
 		return { ok: false, denial: "forged" };
 	}
@@ -272,7 +271,12 @@ export type InternalServiceClaims = {
 };
 
 export function signInternalServiceRequest(
-	input: { method: string; path: string; now?: number },
+	input: {
+		method: string;
+		path: string;
+		body?: string | Uint8Array;
+		now?: number;
+	},
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
 	const secret = resolveServiceSecret(env);
@@ -290,14 +294,19 @@ export function signInternalServiceRequest(
 	);
 	const mac = hmac(
 		secret,
-		`${encoded}.${input.method.toUpperCase()}.${input.path}`,
+		`${encoded}.${input.method.toUpperCase()}.${input.path}.${originBodySha256(input.body ?? "")}`,
 	);
 	return `${encoded}.${mac}`;
 }
 
 export function verifyInternalServiceRequest(
 	token: string,
-	input: { method: string; path: string; now?: number },
+	input: {
+		method: string;
+		path: string;
+		body?: string | Uint8Array;
+		now?: number;
+	},
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
 	const secret = resolveServiceSecret(env);
@@ -305,7 +314,7 @@ export function verifyInternalServiceRequest(
 	if (!secret || parts.length !== 2 || !parts[0] || !parts[1]) return false;
 	const expected = hmac(
 		secret,
-		`${parts[0]}.${input.method.toUpperCase()}.${input.path}`,
+		`${parts[0]}.${input.method.toUpperCase()}.${input.path}.${originBodySha256(input.body ?? "")}`,
 	);
 	if (!constantTimeEqual(parts[1], expected)) return false;
 	let claims: InternalServiceClaims;

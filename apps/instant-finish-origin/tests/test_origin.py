@@ -21,6 +21,7 @@ import lib_audio
 import lib_origin
 from publication import MemoryPublication, PublicationRow, RevisionRow, SourceRow, VideoRow
 from server import OriginApp, serve
+from service_auth import sign_request
 from storage import LocalObjectStore, StorageError, assert_original_key
 
 os.environ.setdefault("ORIGIN_DEBUG", "1")
@@ -278,12 +279,19 @@ class MediaTests(unittest.TestCase):
             self.fail(result.stderr.decode()[-400:])
         return key
 
+    def _service(self, method: str, path: str, body: bytes = b"") -> dict[str, str]:
+        return {
+            "x-cap-origin-service": sign_request(SERVICE, method, path, body, now=1_000),
+            "Content-Type": "application/json",
+        }
+
     def _prepare(self, key: str) -> dict:
         body = json.dumps({"sourceId": SOURCE, "sourceKey": key}).encode()
+        path = f"/internal/sources/{VIDEO}/prepare"
         status, _, payload = self._req(
-            f"/internal/sources/{VIDEO}/prepare",
+            path,
             "POST",
-            {"X-Origin-Service-Token": SERVICE.decode(), "Content-Type": "application/json"},
+            self._service("POST", path, body),
             body,
         )
         self.assertEqual(status, 200, payload)
@@ -335,10 +343,11 @@ class MediaTests(unittest.TestCase):
             "captions": [{"start": 0.02, "end": 0.08, "text": "kept"}, {"start": 0.2, "end": 0.3, "text": "cut"}],
             "chapters": [{"start": 0.0, "end": 0.1, "title": "Open"}],
         }).encode()
+        path = f"/internal/revisions/{REV}/prepare"
         status, _, payload = self._req(
-            f"/internal/revisions/{REV}/prepare",
+            path,
             "POST",
-            {"X-Origin-Service-Token": SERVICE.decode()},
+            self._service("POST", path, body),
             body,
         )
         self.assertEqual(status, 200, payload)
@@ -398,10 +407,11 @@ class MediaTests(unittest.TestCase):
     def test_missing_mezz_refuses_finish(self) -> None:
         self.store.put_revision(RevisionRow(REV, VIDEO, "pendinghash", SOURCE, 1, "READY"))
         body = json.dumps({"videoId": VIDEO, "sourceId": SOURCE, "keepRanges": [{"start": 0, "end": 1}]}).encode()
+        path = f"/internal/revisions/{REV}/prepare"
         status, _, payload = self._req(
-            f"/internal/revisions/{REV}/prepare",
+            path,
             "POST",
-            {"X-Origin-Service-Token": SERVICE.decode()},
+            self._service("POST", path, body),
             body,
         )
         self.assertEqual(status, 409, payload)

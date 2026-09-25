@@ -33,10 +33,17 @@ import {
 	sourceIdFromIdentity,
 	thumbnailBindsDuration,
 } from "@/lib/revision-publication-metadata";
+import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import {
 	digestMatches,
 	type OriginClient,
 } from "@/lib/revision-publication-origin";
+
+export type { InstantFinishPublicationDto as RevisionPublicationDto } from "@/lib/revision-publication-read";
+export {
+	disabledInstantFinishPublication as disabledRevisionPublication,
+	getInstantFinishPublicationDto as getRevisionPublication,
+} from "@/lib/revision-publication-read";
 import {
 	areEditSpecDocumentsEquivalent,
 	getEditSpecOutputDuration,
@@ -526,15 +533,20 @@ async function produceAndVerify(
 		sourceId: allocated.sourceId,
 		generation: allocated.generation,
 		durationSeconds,
+		keepRanges: spec.keepRanges,
 		editSpec: spec,
 		captionsVtt: captions.vtt,
 		chaptersJson,
 		thumbnailPolicy,
 	});
-	if (!prepared.decoded || prepared.decodedFrames <= 0) {
+	if (
+		prepared.seg0DecodedFrames < 1 ||
+		prepared.playlistHasEndList !== true ||
+		prepared.intentId !== allocated.intentId
+	) {
 		throw new RevisionPublicationError(
 			500,
-			"Origin did not decode init and segment 0",
+			"Origin fence rejected the revision before it became current",
 			allocated.generation,
 			allocated.revisionId,
 		);
@@ -685,7 +697,7 @@ async function readPlaylist(
 		);
 	}
 	const duration = playlistDurationSeconds(text);
-	if (duration !== durationSeconds) {
+	if (Math.abs(duration - durationSeconds) > 0.05) {
 		throw new RevisionPublicationError(
 			500,
 			`playlist duration ${duration} != spec ${durationSeconds}`,
@@ -835,6 +847,7 @@ async function flipCurrent(
 			allocated.revisionId,
 		);
 	}
+	await bumpPolicyEpoch(input.videoId, tx);
 	for (const artifact of [
 		"init",
 		"seg0",

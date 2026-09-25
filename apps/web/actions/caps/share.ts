@@ -72,18 +72,17 @@ export async function shareCap({
 
 		const organizationIds = directOrgIds;
 
-		await bumpPolicyEpoch(capId);
+		await db().transaction(async (tx) => {
+			await bumpPolicyEpoch(capId, tx);
 
-		const currentSharedOrganizations = await db()
-			.select()
-			.from(sharedVideos)
-			.where(eq(sharedVideos.videoId, capId));
+			const currentSharedOrganizations = await tx
+				.select()
+				.from(sharedVideos)
+				.where(eq(sharedVideos.videoId, capId));
 
-		for (const sharedOrganization of currentSharedOrganizations) {
-			if (!organizationIds.includes(sharedOrganization.organizationId)) {
-				await db()
-					.delete(sharedVideos)
-					.where(
+			for (const sharedOrganization of currentSharedOrganizations) {
+				if (!organizationIds.includes(sharedOrganization.organizationId)) {
+					await tx.delete(sharedVideos).where(
 						and(
 							eq(sharedVideos.videoId, capId),
 							eq(
@@ -92,64 +91,61 @@ export async function shareCap({
 							),
 						),
 					);
+				}
 			}
-		}
 
-		for (const organizationId of organizationIds) {
-			const existingShare = currentSharedOrganizations.find(
-				(share) => share.organizationId === organizationId,
-			);
-			if (!existingShare) {
-				await db().insert(sharedVideos).values({
-					id: nanoId(),
-					videoId: capId,
-					organizationId: organizationId,
-					sharedByUserId: user.id,
-				});
+			for (const organizationId of organizationIds) {
+				const existingShare = currentSharedOrganizations.find(
+					(share) => share.organizationId === organizationId,
+				);
+				if (!existingShare) {
+					await tx.insert(sharedVideos).values({
+						id: nanoId(),
+						videoId: capId,
+						organizationId: organizationId,
+						sharedByUserId: user.id,
+					});
+				}
 			}
-		}
 
-		const spacesIds = spacesData.map((space) => space.id);
+			const spacesIds = spacesData.map((space) => space.id);
+			const currentSpaceVideos = await tx
+				.select()
+				.from(spaceVideos)
+				.where(eq(spaceVideos.videoId, capId));
 
-		const currentSpaceVideos = await db()
-			.select()
-			.from(spaceVideos)
-			.where(eq(spaceVideos.videoId, capId));
-
-		for (const spaceVideo of currentSpaceVideos) {
-			if (!spacesIds.includes(spaceVideo.spaceId)) {
-				await db()
-					.delete(spaceVideos)
-					.where(
+			for (const spaceVideo of currentSpaceVideos) {
+				if (!spacesIds.includes(spaceVideo.spaceId)) {
+					await tx.delete(spaceVideos).where(
 						and(
 							eq(spaceVideos.videoId, capId),
 							eq(spaceVideos.spaceId, spaceVideo.spaceId),
 						),
 					);
+				}
 			}
-		}
 
-		for (const spaceId of spacesIds) {
-			const existingSpaceShare = currentSpaceVideos.find(
-				(share) => share.spaceId === spaceId,
-			);
-			if (!existingSpaceShare) {
-				await db().insert(spaceVideos).values({
-					id: nanoId(),
-					videoId: capId,
-					spaceId: spaceId,
-					addedById: user.id,
-				});
+			for (const spaceId of spacesIds) {
+				const existingSpaceShare = currentSpaceVideos.find(
+					(share) => share.spaceId === spaceId,
+				);
+				if (!existingSpaceShare) {
+					await tx.insert(spaceVideos).values({
+						id: nanoId(),
+						videoId: capId,
+						spaceId: spaceId,
+						addedById: user.id,
+					});
+				}
 			}
-		}
 
-		// Update public status if provided
-		if (typeof isPublic === "boolean") {
-			await db()
-				.update(videos)
-				.set({ public: isPublic })
-				.where(eq(videos.id, capId));
-		}
+			if (typeof isPublic === "boolean") {
+				await tx
+					.update(videos)
+					.set({ public: isPublic })
+					.where(eq(videos.id, capId));
+			}
+		});
 
 		revalidatePath("/dashboard/caps");
 		revalidatePath(`/dashboard/caps/${capId}`);

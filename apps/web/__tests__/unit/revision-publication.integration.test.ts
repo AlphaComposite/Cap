@@ -28,15 +28,15 @@ import {
 	RevisionPublicationError,
 	sha256Hex,
 } from "@/lib/revision-publication-metadata";
-import type {
-	OriginClient,
-	RevisionPrepareBody,
-} from "@/lib/revision-publication-origin";
 import {
-	bumpPublicationPolicyEpoch,
 	getInstantFinishPublicationDto,
 	resolveRollbackSourceKey,
 } from "@/lib/revision-publication-read";
+import type {
+	OriginClient,
+	RevisionPrepareBody,
+	RevisionPrepareResult,
+} from "@/lib/revision-publication-origin";
 
 const databaseUrl = process.env.CAP_WIRE_A_DATABASE_URL;
 const token = "wire-a-test-token";
@@ -92,13 +92,7 @@ class FakeOrigin {
 					},
 				);
 				if (!response.ok) throw new Error(`prepare ${response.status}`);
-				return response.json() as Promise<{
-					decoded: boolean;
-					decodedFrames: number;
-					initSha256: string;
-					seg0Sha256: string;
-					playlistDurationSeconds: number;
-				}>;
+				return response.json() as Promise<RevisionPrepareResult>;
 			},
 			fetchArtifact: async (input) => {
 				const response = await fetch(
@@ -162,11 +156,16 @@ class FakeOrigin {
 				});
 				res.writeHead(200, { "content-type": "application/json" }).end(
 					JSON.stringify({
+						ready: true,
+						intentId: body.intentId,
 						decoded: true,
 						decodedFrames: 1,
+						seg0DecodedFrames: 1,
+						playlistHasEndList: true,
 						initSha256: sha256Hex(init),
 						seg0Sha256: sha256Hex(seg0),
 						playlistDurationSeconds: body.durationSeconds,
+						durationSeconds: body.durationSeconds,
 					}),
 				);
 			});
@@ -472,7 +471,11 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(await resolveRollbackSourceKey(videoId, "old/key", database)).toBe(
 			`${ownerId}/${videoId}/source/original.mp4`,
 		);
-		expect(await bumpPublicationPolicyEpoch(videoId, database)).toBe(1);
+		const [publication] = await database
+			.select({ policyEpoch: videoPublication.policyEpoch })
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(publication?.policyEpoch).toBe(1);
 	});
 
 	it("returns 409 for a stale generation or an older same-session draft and does not move current", async () => {

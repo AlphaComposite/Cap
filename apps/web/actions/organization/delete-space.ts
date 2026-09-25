@@ -63,13 +63,15 @@ export async function deleteSpace(
 			.select({ videoId: spaceVideos.videoId })
 			.from(spaceVideos)
 			.where(eq(spaceVideos.spaceId, spaceId));
-		await bumpPolicyEpochForVideos(linked.map((row) => row.videoId));
-
-		await db().delete(spaceVideos).where(eq(spaceVideos.spaceId, spaceId));
-
-		await db().delete(spaceMembers).where(eq(spaceMembers.spaceId, spaceId));
-
-		await db().delete(folders).where(eq(folders.spaceId, spaceId));
+		await db().transaction(async (tx) => {
+			await bumpPolicyEpochForVideos(
+				linked.map((row) => row.videoId),
+				tx,
+			);
+			await tx.delete(spaceVideos).where(eq(spaceVideos.spaceId, spaceId));
+			await tx.delete(spaceMembers).where(eq(spaceMembers.spaceId, spaceId));
+			await tx.delete(folders).where(eq(folders.spaceId, spaceId));
+		});
 
 		try {
 			await Effect.gen(function* () {

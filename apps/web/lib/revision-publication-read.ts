@@ -1,5 +1,6 @@
 import { db } from "@cap/database";
 import {
+	comments,
 	editIntent,
 	editRevision,
 	sourceObject,
@@ -16,6 +17,7 @@ import {
 	RevisionPublicationError,
 } from "@/lib/revision-publication-metadata";
 import { prepareSourceOnEditorOpen } from "@/lib/revision-publication-origin";
+import { getEditSourceKey } from "@/lib/video-edit-processing";
 import { getEditSpecOutputDuration } from "@/lib/video-edits";
 
 type Database = ReturnType<typeof db>;
@@ -35,13 +37,20 @@ export type InstantFinishPublicationDto = {
 	currentRevisionId: string | null;
 	generation: number;
 	duration: number | null;
+	draftVersion: number;
+	draftSession: string;
 	revisionMetadata: {
+		duration: number | null;
+		chapters: { title: string; start: number }[];
+		captionsAvailable: boolean;
+		commentTimestamps: Record<string, number | null>;
+		thumbnailAvailable: boolean;
+		downloadReady: boolean;
 		playlistPath: string | null;
 		summaryStatus: "persisted";
 		summaryDerived: false;
 		summaryText: string | null;
 		captions: "revision" | "unavailable";
-		chapters: { title: string; start: number }[];
 		chaptersStatus: "revision" | "unavailable";
 		thumbnail: "source-zero" | "seg0-first-frame" | "unavailable";
 		download: "preparing" | "unavailable";
@@ -49,6 +58,38 @@ export type InstantFinishPublicationDto = {
 		removedRangeComments: "hidden";
 	};
 };
+
+export function disabledInstantFinishPublication(
+	overrides: Partial<InstantFinishPublicationDto> = {},
+): InstantFinishPublicationDto {
+	return {
+		enabled: false,
+		currentRevisionId: null,
+		generation: 0,
+		duration: null,
+		draftVersion: 0,
+		draftSession: "",
+		revisionMetadata: {
+			duration: null,
+			chapters: [],
+			captionsAvailable: false,
+			commentTimestamps: {},
+			thumbnailAvailable: false,
+			downloadReady: false,
+			playlistPath: null,
+			summaryStatus: "persisted",
+			summaryDerived: false,
+			summaryText: null,
+			captions: "unavailable",
+			chaptersStatus: "unavailable",
+			thumbnail: "unavailable",
+			download: "unavailable",
+			commentClock: "output-time",
+			removedRangeComments: "hidden",
+		},
+		...overrides,
+	};
+}
 
 function asVideoId(value: string): Video.VideoId {
 	return value as Video.VideoId;
@@ -100,34 +141,12 @@ export async function readPublicationProjection(
 	};
 }
 
-export async function bumpPublicationPolicyEpoch(
+export async function readPublicationEpoch(
 	videoId: string,
 	database: unknown = db(),
 ): Promise<number> {
-	const app = database as Database;
-	return app.transaction(async (tx) => {
-		await tx
-			.insert(videoPublication)
-			.values({ videoId: asVideoId(videoId) })
-			.onDuplicateKeyUpdate({ set: { videoId: asVideoId(videoId) } });
-		const [row] = await tx
-			.select()
-			.from(videoPublication)
-			.where(eq(videoPublication.videoId, asVideoId(videoId)))
-			.for("update");
-		if (!row) {
-			throw new RevisionPublicationError(
-				500,
-				"Publication row was not created",
-			);
-		}
-		const next = row.policyEpoch + 1;
-		await tx
-			.update(videoPublication)
-			.set({ policyEpoch: next })
-			.where(eq(videoPublication.videoId, asVideoId(videoId)));
-		return next;
-	});
+	const row = await readPublicationProjection(videoId, database);
+	return row?.policyEpoch ?? 0;
 }
 
 export async function getInstantFinishPublicationDto(input: {
@@ -141,25 +160,17 @@ export async function getInstantFinishPublicationDto(input: {
 	const enabled = isInstantFinishEnabledForOwner(input.ownerId);
 	const projection = await readPublicationProjection(input.videoId, database);
 	if (!enabled || !projection?.currentRevisionId) {
-		return {
+		return disabledInstantFinishPublication({
 			enabled,
-			currentRevisionId: null,
 			generation: projection?.generation ?? 0,
 			duration: input.durationFallback ?? null,
+			draftVersion: projection?.latestDraftVersion ?? 0,
+			draftSession: projection?.draftSession ?? "",
 			revisionMetadata: {
-				playlistPath: null,
-				summaryStatus: "persisted",
-				summaryDerived: false,
+				...disabledInstantFinishPublication().revisionMetadata,
 				summaryText: input.summaryText ?? null,
-				captions: "unavailable",
-				chapters: [],
-				chaptersStatus: "unavailable",
-				thumbnail: "unavailable",
-				download: "unavailable",
-				commentClock: "output-time",
-				removedRangeComments: "hidden",
 			},
-		};
+		});
 	}
 	const [revision] = await database
 		.select()
@@ -200,18 +211,32 @@ export async function getInstantFinishPublicationDto(input: {
 			: nextSpec
 				? "seg0-first-frame"
 				: "unavailable";
+	const commentRows = await database
+		.select({ id: comments.id, timestamp: comments.timestamp })
+		.from(comments)
+		.where(eq(comments.videoId, asVideoId(input.videoId)));
+	const commentTimestamps = Object.fromEntries(
+		commentRows.map((row) => [row.id, row.timestamp]),
+	);
 	return {
 		enabled: true,
 		currentRevisionId: projection.currentRevisionId,
 		generation: projection.generation,
 		duration,
+		draftVersion: projection.latestDraftVersion,
+		draftSession: projection.draftSession,
 		revisionMetadata: {
+			duration,
+			chapters: nextSpec ? chapters : [],
+			captionsAvailable: true,
+			commentTimestamps,
+			thumbnailAvailable: thumbnail !== "unavailable",
+			downloadReady: false,
 			playlistPath: `/media/${input.videoId}/r/${projection.currentRevisionId}/playlist.m3u8`,
 			summaryStatus: "persisted",
 			summaryDerived: false,
 			summaryText: input.summaryText ?? video?.metadata?.summary ?? null,
 			captions: "revision",
-			chapters: nextSpec ? chapters : [],
 			chaptersStatus: nextSpec ? "revision" : "unavailable",
 			thumbnail,
 			download: "preparing",
@@ -266,7 +291,19 @@ export async function openInstantFinishEditor(
 	database: unknown = db(),
 ): Promise<{ playbackSrc: string; draftSession: string; generation: number }> {
 	const app = database as Database;
-	const prepared = await prepareSourceOnEditorOpen(videoId);
+	const [video] = await app
+		.select({ ownerId: videos.ownerId })
+		.from(videos)
+		.where(eq(videos.id, asVideoId(videoId)));
+	if (!video) {
+		throw new RevisionPublicationError(404, "Video not found");
+	}
+	const sourceKey = await resolveRollbackSourceKey(
+		videoId,
+		getEditSourceKey(video.ownerId, videoId),
+		app,
+	);
+	const prepared = await prepareSourceOnEditorOpen({ videoId, sourceKey });
 	const warmExpiresAt = new Date(prepared.warmExpiresAt);
 	if (
 		Number.isNaN(warmExpiresAt.getTime()) ||

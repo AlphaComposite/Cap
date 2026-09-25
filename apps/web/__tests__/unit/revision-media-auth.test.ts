@@ -42,9 +42,10 @@ import {
 } from "@/lib/source-relocation";
 
 const env = {
-	REVISION_MEDIA_GRANT_KEYS: "v2:rotated-secret,v1:current-secret",
-	REVISION_ORIGIN_SERVICE_SECRET: "service-secret-not-a-viewer-key",
-	INSTANT_FINISH_OWNER_IDS: "owner-flagged",
+	REVISION_MEDIA_GRANT_KEYS:
+		"v2:rotated-secret-rotated-secret-32b,v1:current-secret-current-secret-32b",
+	REVISION_ORIGIN_SERVICE_SECRET: "service-secret-not-a-viewer-key-32",
+	CAP_INSTANT_FINISH_OWNERS: "owner-flagged",
 } as unknown as NodeJS.ProcessEnv;
 
 const live = {
@@ -235,8 +236,8 @@ describe("revision media grants", () => {
 	});
 
 	it("denies flagged presigns and raw preview without editing the playlist route", () => {
-		const previous = process.env.INSTANT_FINISH_OWNER_IDS;
-		process.env.INSTANT_FINISH_OWNER_IDS = "owner-flagged";
+		const previous = process.env.CAP_INSTANT_FINISH_OWNERS;
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner-flagged";
 		expect(
 			denyFlaggedPresign({
 				ownerId: "owner-flagged",
@@ -269,7 +270,7 @@ describe("revision media grants", () => {
 		});
 		expect(issued.playbackUrl).toContain("download.mp4?t=");
 		expect(issued.playbackUrl).not.toContain("result.mp4");
-		process.env.INSTANT_FINISH_OWNER_IDS = previous;
+		process.env.CAP_INSTANT_FINISH_OWNERS = previous;
 	});
 });
 

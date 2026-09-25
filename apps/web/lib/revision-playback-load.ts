@@ -10,13 +10,13 @@ import {
 	type SharePlaybackPlan,
 } from "./revision-playback";
 import {
-	disabledRevisionPublication,
-	getRevisionPublication,
-	type RevisionPublicationDto,
-} from "./revision-publication";
+	disabledInstantFinishPublication,
+	getInstantFinishPublicationDto,
+	type InstantFinishPublicationDto,
+} from "./revision-publication-read";
 
 export type LoadedRevisionPlayback = {
-	publication: RevisionPublicationDto;
+	publication: InstantFinishPublicationDto;
 	plan: SharePlaybackPlan;
 	playback: ClientRevisionPlayback | null;
 	publicPlaylistUrl: string | null;
@@ -31,17 +31,16 @@ export async function loadRevisionPlayback(input: {
 	hasActiveUpload: boolean;
 	sourceType: string;
 }): Promise<LoadedRevisionPlayback> {
-	let publication = disabledRevisionPublication();
+	let publication = disabledInstantFinishPublication();
 	try {
-		publication = await getRevisionPublication({
+		publication = await getInstantFinishPublicationDto({
 			videoId: input.videoId,
 			ownerId: input.ownerId,
 		});
 	} catch {
-		publication = {
-			...disabledRevisionPublication(),
+		publication = disabledInstantFinishPublication({
 			enabled: isInstantFinishEnabledForOwner(input.ownerId),
-		};
+		});
 	}
 	const plan = planSharePlayback({
 		enabled: publication.enabled,
@@ -60,9 +59,8 @@ export async function loadRevisionPlayback(input: {
 		};
 	}
 	const grant = publication.currentRevisionId
-		? await mintRevisionMediaGrant({
-				videoId: input.videoId,
-				revisionId: publication.currentRevisionId,
+		? await mintRevisionMediaGrant(null, input.videoId, {
+				origin: input.origin,
 			}).catch(() => null)
 		: null;
 	const playback = buildClientRevisionPlayback({
