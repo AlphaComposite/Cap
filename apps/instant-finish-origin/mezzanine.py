@@ -8,6 +8,7 @@ from pathlib import Path
 
 from index import Probe, keyframe_rows, probe, write_keyframe_index
 from storage import atomic_write, private, sha256_file
+import limits
 
 MEZZ_X264 = "keyint=1000:min-keyint=1:scenecut=0:open-gop=0:b-adapt=0"
 
@@ -49,7 +50,12 @@ def build_mezzanine(source: Path, dest: Path) -> dict:
     cmd = mezz_command(source, tmp, original.timescale)
     if "-vf" in cmd or "fps=" in " ".join(cmd):
         raise MezzanineError("A1 command drifted")
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    try:
+        result = limits.run_cmd(cmd, limits.MEZZ_TIMEOUT_S, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except limits.InputRejected as exc:
+        if tmp.exists():
+            tmp.unlink()
+        raise MezzanineError("ffmpeg timeout") from exc
     if result.returncode:
         if tmp.exists():
             tmp.unlink()
