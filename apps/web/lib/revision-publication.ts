@@ -15,6 +15,7 @@ import type { VideoEditSpec, VideoEditSpecV2 } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
 import { and, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
+import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import {
 	assertServableEncoderProfile,
 	chaptersDocument,
@@ -33,7 +34,6 @@ import {
 	sourceIdFromIdentity,
 	thumbnailBindsDuration,
 } from "@/lib/revision-publication-metadata";
-import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import {
 	digestMatches,
 	type OriginClient,
@@ -44,6 +44,7 @@ export {
 	disabledInstantFinishPublication as disabledRevisionPublication,
 	getInstantFinishPublicationDto as getRevisionPublication,
 } from "@/lib/revision-publication-read";
+
 import {
 	areEditSpecDocumentsEquivalent,
 	getEditSpecOutputDuration,
@@ -618,12 +619,16 @@ async function produceAndVerify(
 		input.videoId,
 		allocated,
 		durationSeconds,
+		prepared.playlistDurationSeconds,
+		spec.keepRanges.length,
 	);
 	const secondPlaylist = await readPlaylist(
 		origin,
 		input.videoId,
 		allocated,
 		durationSeconds,
+		prepared.playlistDurationSeconds,
+		spec.keepRanges.length,
 	);
 	if (firstPlaylist !== secondPlaylist) {
 		throw new RevisionPublicationError(
@@ -672,6 +677,8 @@ async function readPlaylist(
 	id: string,
 	allocated: Allocated,
 	durationSeconds: number,
+	attestedDurationSeconds: number,
+	keepRangeCount = 1,
 ) {
 	const playlist = await origin.fetchArtifact({
 		videoId: id,
@@ -697,7 +704,19 @@ async function readPlaylist(
 		);
 	}
 	const duration = playlistDurationSeconds(text);
-	if (Math.abs(duration - durationSeconds) > 0.05) {
+	if (Math.abs(duration - attestedDurationSeconds) > 0.05) {
+		throw new RevisionPublicationError(
+			500,
+			`playlist duration ${duration} != origin ${attestedDurationSeconds}`,
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
+	// Each keep range keeps frames whose PTS falls inside it, so the media
+	// duration can differ from the continuous spec by almost one frame per cut.
+	// 1/24s is the largest common frame; 0.05s still covers a single cut.
+	const snapAllowance = Math.max(0.05, keepRangeCount / 24);
+	if (Math.abs(duration - durationSeconds) > snapAllowance) {
 		throw new RevisionPublicationError(
 			500,
 			`playlist duration ${duration} != spec ${durationSeconds}`,
