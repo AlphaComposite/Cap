@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -152,10 +153,31 @@ class OriginApp:
         except (json.JSONDecodeError, KeyError, TypeError):
             return self._text(400, b"bad request")
         cache_id = cache_source_id(source_id)
+        recorded = self._recorded_live_key(video_id)
+        if recorded and key != recorded:
+            return self._json(409, {"error": "source_key_mismatch"})
         # Overlapping editor opens share one build temp. Publishing a mezz before its
         # bind exists made the next open treat a corrupt file as ready and return 409.
         with self._source_prepare_lock(cache_id):
             return self._prepare_source_locked(video_id, cache_id, source_id, key)
+
+    def _recorded_live_key(self, video_id: str) -> str | None:
+        row = self.store.source(video_id)
+        if row is None or not row.live_key:
+            return None
+        return row.live_key
+
+    def _bound_mezzanine(self, original: Path, mezz: Path, bind_path: Path) -> dict | None:
+        if not mezz.is_file() or not bind_path.is_file():
+            build_mezzanine(original, mezz)
+        bind = load_source_bind(mezz)
+        if bind["source_sha256"] == lib_origin.sha256_file(original):
+            return bind
+        build_mezzanine(original, mezz)
+        bind = load_source_bind(mezz)
+        if bind["source_sha256"] != lib_origin.sha256_file(original):
+            return None
+        return bind
 
     def _prepare_source_locked(
         self, video_id: str, cache_id: str, source_id: str, key: str
@@ -167,10 +189,8 @@ class OriginApp:
                 return self._text(400, b"bad media")
             mezz = original.with_name("mezz.mp4")
             bind_path = mezz.with_suffix(".source-bind.json")
-            if not mezz.is_file() or not bind_path.is_file():
-                build_mezzanine(original, mezz)
-            bind = load_source_bind(mezz)
-            if bind["source_sha256"] != lib_origin.sha256_file(original):
+            bind = self._bound_mezzanine(original, mezz, bind_path)
+            if bind is None:
                 return self._text(500, b"unavailable")
             self._remember_sha(key, bind["source_sha256"])
             lib_audio.build_audio_index(original)
@@ -184,7 +204,8 @@ class OriginApp:
             return self._json(409, {"error": "audio_rejected"})
         except (StorageError, MezzanineError, lib_origin.MezzanineRequired):
             return self._json(409, {"error": "mezzanine_required"})
-        except Exception:
+        except Exception as exc:
+            sys.stderr.write(f"source-prepare-failed {type(exc).__name__}\n")
             return self._text(500, b"unavailable")
         ttl = float(os.environ.get("ORIGIN_WARM_TTL_S", "600"))
         expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + ttl))
