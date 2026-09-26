@@ -1,40 +1,41 @@
+import { serverEnv } from "@cap/env";
 import { type NextRequest, NextResponse } from "next/server";
 
-// nginx forwards Host. `next start` request.url is the bind address, not the page origin.
+function contentTypeEssence(header: string): string {
+	const essence = header.split(";")[0]?.trim().toLowerCase() ?? "";
+	return essence;
+}
+
+function denial(status: 403 | 415, error: string) {
+	return NextResponse.json({ error }, { status });
+}
+
 export function revisionRouteDenial(request: NextRequest): NextResponse | null {
 	const contentType = request.headers.get("content-type") ?? "";
-	if (!contentType.toLowerCase().includes("application/json")) {
-		return NextResponse.json(
-			{ error: "JSON content type required" },
-			{ status: 415 },
-		);
+	if (contentTypeEssence(contentType) !== "application/json") {
+		return denial(415, "JSON content type required");
 	}
 	const origin = request.headers.get("origin");
-	const forwarded = request.headers
-		.get("x-forwarded-host")
-		?.split(",")[0]
-		?.trim();
-	const host = forwarded || request.headers.get("host");
-	if (!origin || !host) {
-		return NextResponse.json(
-			{ error: "Cross-origin request rejected" },
-			{ status: 403 },
-		);
+	if (!origin || origin === "null") {
+		return denial(403, "Cross-origin request rejected");
 	}
-	let originHost: string;
+	let originUrl: URL;
 	try {
-		originHost = new URL(origin).host;
+		originUrl = new URL(origin);
 	} catch {
-		return NextResponse.json(
-			{ error: "Cross-origin request rejected" },
-			{ status: 403 },
-		);
+		return denial(403, "Cross-origin request rejected");
 	}
-	if (originHost !== host) {
-		return NextResponse.json(
-			{ error: "Cross-origin request rejected" },
-			{ status: 403 },
-		);
+	let canonical: URL;
+	try {
+		canonical = new URL(serverEnv().WEB_URL);
+	} catch {
+		return denial(403, "Cross-origin request rejected");
+	}
+	if (
+		originUrl.protocol !== canonical.protocol ||
+		originUrl.host !== canonical.host
+	) {
+		return denial(403, "Cross-origin request rejected");
 	}
 	return null;
 }
