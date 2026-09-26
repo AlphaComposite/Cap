@@ -92,7 +92,10 @@ const nextConfig = {
 		].filter(Boolean),
 	},
 	async rewrites() {
-		const origin = process.env.CAP_INSTANT_FINISH_ORIGIN_URL?.replace(/\/$/, "");
+		const origin = process.env.CAP_INSTANT_FINISH_ORIGIN_URL?.replace(
+			/\/$/,
+			"",
+		);
 		return [
 			...(origin
 				? [
