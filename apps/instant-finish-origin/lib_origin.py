@@ -23,7 +23,8 @@ SEGMENT_PLAN_VERSION = 2
 AUDIO_ALIGN_VERSION = 6
 MAPPING_VERSION = 1
 # Gated placeholder. rewrite_fragment stamps real durations afterwards.
-# 512 ticks is one 30 fps step only when the timescale is 15360; the option set stays the approved one.
+# One 30 fps step is timescale//30 (512 at 15360, 533 at 16000). A fixed 512
+# step duplicates dts on a 16000 timescale and the muxer returns EINVAL.
 PLACEHOLDER_PTS_STEP = 512
 DECODER_IDLE_TTL_S = 600.0
 
@@ -762,7 +763,7 @@ def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
         stream.time_base = Fraction(1, profile.timescale)
         stream.options = jit_options()
         for index, frame in enumerate(frames_yuv):
-            frame.pts = index * PLACEHOLDER_PTS_STEP
+            frame.pts = index * (profile.timescale // 30)
             frame.time_base = Fraction(1, profile.timescale)
             if index == 0:
                 frame.pict_type = av.video.frame.PictureType.I

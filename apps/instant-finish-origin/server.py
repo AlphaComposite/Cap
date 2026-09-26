@@ -255,9 +255,11 @@ class OriginApp:
             captions, chapters = self._write_side_artifacts(revision_id, origin, body, duration)
         except lib_origin.MezzanineRequired:
             return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
-        except Exception:
+        except Exception as exc:
+            sys.stderr.write(f"revision-prepare-failed {type(exc).__name__}: {exc}\n")
             return self._text(500, b"unavailable")
         if decoded < 1 or b"#EXT-X-ENDLIST" not in origin.playlist:
+            sys.stderr.write(f"revision-prepare-failed undecoded decoded={decoded}\n")
             return self._text(500, b"unavailable")
         intent_id = str(requested_intent) if requested_intent else origin.rev
         return self._attested({
