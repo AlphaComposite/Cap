@@ -157,12 +157,28 @@ export function createS3Store(
 			);
 		},
 		async request(url, method, range) {
-			const response = await fetch(url, {
-				method,
-				headers: range ? { range } : undefined,
+			// Next's patched fetch memoizes the pre-delete GET, so this probe would
+			// still see 200 after the object is gone. Use the raw client.
+			const { request: httpRequest } = await import("node:http");
+			const { request: httpsRequest } = await import("node:https");
+			const parsed = new URL(url);
+			const transport =
+				parsed.protocol === "https:" ? httpsRequest : httpRequest;
+			return await new Promise<number>((resolve, reject) => {
+				const req = transport(
+					url,
+					{
+						method,
+						headers: range ? { range } : undefined,
+					},
+					(res) => {
+						res.resume();
+						resolve(res.statusCode ?? 0);
+					},
+				);
+				req.on("error", reject);
+				req.end();
 			});
-			await response.arrayBuffer().catch(() => undefined);
-			return response.status;
 		},
 	};
 }
