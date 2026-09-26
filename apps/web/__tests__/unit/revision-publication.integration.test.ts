@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
 	comments,
 	editRevision,
+	revisionOutbox,
 	sourceObject,
 	sourceRelocation,
 	videoEdits,
@@ -16,7 +17,7 @@ import {
 	videos,
 } from "@cap/database/schema";
 import type { VideoEditSpecV2 } from "@cap/database/types";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import mysql from "mysql2/promise";
@@ -40,6 +41,8 @@ import {
 } from "@/lib/revision-media-token";
 import {
 	claimArtifactLease,
+	claimRevisionReadback,
+	completeRevisionReadback,
 	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
 	sweepRevisionReadbacks,
@@ -1049,5 +1052,77 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		]);
 		const processed = [...first, ...second].filter((row) => !row.skipped);
 		expect(processed).toHaveLength(1);
+	});
+
+	it("does not revert a readback killed during its lease until the lease expires", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(9),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const claimedAt = new Date();
+		const claimed = await claimRevisionReadback(database, {
+			now: claimedAt,
+			revisionId: published.revisionId,
+			workerId: "killed",
+		});
+		expect(claimed?.leaseToken).toBeTruthy();
+		origin.failCaptions = true;
+		const duringLease = await sweepRevisionReadbacks(database, {
+			origin: origin.client(),
+			now: new Date(claimedAt.getTime() + 1_000),
+			revisionId: published.revisionId,
+			workerId: "other",
+		});
+		expect(duringLease.filter((row) => row.reverted)).toHaveLength(0);
+		const [held] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(held?.currentRevisionId).toBe(published.revisionId);
+		await database
+			.update(revisionOutbox)
+			.set({
+				payload: sql`JSON_SET(payload, '$.leaseToken', 'replaced-token')`,
+			})
+			.where(eq(revisionOutbox.id, claimed?.id ?? 0));
+		if (!claimed) throw new Error("readback was not claimed");
+		const lost = await completeRevisionReadback(
+			database,
+			claimed,
+			origin.client(),
+			claimedAt,
+		);
+		expect(lost.reverted).toBe(false);
+		expect(lost.reason).toBe("lease-lost");
+		await database
+			.update(revisionOutbox)
+			.set({
+				payload: sql`JSON_SET(payload, '$.leaseUntilMs', 1, '$.leaseUntil', '2000-01-01T00:00:00.000Z')`,
+			})
+			.where(eq(revisionOutbox.id, claimed?.id ?? 0));
+		const expired = await sweepRevisionReadbacks(database, {
+			origin: origin.client(),
+			now: new Date(claimedAt.getTime() + 60_000),
+			revisionId: published.revisionId,
+			workerId: "after-expiry",
+		});
+		expect(expired.some((row) => row.reverted)).toBe(true);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).toBe(before?.currentRevisionId);
+		origin.failCaptions = false;
 	});
 });
