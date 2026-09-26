@@ -6,6 +6,13 @@ const where = vi.fn();
 const start = vi.fn();
 
 vi.mock("server-only", () => ({}));
+vi.mock("@cap/env", () => ({
+	buildEnv: { NEXT_PUBLIC_WEB_URL: "http://127.0.0.1:32120" },
+	serverEnv: () => ({
+		WEB_URL: "http://127.0.0.1:32120",
+		NEXTAUTH_SECRET: "test-secret-with-enough-entropy",
+	}),
+}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@cap/database/auth/session", () => ({
 	getCurrentUser,

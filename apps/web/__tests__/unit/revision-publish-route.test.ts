@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/env", () => ({
 	buildEnv: { NEXT_PUBLIC_WEB_URL: "http://127.0.0.1:32120" },
-	serverEnv: () => ({ NEXTAUTH_SECRET: "test-secret-with-enough-entropy" }),
+	serverEnv: () => ({
+		NEXTAUTH_SECRET: "test-secret-with-enough-entropy",
+		WEB_URL: "http://127.0.0.1:32120",
+	}),
 }));
 
 import { RevisionPublicationError } from "@/lib/revision-publication";
