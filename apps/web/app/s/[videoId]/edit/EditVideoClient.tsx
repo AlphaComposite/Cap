@@ -49,6 +49,11 @@ import {
 import { doneRoute, readOrCreateDraftSession } from "@/lib/revision-done";
 import { postRevisionRoute } from "@/lib/revision-publish-client";
 import {
+	acceptSettledPrepare,
+	beginDoneFence,
+	nextSettlePrepare,
+} from "@/lib/revision-settle-fence";
+import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
 	getTimelineDraftStorage,
@@ -710,6 +715,8 @@ export function EditVideoClient({
 	const instantFinishRef = useRef(instantFinish);
 	instantFinishRef.current = instantFinish;
 	const settleTimerRef = useRef<{ clear: () => void } | null>(null);
+	const settlePrepareRef = useRef<AbortController | null>(null);
+	const settleRequestRef = useRef(0);
 	const savingRef = useRef(false);
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
@@ -1131,6 +1138,13 @@ export function EditVideoClient({
 
 	useEffect(() => {
 		if (!instantFinish?.enabled || isSaving) return;
+		const started = nextSettlePrepare(
+			settlePrepareRef.current,
+			settleRequestRef.current,
+		);
+		settleRequestRef.current = started.requestId;
+		settlePrepareRef.current = started.controller;
+		const requestId = started.requestId;
 		const timer = window.setTimeout(() => {
 			if (savingRef.current) return;
 			const current = instantFinishRef.current;
@@ -1147,8 +1161,13 @@ export function EditVideoClient({
 					draftVersion: (current.draftVersion ?? 0) + 1,
 					draftSession,
 				},
+				started.controller.signal,
 			)
 				.then((prepared) => {
+					if (!acceptSettledPrepare(requestId, settleRequestRef.current)) {
+						return;
+					}
+					if (savingRef.current) return;
 					setInstantFinish((existing) =>
 						existing
 							? {
@@ -1160,14 +1179,33 @@ export function EditVideoClient({
 				})
 				.catch(() => undefined);
 		}, 400);
-		settleTimerRef.current = { clear: () => window.clearTimeout(timer) };
+		settleTimerRef.current = {
+			clear: () => {
+				window.clearTimeout(timer);
+				started.controller.abort();
+			},
+		};
 		return () => {
 			window.clearTimeout(timer);
+			const fenced = beginDoneFence(
+				settleRequestRef.current,
+				started.controller,
+			);
+			settleRequestRef.current = fenced.requestId;
+			if (settlePrepareRef.current === started.controller) {
+				settlePrepareRef.current = null;
+			}
 			settleTimerRef.current = null;
 		};
 	}, [editSpec, initialEditSpec, instantFinish?.enabled, isSaving, video.id]);
 
 	const handleDone = useCallback(async () => {
+		const fenced = beginDoneFence(
+			settleRequestRef.current,
+			settlePrepareRef.current,
+		);
+		settleRequestRef.current = fenced.requestId;
+		settlePrepareRef.current = null;
 		settleTimerRef.current?.clear();
 		settleTimerRef.current = null;
 		if (isSaving) return;
