@@ -29,7 +29,6 @@ import {
 	deriveRevisionChapters,
 	ENCODER_PROFILE,
 	intentIdFor,
-	isPendingThumbnail,
 	MAPPING_VERSION,
 	OUTBOX_JOBS,
 	playlistDurationSeconds,
@@ -39,13 +38,17 @@ import {
 	requireV2Spec,
 	type SourceIdentity,
 	sourceIdFromIdentity,
-	thumbnailBindsDuration,
 } from "@/lib/revision-publication-metadata";
 import {
 	digestMatches,
 	type OriginClient,
 	type RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
+import {
+	isVerifiedJpeg,
+	thumbnailRetryDelayMs,
+	thumbnailSha256,
+} from "@/lib/revision-thumbnail";
 import { assertFinishSourceKey } from "@/lib/source-relocation";
 
 export type { InstantFinishPublicationDto as RevisionPublicationDto } from "@/lib/revision-publication-read";
@@ -203,7 +206,7 @@ async function reuseVerifiedReady(
 	app: Database,
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
-	deps: PublishRevisionDeps,
+	_deps: PublishRevisionDeps,
 	now: () => Date,
 ): Promise<PublishRevisionSuccess | null> {
 	const stamp = now();
@@ -319,7 +322,6 @@ async function reuseVerifiedReady(
 			now(),
 		);
 	});
-	scheduleRevisionReadback(app, found.allocated.revisionId, deps.origin, now);
 	return {
 		success: true,
 		revisionId: found.allocated.revisionId,
@@ -444,7 +446,6 @@ export async function publishInstantFinishRevision(
 		await app.transaction(async (tx) => {
 			await flipCurrent(tx, input, spec, allocated, prepared, now());
 		});
-		scheduleRevisionReadback(app, allocated.revisionId, deps.origin, now);
 		return {
 			success: true,
 			revisionId: allocated.revisionId,
@@ -1116,8 +1117,8 @@ async function flipCurrent(
 		await tx.insert(revisionArtifactStatus).values({
 			revisionId: allocated.revisionId,
 			artifact,
-			state: "READY",
-			attempts: 1,
+			state: artifact === "thumbnail" ? "PENDING" : "READY",
+			attempts: artifact === "thumbnail" ? 0 : 1,
 			leaseUntil: null,
 			heartbeatAt: stamp,
 		});
@@ -1323,7 +1324,11 @@ export type ReadbackResult = {
 	reason?: string;
 };
 
-const pendingReadbacks: Promise<unknown>[] = [];
+const READBACK_POLL_MS = 1_500;
+const READBACK_LEASE_MS = 15_000;
+
+let readbackInFlight: Promise<void> | null = null;
+let readbackWorker: ReturnType<typeof setInterval> | null = null;
 
 export function alertRevisionReadbackFailure(detail: {
 	videoId: string;
@@ -1339,33 +1344,50 @@ export function alertRevisionReadbackFailure(detail: {
 }
 
 export function pendingRevisionReadbacks(): Promise<void> {
-	return Promise.all(pendingReadbacks).then(() => undefined);
+	return readbackInFlight ?? Promise.resolve();
 }
 
-function scheduleRevisionReadback(
-	database: Database,
-	revisionId: string,
-	origin: OriginClient,
-	now: () => Date,
-) {
-	const job = new Promise((resolve) => {
-		setTimeout(() => {
-			resolve(
-				runRevisionReadback(database, {
-					revisionId,
-					origin,
-					now: now(),
-				}).catch((error: unknown) => {
-					console.error(
-						"cap-revision-readback-failed",
-						revisionId,
-						error instanceof Error ? error.message : "readback failed",
-					);
-				}),
-			);
-		}, 0);
-	});
-	pendingReadbacks.push(job);
+export function readbackDue(
+	payload: Record<string, unknown>,
+	now: Date,
+): boolean {
+	const notBefore =
+		typeof payload.notBefore === "string" ? Date.parse(payload.notBefore) : 0;
+	const leaseUntil =
+		typeof payload.leaseUntil === "string" ? Date.parse(payload.leaseUntil) : 0;
+	return (
+		(!Number.isFinite(notBefore) || notBefore <= now.getTime()) &&
+		(!Number.isFinite(leaseUntil) || leaseUntil <= now.getTime())
+	);
+}
+
+export function startRevisionReadbackWorker(input: {
+	database: unknown;
+	origin: OriginClient;
+	pollMs?: number;
+	now?: () => Date;
+}): { stop: () => void } {
+	if (readbackWorker) return { stop: stopRevisionReadbackWorker };
+	const pollMs = Math.min(input.pollMs ?? READBACK_POLL_MS, 2_000);
+	const tick = () => {
+		if (readbackInFlight) return;
+		const run = sweepRevisionReadbacks(input.database, {
+			origin: input.origin,
+			now: input.now?.(),
+		}).then(() => undefined);
+		readbackInFlight = run;
+		void run.finally(() => {
+			if (readbackInFlight === run) readbackInFlight = null;
+		});
+	};
+	tick();
+	readbackWorker = setInterval(tick, pollMs);
+	return { stop: stopRevisionReadbackWorker };
+}
+
+export function stopRevisionReadbackWorker() {
+	if (readbackWorker) clearInterval(readbackWorker);
+	readbackWorker = null;
 }
 
 function assertSignedPrepareAttestation(
@@ -1528,23 +1550,6 @@ async function verifyRevisionArtifacts(
 		"chapters.json",
 		payload.chaptersJson,
 	);
-	const thumb = await origin.fetchArtifact({
-		videoId: payload.videoId,
-		revisionId: payload.revisionId,
-		name: "thumbnail.jpg",
-		method: "GET",
-	});
-	if (
-		thumb.status === 200 &&
-		(thumbnailBindsDuration(thumb.body, payload.durationSeconds) ||
-			isPendingThumbnail(thumb.body))
-	) {
-		return;
-	}
-	throw new RevisionPublicationError(
-		500,
-		"Revision thumbnail is missing or not bound to this edition",
-	);
 }
 
 async function revertCurrentAfterReadback(
@@ -1554,6 +1559,14 @@ async function revertCurrentAfterReadback(
 	stamp: Date,
 ): Promise<boolean> {
 	return database.transaction(async (tx) => {
+		const [publication] = await tx
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId(payload.videoId)))
+			.for("update");
+		if (!publication || publication.currentRevisionId !== payload.revisionId) {
+			return false;
+		}
 		await tx
 			.update(editRevision)
 			.set({ state: "FAILED", error: reason.slice(0, 500), updatedAt: stamp })
@@ -1567,14 +1580,6 @@ async function revertCurrentAfterReadback(
 			.update(revisionArtifactStatus)
 			.set({ state: "ERROR", leaseUntil: null, heartbeatAt: stamp })
 			.where(eq(revisionArtifactStatus.revisionId, payload.revisionId));
-		const [publication] = await tx
-			.select()
-			.from(videoPublication)
-			.where(eq(videoPublication.videoId, videoId(payload.videoId)))
-			.for("update");
-		if (!publication || publication.currentRevisionId !== payload.revisionId) {
-			return false;
-		}
 		const pointed = await tx
 			.update(videoPublication)
 			.set({
@@ -1607,41 +1612,216 @@ export async function runRevisionReadback(
 		}) => void;
 	},
 ): Promise<ReadbackResult> {
+	const swept = await sweepRevisionReadbacks(database, {
+		origin: input.origin,
+		now: input.now,
+		revisionId: input.revisionId,
+		alert: input.alert,
+		limit: 1,
+	});
+	return swept[0] ?? { ok: true, reverted: false, skipped: true };
+}
+
+type ClaimedReadback = {
+	id: number;
+	payload: ReadbackPayload;
+	attempts: number;
+};
+
+export async function sweepRevisionReadbacks(
+	database: unknown,
+	input: {
+		origin: OriginClient;
+		now?: Date;
+		limit?: number;
+		revisionId?: string;
+		workerId?: string;
+		alert?: (detail: {
+			videoId: string;
+			revisionId: string;
+			reason: string;
+		}) => void;
+	},
+): Promise<ReadbackResult[]> {
 	const app = database as Database;
 	const stamp = input.now ?? new Date();
-	const claimed = await app.transaction(async (tx) => {
-		const [row] = await tx
+	const results: ReadbackResult[] = [];
+	const limit = input.limit ?? 8;
+	for (let index = 0; index < limit; index += 1) {
+		const claimed = await claimDueReadback(app, stamp, {
+			revisionId: input.revisionId,
+			workerId: input.workerId ?? "readback",
+		});
+		if (!claimed) break;
+		results.push(
+			await finishClaimedReadback(
+				app,
+				claimed,
+				input.origin,
+				stamp,
+				input.alert,
+			),
+		);
+	}
+	return results;
+}
+
+async function claimDueReadback(
+	database: Database,
+	stamp: Date,
+	input: { revisionId?: string; workerId: string },
+): Promise<ClaimedReadback | null> {
+	return database.transaction(async (tx) => {
+		const rows = await tx
 			.select()
 			.from(revisionOutbox)
-			.where(
-				and(
-					eq(revisionOutbox.revisionId, input.revisionId),
-					eq(revisionOutbox.job, "readback"),
-				),
-			)
+			.where(eq(revisionOutbox.job, "readback"))
 			.for("update");
-		if (!row || !isReadbackPayload(row.payload)) return null;
-		await tx.delete(revisionOutbox).where(eq(revisionOutbox.id, row.id));
-		return row.payload;
+		const due = rows.find((row) => {
+			if (input.revisionId && row.revisionId !== input.revisionId) return false;
+			if (!readbackDue(row.payload, stamp)) return false;
+			return isReadbackPayload(row.payload);
+		});
+		if (!due || !isReadbackPayload(due.payload)) return null;
+		const raw = due.payload as ReadbackPayload & { attempts?: number };
+		const attempts = typeof raw.attempts === "number" ? raw.attempts + 1 : 1;
+		await tx
+			.update(revisionOutbox)
+			.set({
+				payload: {
+					...due.payload,
+					attempts,
+					workerId: input.workerId,
+					leaseUntil: new Date(
+						stamp.getTime() + READBACK_LEASE_MS,
+					).toISOString(),
+				},
+			})
+			.where(eq(revisionOutbox.id, due.id));
+		return { id: due.id, payload: due.payload, attempts };
 	});
-	if (!claimed) return { ok: true, reverted: false, skipped: true };
+}
+
+async function finishClaimedReadback(
+	database: Database,
+	claimed: ClaimedReadback,
+	origin: OriginClient,
+	stamp: Date,
+	alert = alertRevisionReadbackFailure,
+): Promise<ReadbackResult> {
+	const current = await publicationPointsAt(database, claimed.payload);
+	if (!current) {
+		await database
+			.delete(revisionOutbox)
+			.where(eq(revisionOutbox.id, claimed.id));
+		return { ok: true, reverted: false, skipped: true, reason: "stale" };
+	}
 	try {
-		await verifyRevisionArtifacts(input.origin, claimed);
+		await verifyRevisionArtifacts(origin, claimed.payload);
+		await recordThumbnailStatus(database, origin, claimed.payload, stamp);
+		await database
+			.delete(revisionOutbox)
+			.where(eq(revisionOutbox.id, claimed.id));
 		return { ok: true, reverted: false, skipped: false };
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : "readback failed";
-		const alert = input.alert ?? alertRevisionReadbackFailure;
 		alert({
-			videoId: claimed.videoId,
-			revisionId: claimed.revisionId,
+			videoId: claimed.payload.videoId,
+			revisionId: claimed.payload.revisionId,
 			reason,
 		});
+		const stillCurrent = await publicationPointsAt(database, claimed.payload);
+		if (!stillCurrent) {
+			await database
+				.delete(revisionOutbox)
+				.where(eq(revisionOutbox.id, claimed.id));
+			return { ok: true, reverted: false, skipped: true, reason: "stale" };
+		}
 		const reverted = await revertCurrentAfterReadback(
-			app,
-			claimed,
+			database,
+			claimed.payload,
 			reason,
 			stamp,
 		);
+		await database
+			.delete(revisionOutbox)
+			.where(eq(revisionOutbox.id, claimed.id));
 		return { ok: false, reverted, skipped: false, reason };
 	}
+}
+
+async function publicationPointsAt(
+	database: Database,
+	payload: ReadbackPayload,
+): Promise<boolean> {
+	const [publication] = await database
+		.select({ currentRevisionId: videoPublication.currentRevisionId })
+		.from(videoPublication)
+		.where(eq(videoPublication.videoId, videoId(payload.videoId)));
+	return publication?.currentRevisionId === payload.revisionId;
+}
+
+async function recordThumbnailStatus(
+	database: Database,
+	origin: OriginClient,
+	payload: ReadbackPayload,
+	stamp: Date,
+) {
+	const [status] = await database
+		.select()
+		.from(revisionArtifactStatus)
+		.where(
+			and(
+				eq(revisionArtifactStatus.revisionId, payload.revisionId),
+				eq(revisionArtifactStatus.artifact, "thumbnail"),
+			),
+		);
+	if (
+		status?.leaseUntil &&
+		status.leaseUntil.getTime() > stamp.getTime() &&
+		status.state !== "READY"
+	) {
+		return;
+	}
+	const thumb = await origin.fetchArtifact({
+		videoId: payload.videoId,
+		revisionId: payload.revisionId,
+		name: "thumbnail.jpg",
+		method: "GET",
+	});
+	const verified = thumb.status === 200 && isVerifiedJpeg(thumb.body);
+	const attempts = (status?.attempts ?? 0) + (verified ? 0 : 1);
+	const state = verified ? "READY" : attempts >= 3 ? "FAILED" : "PENDING";
+	await database
+		.update(revisionArtifactStatus)
+		.set({
+			state,
+			attempts,
+			leaseUntil: verified
+				? null
+				: new Date(stamp.getTime() + thumbnailRetryDelayMs(attempts)),
+			heartbeatAt: stamp,
+		})
+		.where(
+			and(
+				eq(revisionArtifactStatus.revisionId, payload.revisionId),
+				eq(revisionArtifactStatus.artifact, "thumbnail"),
+			),
+		);
+	if (!verified || !status) return;
+	const digest = thumbnailSha256(thumb.body);
+	const [revision] = await database
+		.select({ metadataSnapshot: editRevision.metadataSnapshot })
+		.from(editRevision)
+		.where(eq(editRevision.revisionId, payload.revisionId));
+	if (!revision?.metadataSnapshot) return;
+	await database
+		.update(editRevision)
+		.set({
+			metadataSnapshot: {
+				...revision.metadataSnapshot,
+				thumbnailSha256: digest,
+			},
+		})
+		.where(eq(editRevision.revisionId, payload.revisionId));
 }

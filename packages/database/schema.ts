@@ -592,6 +592,7 @@ export const editRevision = mysqlTable(
 			durationSeconds: number;
 			attestationMac?: string;
 			attestationBody?: string;
+			thumbnailSha256?: string;
 		}>(),
 		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
 		updatedAt: datetime("updatedAt", { fsp: 3 }).notNull(),
