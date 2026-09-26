@@ -8,14 +8,19 @@ import { userIsPro } from "@cap/utils";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import type { EditTranscript } from "@/lib/edit-transcript";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { mintRevisionMediaGrant } from "@/lib/revision-media-grant";
 import {
 	publishInstantFinishRevision,
 	RevisionPublicationError,
 	recordServerDraft,
 } from "@/lib/revision-publication";
 import { httpOriginClient } from "@/lib/revision-publication-origin";
+import type { InstantFinishPublicationDto } from "@/lib/revision-publication-read";
+import { getInstantFinishPublicationDto } from "@/lib/revision-publication-read";
+import { resolveShareWebUrl } from "@/lib/share-web-url";
 import type { VideoChapter } from "@/lib/video-edits";
 
 export type PublishVideoRevisionInput = {
@@ -69,6 +74,37 @@ function assertDefaultCapBucket(video: {
 	}
 }
 
+export type PublishPlaybackPayload = {
+	playlistUrl: string;
+	grantExpiresAt: number;
+	revisionMetadata: InstantFinishPublicationDto["revisionMetadata"];
+};
+
+async function loadPublishPlayback(input: {
+	videoId: string;
+	ownerId: string;
+	revisionId: string;
+}): Promise<PublishPlaybackPayload | null> {
+	try {
+		const origin = await resolveShareWebUrl(await headers());
+		const publication = await getInstantFinishPublicationDto({
+			videoId: input.videoId,
+			ownerId: input.ownerId,
+		});
+		if (publication.currentRevisionId !== input.revisionId) return null;
+		const grant = await mintRevisionMediaGrant(null, input.videoId, { origin });
+		if (!grant || !("ok" in grant) || !grant.ok) return null;
+		if (grant.revisionId !== input.revisionId) return null;
+		return {
+			playlistUrl: grant.playbackUrl,
+			grantExpiresAt: grant.expiresAt,
+			revisionMetadata: publication.revisionMetadata,
+		};
+	} catch {
+		return null;
+	}
+}
+
 export async function publishVideoRevision(input: PublishVideoRevisionInput) {
 	const { video } = await loadOwnerVideo(input.videoId);
 	if (!isInstantFinishEnabledForOwner(video.ownerId)) {
@@ -78,15 +114,20 @@ export async function publishVideoRevision(input: PublishVideoRevisionInput) {
 		);
 	}
 	assertDefaultCapBucket(video);
+	const recorded = await recordServerDraft(db(), {
+		videoId: input.videoId,
+		draftVersion: input.draftVersion,
+		draftSession: input.draftSession,
+	});
 	const published = await publishInstantFinishRevision(
 		db(),
 		{
 			videoId: input.videoId,
 			editSpec: input.editSpec,
 			expectedEditSpec: input.expectedEditSpec,
-			baseGeneration: input.baseGeneration,
-			draftVersion: input.draftVersion,
-			draftSession: input.draftSession,
+			baseGeneration: recorded.generation,
+			draftVersion: recorded.draftVersion,
+			draftSession: recorded.draftSession,
 			chapters: input.chapters ?? video.metadata?.chapters ?? [],
 			transcript: input.transcript ?? null,
 			sourceDuration: video.duration,
@@ -94,8 +135,12 @@ export async function publishVideoRevision(input: PublishVideoRevisionInput) {
 		{ origin: httpOriginClient() },
 	);
 	revalidatePath(`/s/${input.videoId}`);
-	revalidatePath(`/s/${input.videoId}/edit`);
-	return published;
+	const playback = await loadPublishPlayback({
+		videoId: input.videoId,
+		ownerId: video.ownerId,
+		revisionId: published.revisionId,
+	});
+	return { ...published, playback };
 }
 
 export async function getEditorInstantFinishState(input: {
