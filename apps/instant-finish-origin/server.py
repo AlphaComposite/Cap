@@ -231,7 +231,7 @@ class OriginApp:
             seg0 = origin.ensure(0)
             decoded = _decode_check(init, seg0)
             duration = lib_origin.duration_ticks(origin.segments) / origin.profile.timescale
-            captions, chapters = self._write_side_artifacts(origin, body, duration)
+            captions, chapters = self._write_side_artifacts(revision_id, origin, body, duration)
         except lib_origin.MezzanineRequired:
             return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
         except Exception:
@@ -285,6 +285,10 @@ class OriginApp:
                 body, content_type = self._artifact(snap, kind, match, token)
             else:
                 body, content_type = prefetched[1], prefetched[2]
+        except SideArtifactMissing:
+            return self._text(404, b"not found")
+        except SideArtifactRejected:
+            return self._text(500, b"unavailable")
         except IndexError:
             return self._text(404, b"not found")
         except (lib_origin.MezzanineRequired, lib_origin.CacheIntegrityError, Exception):
@@ -311,7 +315,7 @@ class OriginApp:
             "Referrer-Policy": REFERRER,
         }
         if kind == "thumbnail.jpg":
-            extra["X-Cap-Thumbnail"] = "ready" if body != _pending_thumbnail() else "pending"
+            extra["X-Cap-Thumbnail"] = "ready"
         if range_header:
             status, chunk, content_range = _slice(body, range_header)
             if status != 206:
@@ -371,12 +375,11 @@ class OriginApp:
         if kind.startswith("seg/"):
             return origin.ensure(int(match.group("n"))), "video/mp4"
         if kind == "captions.vtt":
-            return _read_cache(origin, "captions.vtt"), "text/vtt"
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "captions.vtt"), "text/vtt"
         if kind == "chapters.json":
-            return _read_cache(origin, "chapters.json"), "application/json"
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "chapters.json"), "application/json"
         if kind == "thumbnail.jpg":
-            body, _label = read_thumbnail(origin)
-            return body, "image/jpeg"
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "thumbnail.jpg"), "image/jpeg"
         if kind == "download.mp4":
             path = origin.cache / "download.mp4"
             if not path.is_file():
@@ -508,7 +511,7 @@ class OriginApp:
         path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
         atomic_write(path, json.dumps(ranges).encode(), sync=False)
 
-    def _write_side_artifacts(self, origin: lib_origin.Origin, body: dict, duration: float) -> tuple[bytes, bytes]:
+    def _write_side_artifacts(self, revision_id: str, origin: lib_origin.Origin, body: dict, duration: float) -> tuple[bytes, bytes]:
         if isinstance(body.get("captionsVtt"), str):
             vtt = body["captionsVtt"].encode()
         else:
@@ -519,11 +522,17 @@ class OriginApp:
         else:
             chapters = lib_origin.remap_cues(list(body.get("chapters") or []), origin.ranges, text_key="title")
             chapters_doc = (json.dumps({"chapters": chapters}, sort_keys=True) + "\n").encode()
-        atomic_write(origin.cache / "captions.vtt", vtt, sync=False)
-        atomic_write(origin.cache / "chapters.json", chapters_doc, sync=False)
+        write_signed_side(self.service_secret, self.cache, revision_id, "captions.vtt", vtt)
+        write_signed_side(self.service_secret, self.cache, revision_id, "chapters.json", chapters_doc)
         note_duration = body.get("durationSeconds")
         bound = float(note_duration) if isinstance(note_duration, (int, float)) else duration
-        schedule_thumbnail(origin, bound)
+        schedule_thumbnail(
+            origin,
+            bound,
+            cache=self.cache,
+            secret=self.service_secret,
+            revision_id=revision_id,
+        )
         return vtt, chapters_doc
 
     def _remember_source(self, video_id: str, cache_id: str, source_key: str) -> None:
@@ -561,16 +570,15 @@ class OriginApp:
             elif kind.startswith("seg/"):
                 body, content_type = origin.ensure(int(match.group("n"))), "video/mp4"
             elif kind == "captions.vtt":
-                body, content_type = _read_cache(origin, "captions.vtt"), "text/vtt"
+                body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "captions.vtt"), "text/vtt"
             elif kind == "chapters.json":
-                body, content_type = _read_cache(origin, "chapters.json"), "application/json"
+                body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "chapters.json"), "application/json"
             elif kind == "thumbnail.jpg":
-                body, label = read_thumbnail(origin)
-                content_type = "image/jpeg"
-                return 200, body, content_type, {
+                body = read_verified_side(self.service_secret, self.cache, revision_id, "thumbnail.jpg")
+                return 200, body, "image/jpeg", {
                     "Cache-Control": NO_STORE,
                     "Accept-Ranges": "bytes",
-                    "X-Cap-Thumbnail": label,
+                    "X-Cap-Thumbnail": "ready",
                 }
             else:
                 return self._text(404, b"not found")
@@ -770,29 +778,113 @@ def _decode_check(init: bytes, seg0: bytes) -> int:
         container.close()
 
 
+class SideArtifactMissing(FileNotFoundError):
+    pass
+
+
+class SideArtifactRejected(lib_origin.CacheIntegrityError):
+    pass
+
+
 def _pending_thumbnail() -> bytes:
     return b"\xff\xd8\xff\xd9"
 
 
+def _jpeg_has_frame(data: bytes) -> bool:
+    return (
+        len(data) > 4
+        and data[:2] == b"\xff\xd8"
+        and data[-2:] == b"\xff\xd9"
+        and (b"\xff\xc0" in data or b"\xff\xc2" in data)
+        and data != _pending_thumbnail()
+    )
+
+
+def _side_dir(cache: Path, revision_id: str) -> Path:
+    return cache / "revisions" / _safe(revision_id)
+
+
+def write_signed_side(secret: bytes, cache: Path, revision_id: str, name: str, data: bytes) -> str:
+    digest = hashlib.sha256(data).hexdigest()
+    body = service_auth.canonical_json({
+        "name": name,
+        "revisionId": revision_id,
+        "sha256": digest,
+    })
+    mac = service_auth.sign_attestation(secret, body)
+    root = _side_dir(cache, revision_id)
+    atomic_write(root / name, data, sync=False)
+    atomic_write(
+        root / f"{name}.attestation.json",
+        (json.dumps({"body": body.decode(), "mac": mac}, sort_keys=True) + "\n").encode(),
+        sync=False,
+    )
+    private(root / name)
+    return digest
+
+
+def read_verified_side(secret: bytes, cache: Path, revision_id: str, name: str) -> bytes:
+    root = _side_dir(cache, revision_id)
+    path = root / name
+    attestation = root / f"{name}.attestation.json"
+    if not path.is_file() or not attestation.is_file():
+        raise SideArtifactMissing(name)
+    record = json.loads(attestation.read_text())
+    body = record.get("body")
+    mac = record.get("mac")
+    if not isinstance(body, str) or not isinstance(mac, str):
+        raise SideArtifactRejected("unsigned side artifact")
+    raw = body.encode()
+    if not service_auth.verify_attestation(secret, mac, raw):
+        raise SideArtifactRejected("side attestation mismatch")
+    claims = json.loads(raw)
+    data = path.read_bytes()
+    if (
+        claims.get("revisionId") != revision_id
+        or claims.get("name") != name
+        or claims.get("sha256") != hashlib.sha256(data).hexdigest()
+    ):
+        raise SideArtifactRejected("side artifact sha mismatch")
+    if name == "thumbnail.jpg" and not _jpeg_has_frame(data):
+        raise SideArtifactRejected("thumbnail is not a verified jpeg")
+    return data
+
+
 def read_thumbnail(origin: lib_origin.Origin) -> tuple[bytes, str]:
     path = origin.cache / "thumbnail.jpg"
-    if path.is_file():
+    if path.is_file() and _jpeg_has_frame(path.read_bytes()):
         return path.read_bytes(), "ready"
-    return _pending_thumbnail(), "pending"
+    raise SideArtifactMissing("thumbnail.jpg")
 
 
 _THUMBNAIL_JOBS: list[threading.Thread] = []
 
 
-def schedule_thumbnail(origin: lib_origin.Origin, duration_seconds: float) -> None:
+def schedule_thumbnail(
+    origin: lib_origin.Origin,
+    duration_seconds: float,
+    cache: Path | None = None,
+    secret: bytes | None = None,
+    revision_id: str | None = None,
+) -> None:
     def run() -> None:
-        try:
-            dest = origin.cache / "thumbnail.jpg"
-            if dest.is_file():
+        for delay in (0.0, 0.25, 0.5, 1.0):
+            if delay:
+                time.sleep(delay)
+            try:
+                if cache is not None and secret is not None and revision_id:
+                    dest = _side_dir(cache, revision_id) / "thumbnail.jpg"
+                    _thumbnail(origin, dest, duration_seconds)
+                    data = dest.read_bytes()
+                    if not _jpeg_has_frame(data):
+                        raise RuntimeError("thumbnail is not a verified jpeg")
+                    write_signed_side(secret, cache, revision_id, "thumbnail.jpg", data)
+                    return
+                dest = origin.cache / "thumbnail.jpg"
+                _thumbnail(origin, dest, duration_seconds)
                 return
-            _thumbnail(origin, dest, duration_seconds)
-        except Exception:
-            return
+            except Exception:
+                continue
 
     thread = threading.Thread(target=run, daemon=True)
     _THUMBNAIL_JOBS.append(thread)
