@@ -65,6 +65,10 @@ import {
 	revisionDragCommit,
 	revisionDragStart,
 } from "@/lib/revision-seek";
+import {
+	displayedSeekTime,
+	subscribeSeekClock,
+} from "@/lib/revision-seek-clock";
 import { Badge } from "./badge";
 import { Button as PlayerButton } from "./button";
 import {
@@ -2610,6 +2614,23 @@ function MediaPlayerTime(props: MediaPlayerTimeProps) {
 
 	const context = useMediaPlayerContext("MediaPlayerTime");
 	const mediaCurrentTime = useMediaSelector(selectCurrentTime);
+	const [sampledSeekTime, setSampledSeekTime] = React.useState<number | null>(
+		null,
+	);
+	const [clockMedia, setClockMedia] = React.useState<HTMLVideoElement | null>(
+		null,
+	);
+	React.useLayoutEffect(() => {
+		const next = context.mediaRef.current;
+		if (next instanceof HTMLVideoElement && next !== clockMedia) {
+			setClockMedia(next);
+		}
+	});
+	React.useEffect(() => {
+		if (!clockMedia) return;
+		return subscribeSeekClock(clockMedia, setSampledSeekTime);
+	}, [clockMedia]);
+	const shownTime = displayedSeekTime(mediaCurrentTime, sampledSeekTime);
 	const mediaDuration = useMediaSelector(selectDuration);
 	const [, seekableEnd = 0] = useMediaSelector(selectSeekable);
 	const resolvedDuration = React.useMemo(() => {
@@ -2640,7 +2661,7 @@ function MediaPlayerTime(props: MediaPlayerTimeProps) {
 		if (variant === "remaining") {
 			return {
 				remaining: timeUtils.formatTime(
-					effectiveDuration - mediaCurrentTime,
+					effectiveDuration - shownTime,
 					effectiveDuration,
 				),
 			};
@@ -2653,10 +2674,10 @@ function MediaPlayerTime(props: MediaPlayerTimeProps) {
 		}
 
 		return {
-			current: timeUtils.formatTime(mediaCurrentTime, effectiveDuration),
+			current: timeUtils.formatTime(shownTime, effectiveDuration),
 			duration: timeUtils.formatTime(effectiveDuration, effectiveDuration),
 		};
-	}, [variant, mediaCurrentTime, effectiveDuration]);
+	}, [variant, shownTime, effectiveDuration]);
 
 	const TimePrimitive = asChild ? Slot : "div";
 

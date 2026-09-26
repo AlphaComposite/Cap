@@ -101,6 +101,7 @@ export const ShareVideo = forwardRef<
 		defaultPlaybackSpeed?: number;
 		viewerIsOwner?: boolean;
 		revisionPlayback?: ClientRevisionPlayback | null;
+		arrivalAutoplay?: boolean;
 	}
 >(
 	(
@@ -123,6 +124,7 @@ export const ShareVideo = forwardRef<
 			defaultPlaybackSpeed,
 			viewerIsOwner = false,
 			revisionPlayback = null,
+			arrivalAutoplay = false,
 		},
 		ref,
 	) => {
@@ -637,6 +639,8 @@ export const ShareVideo = forwardRef<
 							posterSrc={revisionHls?.thumbnailUrl ?? null}
 							duration={data.duration}
 							defaultPlaybackSpeed={defaultPlaybackSpeed}
+							autoplay={arrivalAutoplay}
+							muted={arrivalAutoplay}
 							externalTimeline={externalTimeline}
 							controlsPortalEl={controlsPortalEl}
 							disableCaptions={areCaptionsDisabled ?? false}
