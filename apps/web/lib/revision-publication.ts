@@ -14,7 +14,7 @@ import {
 } from "@cap/database/schema";
 import type { VideoEditSpec, VideoEditSpecV2 } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, asc, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import {
@@ -1326,6 +1326,7 @@ export type ReadbackResult = {
 
 const READBACK_POLL_MS = 1_500;
 const READBACK_LEASE_MS = 15_000;
+const READBACK_MAX_ATTEMPTS = 5;
 
 let readbackInFlight: Promise<void> | null = null;
 let readbackWorker: ReturnType<typeof setInterval> | null = null;
@@ -1626,7 +1627,34 @@ type ClaimedReadback = {
 	id: number;
 	payload: ReadbackPayload;
 	attempts: number;
+	leaseToken: string;
 };
+
+export async function claimRevisionReadback(
+	database: unknown,
+	input: { now?: Date; revisionId?: string; workerId?: string } = {},
+): Promise<ClaimedReadback | null> {
+	return claimDueReadback(database as Database, input.now ?? new Date(), {
+		revisionId: input.revisionId,
+		workerId: input.workerId ?? "readback",
+	});
+}
+
+export async function completeRevisionReadback(
+	database: unknown,
+	claimed: ClaimedReadback,
+	origin: OriginClient,
+	stamp = new Date(),
+	alert = alertRevisionReadbackFailure,
+): Promise<ReadbackResult> {
+	return finishClaimedReadback(
+		database as Database,
+		claimed,
+		origin,
+		stamp,
+		alert,
+	);
+}
 
 export async function sweepRevisionReadbacks(
 	database: unknown,
@@ -1672,19 +1700,50 @@ async function claimDueReadback(
 	input: { revisionId?: string; workerId: string },
 ): Promise<ClaimedReadback | null> {
 	return database.transaction(async (tx) => {
+		const nowMs = stamp.getTime();
 		const rows = await tx
 			.select()
 			.from(revisionOutbox)
-			.where(eq(revisionOutbox.job, "readback"))
-			.for("update");
-		const due = rows.find((row) => {
-			if (input.revisionId && row.revisionId !== input.revisionId) return false;
-			if (!readbackDue(row.payload, stamp)) return false;
-			return isReadbackPayload(row.payload);
-		});
-		if (!due || !isReadbackPayload(due.payload)) return null;
+			.where(
+				and(
+					eq(revisionOutbox.job, "readback"),
+					input.revisionId
+						? eq(revisionOutbox.revisionId, input.revisionId)
+						: undefined,
+					sql`(
+						JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseUntilMs') IS NULL
+						OR CAST(JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseUntilMs')) AS UNSIGNED) <= ${nowMs}
+					)`,
+					sql`(
+						JSON_EXTRACT(${revisionOutbox.payload}, '$.notBeforeMs') IS NULL
+						OR CAST(JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.notBeforeMs')) AS UNSIGNED) <= ${nowMs}
+					)`,
+				),
+			)
+			.orderBy(asc(revisionOutbox.id))
+			.limit(1)
+			.for("update", { skipLocked: true });
+		const due = rows[0];
+		if (
+			!due ||
+			!isReadbackPayload(due.payload) ||
+			!readbackDue(due.payload, stamp)
+		) {
+			return null;
+		}
 		const raw = due.payload as ReadbackPayload & { attempts?: number };
 		const attempts = typeof raw.attempts === "number" ? raw.attempts + 1 : 1;
+		if (attempts > READBACK_MAX_ATTEMPTS) {
+			alertRevisionReadbackFailure({
+				videoId: raw.videoId,
+				revisionId: raw.revisionId,
+				reason: "readback attempts exhausted",
+			});
+			await tx.delete(revisionOutbox).where(eq(revisionOutbox.id, due.id));
+			return null;
+		}
+		const leaseToken = randomBytes(16).toString("hex");
+		const leaseUntilMs = stamp.getTime() + READBACK_LEASE_MS;
 		await tx
 			.update(revisionOutbox)
 			.set({
@@ -1692,14 +1751,27 @@ async function claimDueReadback(
 					...due.payload,
 					attempts,
 					workerId: input.workerId,
-					leaseUntil: new Date(
-						stamp.getTime() + READBACK_LEASE_MS,
-					).toISOString(),
+					leaseToken,
+					leaseUntilMs,
+					leaseUntil: new Date(leaseUntilMs).toISOString(),
 				},
 			})
 			.where(eq(revisionOutbox.id, due.id));
-		return { id: due.id, payload: due.payload, attempts };
+		return { id: due.id, payload: due.payload, attempts, leaseToken };
 	});
+}
+
+async function readbackLeaseHeld(
+	database: Database,
+	id: number,
+	leaseToken: string,
+) {
+	const [row] = await database
+		.select({ payload: revisionOutbox.payload })
+		.from(revisionOutbox)
+		.where(eq(revisionOutbox.id, id));
+	const payload = row?.payload as { leaseToken?: string } | undefined;
+	return payload?.leaseToken === leaseToken;
 }
 
 async function finishClaimedReadback(
@@ -1709,44 +1781,79 @@ async function finishClaimedReadback(
 	stamp: Date,
 	alert = alertRevisionReadbackFailure,
 ): Promise<ReadbackResult> {
+	if (!(await readbackLeaseHeld(database, claimed.id, claimed.leaseToken))) {
+		return { ok: true, reverted: false, skipped: true, reason: "lease-lost" };
+	}
 	const current = await publicationPointsAt(database, claimed.payload);
 	if (!current) {
-		await database
-			.delete(revisionOutbox)
-			.where(eq(revisionOutbox.id, claimed.id));
+		if (await readbackLeaseHeld(database, claimed.id, claimed.leaseToken)) {
+			await database
+				.delete(revisionOutbox)
+				.where(
+					and(
+						eq(revisionOutbox.id, claimed.id),
+						sql`JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseToken')) = ${claimed.leaseToken}`,
+					),
+				);
+		}
 		return { ok: true, reverted: false, skipped: true, reason: "stale" };
 	}
 	try {
 		await verifyRevisionArtifacts(origin, claimed.payload);
 		await recordThumbnailStatus(database, origin, claimed.payload, stamp);
+		if (!(await readbackLeaseHeld(database, claimed.id, claimed.leaseToken))) {
+			return { ok: true, reverted: false, skipped: true, reason: "lease-lost" };
+		}
 		await database
 			.delete(revisionOutbox)
-			.where(eq(revisionOutbox.id, claimed.id));
+			.where(
+				and(
+					eq(revisionOutbox.id, claimed.id),
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseToken')) = ${claimed.leaseToken}`,
+				),
+			);
 		return { ok: true, reverted: false, skipped: false };
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : "readback failed";
+		const bounded =
+			claimed.attempts >= READBACK_MAX_ATTEMPTS
+				? `readback attempts exhausted: ${reason}`
+				: reason;
 		alert({
 			videoId: claimed.payload.videoId,
 			revisionId: claimed.payload.revisionId,
-			reason,
+			reason: bounded,
 		});
+		if (!(await readbackLeaseHeld(database, claimed.id, claimed.leaseToken))) {
+			return { ok: true, reverted: false, skipped: true, reason: "lease-lost" };
+		}
 		const stillCurrent = await publicationPointsAt(database, claimed.payload);
 		if (!stillCurrent) {
 			await database
 				.delete(revisionOutbox)
-				.where(eq(revisionOutbox.id, claimed.id));
+				.where(
+					and(
+						eq(revisionOutbox.id, claimed.id),
+						sql`JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseToken')) = ${claimed.leaseToken}`,
+					),
+				);
 			return { ok: true, reverted: false, skipped: true, reason: "stale" };
 		}
 		const reverted = await revertCurrentAfterReadback(
 			database,
 			claimed.payload,
-			reason,
+			bounded,
 			stamp,
 		);
 		await database
 			.delete(revisionOutbox)
-			.where(eq(revisionOutbox.id, claimed.id));
-		return { ok: false, reverted, skipped: false, reason };
+			.where(
+				and(
+					eq(revisionOutbox.id, claimed.id),
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseToken')) = ${claimed.leaseToken}`,
+				),
+			);
+		return { ok: false, reverted, skipped: false, reason: bounded };
 	}
 }
 
