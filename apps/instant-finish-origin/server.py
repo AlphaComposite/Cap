@@ -138,6 +138,13 @@ class OriginApp:
             return found
 
     def _prepare_source(self, video_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        """POST /internal/sources/{videoId}/prepare.
+
+        Call this when the upload lands so the A1 mezzanine, packet index, and
+        presentation PCM exist before the editor opens. Editor-open still calls
+        this endpoint and builds A1 only when the mezzanine or its source bind
+        is missing.
+        """
         try:
             body = json.loads(headers.get("_body") or b"{}")
             source_id = str(body["sourceId"])
@@ -224,7 +231,7 @@ class OriginApp:
             seg0 = origin.ensure(0)
             decoded = _decode_check(init, seg0)
             duration = lib_origin.duration_ticks(origin.segments) / origin.profile.timescale
-            self._write_side_artifacts(origin, body, duration)
+            captions, chapters, thumb = self._write_side_artifacts(origin, body, duration)
         except lib_origin.MezzanineRequired:
             return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
         except Exception:
@@ -232,7 +239,9 @@ class OriginApp:
         if decoded < 1 or b"#EXT-X-ENDLIST" not in origin.playlist:
             return self._text(500, b"unavailable")
         intent_id = str(requested_intent) if requested_intent else origin.rev
-        return self._json(200, {
+        return self._attested({
+            "captionsSha256": hashlib.sha256(captions).hexdigest(),
+            "chaptersSha256": hashlib.sha256(chapters).hexdigest(),
             "decoded": True,
             "decodedFrames": decoded,
             "durationSeconds": duration,
@@ -242,11 +251,13 @@ class OriginApp:
             "intentId": intent_id,
             "playlistDurationSeconds": duration,
             "playlistHasEndList": True,
+            "playlistSha256": hashlib.sha256(origin.playlist).hexdigest(),
             "ready": True,
             "seg0DecodedFrames": decoded,
             "seg0Sha256": hashlib.sha256(seg0).hexdigest(),
             "segmentCount": len(origin.segments),
             "segmentPlanVersion": lib_origin.SEGMENT_PLAN_VERSION,
+            "thumbnailSha256": hashlib.sha256(thumb).hexdigest(),
         })
 
     def _media(self, method: str, match: re.Match, query: dict, headers) -> tuple[int, bytes, str, dict[str, str]]:
@@ -494,7 +505,7 @@ class OriginApp:
         path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
         atomic_write(path, json.dumps(ranges).encode(), sync=False)
 
-    def _write_side_artifacts(self, origin: lib_origin.Origin, body: dict, duration: float) -> None:
+    def _write_side_artifacts(self, origin: lib_origin.Origin, body: dict, duration: float) -> tuple[bytes, bytes, bytes]:
         if isinstance(body.get("captionsVtt"), str):
             vtt = body["captionsVtt"].encode()
         else:
@@ -511,6 +522,7 @@ class OriginApp:
         note_duration = body.get("durationSeconds")
         bound = float(note_duration) if isinstance(note_duration, (int, float)) else duration
         _thumbnail(origin, thumb, bound)
+        return vtt, chapters_doc, thumb.read_bytes()
 
     def _remember_source(self, video_id: str, cache_id: str, source_key: str) -> None:
         path = self.cache / "by-video" / f"{_safe(video_id)}.json"
@@ -560,6 +572,14 @@ class OriginApp:
 
     def _text(self, status: int, body: bytes, content_type: str = "text/plain") -> tuple[int, bytes, str, dict[str, str]]:
         return status, body, content_type, {"Cache-Control": NO_STORE, "Referrer-Policy": REFERRER}
+
+    def _attested(self, payload: dict) -> tuple[int, bytes, str, dict[str, str]]:
+        body = service_auth.canonical_json(payload)
+        return 200, body, "application/json", {
+            "Cache-Control": NO_STORE,
+            "Referrer-Policy": REFERRER,
+            service_auth.ATTESTATION_HEADER: service_auth.sign_attestation(self.service_secret, body),
+        }
 
     def _json(self, status: int, payload: dict) -> tuple[int, bytes, str, dict[str, str]]:
         return status, (json.dumps(payload, sort_keys=True) + "\n").encode(), "application/json", {

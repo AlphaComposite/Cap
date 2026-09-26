@@ -8,6 +8,7 @@ import json
 import time
 
 SERVICE_HEADER = "x-cap-origin-service"
+ATTESTATION_HEADER = "x-cap-origin-attestation"
 SERVICE_SKEW_S = 5
 SERVICE_TTL_S = 30
 SAFE_INT_MAX = 9_007_199_254_740_991
@@ -87,6 +88,29 @@ def verify_request(
     if iat is None or exp is None or exp - iat != SERVICE_TTL_S:
         return False
     return iat <= wall + SERVICE_SKEW_S and wall <= exp
+
+
+def canonical_json(payload: dict) -> bytes:
+    """Sorted-key JSON plus a trailing newline. Sign these exact bytes."""
+    return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+
+
+def sign_attestation(secret: bytes, body: bytes) -> str:
+    """HMAC-SHA256 of the response body, same secret as the request MAC."""
+    if len(secret) < 32:
+        raise ServiceAuthError("short service secret")
+    if not isinstance(body, (bytes, bytearray)):
+        raise ServiceAuthError("attestation body must be bytes")
+    return b64url(hmac.new(secret, bytes(body), hashlib.sha256).digest())
+
+
+def verify_attestation(secret: bytes, token: str, body: bytes) -> bool:
+    if len(secret) < 32 or not isinstance(token, str) or not token:
+        return False
+    if not isinstance(body, (bytes, bytearray)):
+        return False
+    expected = b64url(hmac.new(secret, bytes(body), hashlib.sha256).digest())
+    return hmac.compare_digest(expected, token)
 
 
 def _safe_int(value: object) -> int | None:
