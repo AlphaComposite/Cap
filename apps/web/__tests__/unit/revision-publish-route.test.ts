@@ -14,6 +14,7 @@ import { RevisionPublicationError } from "@/lib/revision-publication";
 
 const publishOwnerRevision = vi.hoisted(() => vi.fn());
 const prepareOwnerRevision = vi.hoisted(() => vi.fn());
+const failUnjoinedInflightPrepare = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/revision-publish", () => ({
 	publishOwnerRevision,
@@ -24,6 +25,10 @@ vi.mock("@/lib/revision-publish", () => ({
 		if (typeof record.videoId !== "string") return null;
 		return record;
 	},
+}));
+
+vi.mock("@/lib/revision-prepare-abort", () => ({
+	failUnjoinedInflightPrepare,
 }));
 
 const playback = {
@@ -40,6 +45,7 @@ function request(
 		host?: string;
 		contentType?: string;
 		body?: unknown;
+		signal?: AbortSignal;
 	},
 ) {
 	const headers = new Headers();
@@ -55,6 +61,7 @@ function request(
 		method: "POST",
 		headers,
 		body: init.body === undefined ? undefined : JSON.stringify(init.body),
+		signal: init.signal,
 	});
 }
 
@@ -140,6 +147,11 @@ describe("revision publish route", () => {
 describe("revision prepare route", () => {
 	beforeEach(() => {
 		prepareOwnerRevision.mockReset();
+		failUnjoinedInflightPrepare.mockReset();
+		failUnjoinedInflightPrepare.mockResolvedValue({
+			markedFailed: false,
+			joined: false,
+		});
 	});
 
 	it("returns only revisionId and generation", async () => {
@@ -170,5 +182,62 @@ describe("revision prepare route", () => {
 		);
 		expect(response.status).toBe(403);
 		expect(prepareOwnerRevision).not.toHaveBeenCalled();
+	});
+
+	it("marks the revision failed when the request aborts and no publish joined", async () => {
+		const controller = new AbortController();
+		prepareOwnerRevision.mockImplementation(() => {
+			controller.abort();
+			return new Promise(() => {});
+		});
+		failUnjoinedInflightPrepare.mockResolvedValue({
+			markedFailed: true,
+			joined: false,
+		});
+		const { POST } = await import("@/app/api/video/revision/prepare/route");
+		const pending = POST(
+			request("http://127.0.0.1:32120/api/video/revision/prepare", {
+				...sameOrigin,
+				signal: controller.signal,
+			}),
+		);
+		controller.abort();
+		const response = await pending;
+		expect(response.status).toBe(499);
+		expect(failUnjoinedInflightPrepare).toHaveBeenCalledWith({
+			videoId: "video-1",
+		});
+	});
+
+	it("does not fail a prepare a publish has joined", async () => {
+		const controller = new AbortController();
+		prepareOwnerRevision.mockImplementation(async () => {
+			controller.abort();
+			return {
+				success: true,
+				revisionId: "rev-joined",
+				generation: 6,
+			};
+		});
+		failUnjoinedInflightPrepare.mockResolvedValue({
+			markedFailed: false,
+			joined: true,
+		});
+		const { POST } = await import("@/app/api/video/revision/prepare/route");
+		const pending = POST(
+			request("http://127.0.0.1:32120/api/video/revision/prepare", {
+				...sameOrigin,
+				signal: controller.signal,
+			}),
+		);
+		const response = await pending;
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			revisionId: "rev-joined",
+			generation: 6,
+		});
+		expect(failUnjoinedInflightPrepare).toHaveBeenCalledWith({
+			videoId: "video-1",
+		});
 	});
 });

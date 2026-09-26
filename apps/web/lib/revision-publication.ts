@@ -22,6 +22,7 @@ import {
 	parseVerifiedOriginAttestation,
 } from "@/lib/revision-media-token";
 import { finishMetadataSnapshot } from "@/lib/revision-metadata-snapshot";
+import { PUBLISH_JOINED_PREPARE } from "@/lib/revision-prepare-abort";
 import {
 	assertServableEncoderProfile,
 	chaptersDocument,
@@ -275,6 +276,12 @@ async function reuseVerifiedReady(
 				publication.generation,
 			);
 		}
+		if (row.error === PUBLISH_JOINED_PREPARE) {
+			await tx
+				.update(editRevision)
+				.set({ error: null, updatedAt: stamp })
+				.where(eq(editRevision.revisionId, row.revisionId));
+		}
 		return {
 			allocated: {
 				idempotent: false,
@@ -350,6 +357,8 @@ async function allocateInputAfterPreclick(
 				eq(editRevision.state, "READY"),
 			),
 		);
+	// An in-flight prepare is not READY. Keep the caller's baseGeneration so
+	// allocateRevision can join it instead of allocating a second revision.
 	if (ready.length === 0) return input;
 	return { ...input, baseGeneration: publication.generation };
 }
@@ -408,6 +417,33 @@ export async function prepareInstantFinishRevision(
 	}
 }
 
+const JOIN_POLL_MS = 25;
+const JOIN_POLL_LIMIT = 800;
+
+async function waitForJoinedRevision(
+	app: Database,
+	revisionId: string,
+): Promise<"ready" | "current" | "failed"> {
+	for (let attempt = 0; attempt < JOIN_POLL_LIMIT; attempt++) {
+		const [row] = await app
+			.select({ state: editRevision.state })
+			.from(editRevision)
+			.where(eq(editRevision.revisionId, revisionId));
+		if (!row) return "failed";
+		if (row.state === "READY") return "ready";
+		if (row.state === "CURRENT") return "current";
+		if (
+			row.state === "FAILED" ||
+			row.state === "SUPERSEDED" ||
+			row.state === "EXPIRED"
+		) {
+			return "failed";
+		}
+		await new Promise((resolve) => setTimeout(resolve, JOIN_POLL_MS));
+	}
+	return "failed";
+}
+
 export async function publishInstantFinishRevision(
 	database: unknown,
 	input: PublishRevisionInput,
@@ -421,9 +457,34 @@ export async function publishInstantFinishRevision(
 	if (reused) return reused;
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
 	const publishInput = await allocateInputAfterPreclick(app, input);
-	const allocated = await app.transaction(async (tx) =>
+	let allocated = await app.transaction(async (tx) =>
 		allocateRevision(tx, publishInput, spec, now(), mintRevisionId),
 	);
+	for (let joined = 0; allocated.join && joined < 2; joined++) {
+		const ready = await waitForJoinedRevision(app, allocated.revisionId);
+		if (ready === "current") {
+			return {
+				success: true,
+				revisionId: allocated.revisionId,
+				generation: allocated.generation,
+			};
+		}
+		if (ready === "ready") {
+			const flipped = await reuseVerifiedReady(app, input, spec, deps, now);
+			if (flipped) return flipped;
+		}
+		allocated = await app.transaction(async (tx) =>
+			allocateRevision(tx, publishInput, spec, now(), mintRevisionId),
+		);
+	}
+	if (allocated.join) {
+		throw new RevisionPublicationError(
+			409,
+			"in-flight prepare did not finish",
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
 	if (allocated.idempotent) {
 		return {
 			success: true,
@@ -465,6 +526,7 @@ export async function publishInstantFinishRevision(
 
 type Allocated = {
 	idempotent: boolean;
+	join?: boolean;
 	revisionId: string;
 	generation: number;
 	intentId: string;
@@ -506,13 +568,6 @@ async function allocateRevision(
 			publication.generation,
 		);
 	}
-	if (input.baseGeneration !== publication.generation) {
-		throw new RevisionPublicationError(
-			409,
-			`generation ${input.baseGeneration} != ${publication.generation}`,
-			publication.generation,
-		);
-	}
 	const identity = await readReadySource(tx, input.videoId, stamp);
 	const sourceId = sourceIdFromIdentity(identity);
 	const intentId = intentIdFor({
@@ -522,16 +577,74 @@ async function allocateRevision(
 		profile: ENCODER_PROFILE,
 	});
 	const previous = await readPreviousSpec(tx, input, spec);
+	if (input.baseGeneration !== publication.generation) {
+		if (!(await sameSessionPreclick(publication, input))) {
+			throw new RevisionPublicationError(
+				409,
+				`generation ${input.baseGeneration} != ${publication.generation}`,
+				publication.generation,
+			);
+		}
+		const [inflight] = await tx
+			.select()
+			.from(editRevision)
+			.where(
+				and(
+					eq(editRevision.videoId, videoId(input.videoId)),
+					eq(editRevision.generation, publication.generation),
+					sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
+				),
+			);
+		if (inflight?.intentId === intentId) {
+			const marked = await tx
+				.update(editRevision)
+				.set({ error: PUBLISH_JOINED_PREPARE, updatedAt: stamp })
+				.where(
+					and(
+						eq(editRevision.revisionId, inflight.revisionId),
+						sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
+					),
+				);
+			if (affectedRows(marked) === 1) {
+				return {
+					idempotent: false,
+					join: true,
+					revisionId: inflight.revisionId,
+					generation: inflight.generation,
+					intentId,
+					sourceId,
+					previousSpec: previous.previousSpec,
+				};
+			}
+		}
+	}
 	const current = publication.currentRevisionId
 		? await readRevision(tx, publication.currentRevisionId)
 		: null;
-	if (
+	const currentMatches =
 		current &&
 		current.state === "CURRENT" &&
 		current.intentId === intentId &&
 		publication.currentGeneration != null &&
-		current.generation === publication.currentGeneration
+		current.generation === publication.currentGeneration;
+	const sameSessionRetry =
+		publication.draftSession === input.draftSession &&
+		input.draftVersion >= publication.latestDraftVersion;
+	if (
+		input.expectedEditSpec &&
+		!areEditSpecDocumentsEquivalent(
+			previous.previousSpec,
+			input.expectedEditSpec,
+		) &&
+		!(currentMatches && sameSessionRetry)
 	) {
+		throw new RevisionPublicationError(
+			409,
+			"This video was edited in another session. Reload before publishing.",
+			publication.generation,
+		);
+	}
+	if (currentMatches && current) {
 		await advanceDraft(tx, input, publication.latestDraftVersion);
 		return {
 			idempotent: true,
@@ -541,19 +654,6 @@ async function allocateRevision(
 			sourceId,
 			previousSpec: previous.previousSpec,
 		};
-	}
-	if (
-		input.expectedEditSpec &&
-		!areEditSpecDocumentsEquivalent(
-			previous.previousSpec,
-			input.expectedEditSpec,
-		)
-	) {
-		throw new RevisionPublicationError(
-			409,
-			"This video was edited in another session. Reload before publishing.",
-			publication.generation,
-		);
 	}
 	const nextGeneration = publication.generation + 1;
 	const updated = await tx
