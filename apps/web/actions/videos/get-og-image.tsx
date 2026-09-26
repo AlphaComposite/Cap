@@ -9,6 +9,7 @@ import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { extractPosterFrameDataUri } from "@/lib/og/poster-frame";
 import { renderVideoOg } from "@/lib/og/video-og";
 import { revisionArtifactUrl } from "@/lib/revision-media-grant";
+import { neutralPreviewJpeg } from "@/lib/revision-thumbnail";
 import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
 
@@ -35,7 +36,9 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 				title: video.name,
 				ownerName: ownerName ?? undefined,
 				duration: video.duration ?? undefined,
-				screenshotUrl: screenshotUrl ?? undefined,
+				screenshotUrl:
+					screenshotUrl ??
+					`data:image/jpeg;base64,${neutralPreviewJpeg().toString("base64")}`,
 			},
 		});
 	}

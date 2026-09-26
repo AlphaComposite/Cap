@@ -206,21 +206,29 @@ describe("F5 current generation stays on R1 until the flip", () => {
 		).toMatchObject({ ok: false, status: 410 });
 	});
 
-	it("requires Finish SourceId to use the relocated liveKey", async () => {
+	it("requires Finish SourceId to use a purged relocated liveKey", async () => {
 		const { assertFinishSourceKey } = await import("@/lib/source-relocation");
 		expect(() =>
 			assertFinishSourceKey({
 				liveKey: "owner/video/source/original.mp4",
 				relocations: [
-					{ newKey: "private/source/video/opaque", state: "DELETED" },
+					{ newKey: "private/source/video/opaque", state: "PURGED" },
 				],
 			}),
-		).toThrow(/relocated liveKey/);
-		expect(
+		).toThrow(/PURGED/);
+		expect(() =>
 			assertFinishSourceKey({
 				liveKey: "private/source/video/opaque",
 				relocations: [
 					{ newKey: "private/source/video/opaque", state: "DELETED" },
+				],
+			}),
+		).toThrow(/PURGED/);
+		expect(
+			assertFinishSourceKey({
+				liveKey: "private/source/video/opaque",
+				relocations: [
+					{ newKey: "private/source/video/opaque", state: "PURGED" },
 				],
 			}),
 		).toBe("private/source/video/opaque");

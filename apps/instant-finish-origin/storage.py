@@ -136,6 +136,8 @@ class S3ObjectStore(ObjectStore):
             client.download_file(self.bucket, key, str(tmp))
             os.chmod(tmp, 0o600)
             os.replace(tmp, dest)
+        except Exception as exc:
+            raise StorageError("source object missing") from exc
         finally:
             if tmp.exists():
                 tmp.unlink()
