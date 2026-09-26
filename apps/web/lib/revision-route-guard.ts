@@ -31,11 +31,23 @@ export function revisionRouteDenial(request: NextRequest): NextResponse | null {
 	} catch {
 		return denial(403, "Cross-origin request rejected");
 	}
+	const site = request.headers.get("sec-fetch-site");
+	if (site && site.toLowerCase() !== "same-origin") {
+		return denial(403, "Cross-origin request rejected");
+	}
 	if (
 		originUrl.protocol !== canonical.protocol ||
-		originUrl.host !== canonical.host
+		originUrl.hostname !== canonical.hostname ||
+		explicitPort(originUrl) !== explicitPort(canonical)
 	) {
 		return denial(403, "Cross-origin request rejected");
 	}
 	return null;
+}
+
+function explicitPort(url: URL) {
+	if (url.port) return url.port;
+	if (url.protocol === "https:") return "443";
+	if (url.protocol === "http:") return "80";
+	return "";
 }

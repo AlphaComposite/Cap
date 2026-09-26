@@ -1,14 +1,21 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 
+const { env } = vi.hoisted(() => ({
+	env: { WEB_URL: "https://cap.styrir.com" },
+}));
+
 vi.mock("@cap/env", () => ({
-	serverEnv: () => ({ WEB_URL: "https://cap.styrir.com" }),
+	serverEnv: () => ({ WEB_URL: env.WEB_URL }),
 }));
 
 import { revisionRouteDenial } from "@/lib/revision-route-guard";
 
-function request(headers: Record<string, string>) {
-	return new NextRequest("https://cap.styrir.com/api/video/revision/publish", {
+function request(
+	headers: Record<string, string>,
+	url = "https://cap.styrir.com/api/video/revision/publish",
+) {
+	return new NextRequest(url, {
 		method: "POST",
 		headers,
 	});
@@ -71,5 +78,58 @@ describe("revision route CSRF guard", () => {
 				}),
 			),
 		).toBeNull();
+	});
+
+	it("rejects cross-site and same-site fetch metadata and accepts same-origin", () => {
+		const headers = {
+			"content-type": "application/json",
+			origin: "https://cap.styrir.com",
+		};
+		expect(
+			revisionRouteDenial(
+				request({ ...headers, "sec-fetch-site": "cross-site" }),
+			)?.status,
+		).toBe(403);
+		expect(
+			revisionRouteDenial(
+				request({ ...headers, "sec-fetch-site": "same-site" }),
+			)?.status,
+		).toBe(403);
+		expect(
+			revisionRouteDenial(
+				request({ ...headers, "sec-fetch-site": "same-origin" }),
+			),
+		).toBeNull();
+		expect(revisionRouteDenial(request(headers))).toBeNull();
+	});
+
+	it("includes a non-default port in the origin comparison", () => {
+		env.WEB_URL = "http://127.0.0.1:36220";
+		try {
+			expect(
+				revisionRouteDenial(
+					request(
+						{
+							"content-type": "application/json",
+							origin: "http://127.0.0.1",
+						},
+						"http://127.0.0.1:36220/api/video/revision/publish",
+					),
+				)?.status,
+			).toBe(403);
+			expect(
+				revisionRouteDenial(
+					request(
+						{
+							"content-type": "application/json",
+							origin: "http://127.0.0.1:36220",
+						},
+						"http://127.0.0.1:36220/api/video/revision/publish",
+					),
+				),
+			).toBeNull();
+		} finally {
+			env.WEB_URL = "https://cap.styrir.com";
+		}
 	});
 });
