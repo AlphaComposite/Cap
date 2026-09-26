@@ -1,6 +1,7 @@
 """Origin unit tests. Encode cases need ffmpeg and PyAV."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ import lib_origin
 from publication import MemoryPublication, PublicationRow, RevisionRow, SourceRow, VideoRow
 from server import OriginApp, serve
 from service_auth import sign_request
+import service_auth
 from storage import LocalObjectStore, StorageError, assert_original_key
 
 os.environ.setdefault("ORIGIN_DEBUG", "1")
@@ -344,14 +346,31 @@ class MediaTests(unittest.TestCase):
             "chapters": [{"start": 0.0, "end": 0.1, "title": "Open"}],
         }).encode()
         path = f"/internal/revisions/{REV}/prepare"
-        status, _, payload = self._req(
+        status, headers, payload = self._req(
             path,
             "POST",
             self._service("POST", path, body),
             body,
         )
         self.assertEqual(status, 200, payload)
+        mac = next((value for key, value in headers.items() if key.lower() == "x-cap-origin-attestation"), "")
+        self.assertTrue(service_auth.verify_attestation(SERVICE, mac, payload))
         prepared = json.loads(payload)
+        for field in (
+            "captionsSha256",
+            "chaptersSha256",
+            "decodedFrames",
+            "initSha256",
+            "intentId",
+            "playlistHasEndList",
+            "playlistSha256",
+            "seg0Sha256",
+            "segmentCount",
+            "thumbnailSha256",
+        ):
+            self.assertIn(field, prepared)
+        self.assertTrue(prepared["playlistHasEndList"])
+        self.assertGreaterEqual(prepared["decodedFrames"], 1)
         self.assertGreaterEqual(prepared["seg0DecodedFrames"], 2)
         self.assertLessEqual(prepared["durationSeconds"], 0.7)
         self.store.put_video(VideoRow(VIDEO, True, False, "cap"))
@@ -379,11 +398,18 @@ class MediaTests(unittest.TestCase):
         self.assertFalse(all(row["hit"] for row in origin.productions))
         self.assertLessEqual(origin.segments[0].duration_ticks / origin.profile.timescale, 0.2)
         side = origin.segment_path(0).with_name("0.m4s.bind.json")
+        attested = origin.ensure(0)
         side.write_text(json.dumps({"encoder": lib_origin.legacy_encoder_hash(origin.profile)}))
-        status, _, _ = self._req(f"/media/{VIDEO}/r/{REV}/seg/0.m4s?t={token}")
+        status, _, served = self._req(f"/media/{VIDEO}/r/{REV}/seg/0.m4s?t={token}")
+        self.assertEqual(status, 200, served)
+        self.assertEqual(served, attested)
+        self.assertEqual(hashlib.sha256(served).hexdigest(), prepared["seg0Sha256"])
+        origin._segment_bytes.clear()
+        status, _, retried = self._req(f"/media/{VIDEO}/r/{REV}/seg/0.m4s?t={token}")
         self.assertIn(status, {200, 500})
         if status == 200:
             self.assertTrue(any(row["integrity_retry"] for row in origin.productions))
+            self.assertNotEqual(retried, b"")
         lib_origin.expire_warm(time.time() + 10_000)
         self.assertEqual(lib_origin.warm_status(SOURCE), "miss")
         self.assertTrue(any(row["event"] == "evict" for row in lib_origin.WARM_LOG))
@@ -450,10 +476,33 @@ class MediaTests(unittest.TestCase):
             )
             lib_audio.reset_aac_pool()
             body = origin.ensure(0)
+            init = origin.ensure_init()
             self.assertTrue(body.startswith(b"\x00\x00\x00"))
             row = origin.productions[-1]
             self.assertFalse(row["hit"])
             self.assertTrue(row["aac_pool_miss"])
+            reads = {"n": 0}
+            real_read = origin._read_bound
+
+            def counting(path, artifact, seg):
+                reads["n"] += 1
+                return real_read(path, artifact, seg)
+
+            origin._read_bound = counting
+            self.assertEqual(origin.ensure(0), body)
+            self.assertEqual(origin.ensure_init(), init)
+            self.assertEqual(reads["n"], 0)
+            import index as index_mod
+            probes = index_mod.probe_calls
+            again = lib_origin.Origin(
+                mezz,
+                original,
+                self.cache / "ctor-cache",
+                [{"start": 0.1, "end": 0.5}],
+                lib_origin.sha256_file(original),
+            )
+            self.assertEqual(index_mod.probe_calls, probes)
+            self.assertEqual(again.profile.timescale, origin.profile.timescale)
             print(f"SEG0 ensure_ms={row['ensure_ms']} duration_s={row['duration_s']} aac_miss={row['aac_pool_miss']}")
         finally:
             stop.set()
