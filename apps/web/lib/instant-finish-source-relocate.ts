@@ -193,3 +193,126 @@ export async function relocateFlaggedSource(input: {
 	}
 	return { liveKey: proof.liveKey, sha256: live.sha256 };
 }
+
+export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
+	const rootUser = process.env.MINIO_ROOT_USER;
+	const rootPassword = process.env.MINIO_ROOT_PASSWORD;
+	if (!rootUser || !rootPassword) return;
+	const env = serverEnv();
+	const endpoint = env.S3_INTERNAL_ENDPOINT;
+	if (!endpoint) {
+		throw new RevisionPublicationError(
+			409,
+			"Origin read policy was not updated for the relocated key",
+		);
+	}
+	const rows = await app
+		.select({ liveKey: sourceObject.liveKey })
+		.from(sourceObject);
+	const keys = [...new Set([liveKey, ...rows.map((row) => row.liveKey)])];
+	await publishOriginObjectPolicy({
+		bucket: env.CAP_AWS_BUCKET,
+		endpoint,
+		keys,
+		rootUser,
+		rootPassword,
+		policyName: process.env.ORIGIN_S3_POLICY ?? "instant-finish-origin-read",
+	});
+}
+
+async function publishOriginObjectPolicy(input: {
+	bucket: string;
+	endpoint: string;
+	keys: string[];
+	rootUser: string;
+	rootPassword: string;
+	policyName: string;
+}) {
+	const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+	const { tmpdir } = await import("node:os");
+	const path = await import("node:path");
+	const { spawn } = await import("node:child_process");
+	const { originObjectPolicy } = await import("@/lib/origin-object-policy");
+	const policy = originObjectPolicy(input.bucket, input.keys);
+	const dir = await mkdtemp(path.join(tmpdir(), "origin-policy-"));
+	const policyFile = path.join(dir, "policy.json");
+	const envFile = path.join(dir, "mc.env");
+	const endpoint = new URL(input.endpoint);
+	const host = endpoint.host;
+	const user = encodeURIComponent(input.rootUser);
+	const password = encodeURIComponent(input.rootPassword);
+	try {
+		await writeFile(policyFile, JSON.stringify(policy), { mode: 0o600 });
+		await writeFile(
+			envFile,
+			`MC_HOST_local=${endpoint.protocol}//${user}:${password}@${host}\n`,
+			{ mode: 0o600 },
+		);
+		const run = (args: string[]) =>
+			new Promise<number>((resolve, reject) => {
+				const child = spawn(
+					"docker",
+					[
+						"run",
+						"--rm",
+						"--network",
+						"host",
+						"--env-file",
+						envFile,
+						"-v",
+						`${dir}:/policy:ro`,
+						"minio/mc:RELEASE.2025-08-13T08-35-41Z",
+						...args,
+					],
+					{ stdio: ["ignore", "ignore", "ignore"] },
+				);
+				child.on("error", reject);
+				child.on("close", (code) => resolve(code ?? 1));
+			});
+		const created = await run([
+			"admin",
+			"policy",
+			"create",
+			"local",
+			input.policyName,
+			"/policy/policy.json",
+		]);
+		if (created !== 0) {
+			await run(["admin", "policy", "rm", "local", input.policyName]);
+			const replaced = await run([
+				"admin",
+				"policy",
+				"create",
+				"local",
+				input.policyName,
+				"/policy/policy.json",
+			]);
+			if (replaced !== 0) {
+				throw new RevisionPublicationError(
+					409,
+					"Origin read policy was not updated for the relocated key",
+				);
+			}
+		}
+		const accessKey = process.env.ORIGIN_S3_ACCESS_KEY;
+		if (accessKey) {
+			const attached = await run([
+				"admin",
+				"policy",
+				"attach",
+				"local",
+				input.policyName,
+				"--user",
+				accessKey,
+			]);
+			if (attached !== 0) {
+				throw new RevisionPublicationError(
+					409,
+					"Origin read policy was not updated for the relocated key",
+				);
+			}
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+}

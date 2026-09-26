@@ -12,6 +12,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createConnection } from "mysql2/promise";
+import { deletionPlan } from "@/lib/origin-object-policy";
 import {
 	type CrashPoint,
 	type ObjectStore,
@@ -53,6 +54,7 @@ export function createS3Store(
 		async deleteAllVersions(key) {
 			let keyMarker: string | undefined;
 			let versionMarker: string | undefined;
+			const listedItems: { Key?: string; VersionId?: string }[] = [];
 			do {
 				const listed = await client.send(
 					new ListObjectVersionsCommand({
@@ -62,23 +64,32 @@ export function createS3Store(
 						VersionIdMarker: versionMarker,
 					}),
 				);
-				const versions = [
+				listedItems.push(
 					...(listed.Versions ?? []),
 					...(listed.DeleteMarkers ?? []),
-				].filter((item) => item.Key === key && item.VersionId);
-				for (const item of versions) {
-					await client.send(
-						new DeleteObjectCommand({
-							Bucket: bucket,
-							Key: key,
-							VersionId: item.VersionId,
-						}),
-					);
-				}
+				);
 				keyMarker = listed.NextKeyMarker;
 				versionMarker = listed.NextVersionIdMarker;
 				if (!listed.IsTruncated) break;
 			} while (keyMarker);
+			const plan = deletionPlan(listedItems, key);
+			for (const versionId of plan.versionIds) {
+				await client.send(
+					new DeleteObjectCommand({
+						Bucket: bucket,
+						Key: key,
+						VersionId: versionId,
+					}),
+				);
+			}
+			if (plan.deleteCurrent) {
+				await client.send(
+					new DeleteObjectCommand({
+						Bucket: bucket,
+						Key: key,
+					}),
+				);
+			}
 		},
 		async exists(key) {
 			try {
