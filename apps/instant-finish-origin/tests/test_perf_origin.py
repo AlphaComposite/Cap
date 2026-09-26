@@ -221,6 +221,7 @@ class AttestationTests(unittest.TestCase):
     def test_shared_vector(self) -> None:
         secret = VECTORS["serviceSecret"].encode()
         body = VECTORS["body"].encode()
+        self.assertEqual(service_auth.canonical_json(json.loads(VECTORS["body"])), body)
         self.assertEqual(service_auth.sign_attestation(secret, body), VECTORS["mac"])
         self.assertTrue(service_auth.verify_attestation(secret, VECTORS["mac"], body))
         flipped = bytearray(body)
