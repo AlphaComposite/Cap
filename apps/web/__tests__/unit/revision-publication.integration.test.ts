@@ -36,6 +36,7 @@ import {
 } from "@/lib/revision-media-token";
 import {
 	claimArtifactLease,
+	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
 } from "@/lib/revision-publication";
 import {
@@ -72,6 +73,7 @@ class FakeOrigin {
 	readonly prepared = new Map<string, Prepared>();
 	failCaptions = false;
 	artifactReads = 0;
+	preparePosts = 0;
 	server = createServer((req, res) => this.handle(req, res));
 	url = "";
 
@@ -95,6 +97,7 @@ class FakeOrigin {
 	client(): OriginClient {
 		return {
 			prepareRevision: async (body) => {
+				this.preparePosts += 1;
 				const response = await fetch(
 					`${this.url}/internal/revisions/${body.revisionId}/prepare`,
 					{
@@ -735,5 +738,90 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(origin.prepared.get(published.revisionId)?.playlist).not.toContain(
 			"result.mp4",
 		);
+	});
+
+	it("reuses a matching stored attestation without another prepare POST", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const posts = origin.preparePosts;
+		const prepared = await prepareInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: spec(8),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: before?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		expect(origin.preparePosts).toBe(posts + 1);
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: spec(8),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: before?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		expect(origin.preparePosts).toBe(posts + 1);
+		expect(published.revisionId).toBe(prepared.revisionId);
+	});
+
+	it("refuses a tampered stored attestation", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const prepared = await prepareInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: spec(9),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: before?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		await database
+			.update(editRevision)
+			.set({
+				metadataSnapshot: {
+					captionsVtt: "",
+					chapters: [],
+					summaryStatus: "persisted",
+					summaryDerived: false,
+					summaryText: null,
+					thumbnail: "unavailable",
+					durationSeconds: 1,
+					attestationMac: "forged",
+					attestationBody: '{"intentId":"x"}\n',
+				},
+			})
+			.where(eq(editRevision.revisionId, prepared.revisionId));
+		await expect(
+			publishInstantFinishRevision(
+				database,
+				{
+					videoId: videoId as never,
+					editSpec: spec(9),
+					baseGeneration: before?.generation ?? 0,
+					draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+					draftSession: before?.draftSession || "editor",
+				},
+				{ origin: origin.client() },
+			),
+		).rejects.toThrow(/forged|attestation/i);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).not.toBe(prepared.revisionId);
 	});
 });

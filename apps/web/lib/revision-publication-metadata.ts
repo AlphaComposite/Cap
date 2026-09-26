@@ -310,3 +310,13 @@ export function thumbnailBindsDuration(
 		Buffer.from(`duration_seconds=${durationSeconds.toFixed(3)}`),
 	);
 }
+
+export function isPendingThumbnail(body: Buffer): boolean {
+	return (
+		body.length === 4 &&
+		body[0] === 0xff &&
+		body[1] === 0xd8 &&
+		body[2] === 0xff &&
+		body[3] === 0xd9
+	);
+}

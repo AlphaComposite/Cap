@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { retryVideoProcessing } from "@/actions/video/retry-processing";
+import { createPrefetchLoader } from "@/lib/instant-finish-fragment-cache";
 import {
 	planGrantRefresh,
 	redactMediaGrant,
@@ -408,6 +409,7 @@ export function HLSVideoPlayer({
 				lowLatencyMode: false,
 				backBufferLength: 90,
 				startFragPrefetch: true,
+				loader: createPrefetchLoader(Hls.DefaultConfig.loader),
 				...(isLiveSegments
 					? {
 							liveSyncDurationCount: 3,

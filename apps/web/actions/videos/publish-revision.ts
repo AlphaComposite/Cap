@@ -13,6 +13,7 @@ import type { EditTranscript } from "@/lib/edit-transcript";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { mintRevisionMediaGrant } from "@/lib/revision-media-grant";
 import {
+	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
 	RevisionPublicationError,
 	recordServerDraft,
@@ -103,6 +104,37 @@ async function loadPublishPlayback(input: {
 	} catch {
 		return null;
 	}
+}
+
+export async function prepareVideoRevision(input: PublishVideoRevisionInput) {
+	const { video } = await loadOwnerVideo(input.videoId);
+	if (!isInstantFinishEnabledForOwner(video.ownerId)) {
+		throw new RevisionPublicationError(
+			403,
+			"Instant finish is not enabled for this video",
+		);
+	}
+	assertDefaultCapBucket(video);
+	const recorded = await recordServerDraft(db(), {
+		videoId: input.videoId,
+		draftVersion: input.draftVersion,
+		draftSession: input.draftSession,
+	});
+	return prepareInstantFinishRevision(
+		db(),
+		{
+			videoId: input.videoId,
+			editSpec: input.editSpec,
+			expectedEditSpec: input.expectedEditSpec,
+			baseGeneration: recorded.generation,
+			draftVersion: recorded.draftVersion,
+			draftSession: recorded.draftSession,
+			chapters: input.chapters ?? video.metadata?.chapters ?? [],
+			transcript: input.transcript ?? null,
+			sourceDuration: video.duration,
+		},
+		{ origin: httpOriginClient() },
+	);
 }
 
 export async function publishVideoRevision(input: PublishVideoRevisionInput) {

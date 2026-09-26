@@ -590,6 +590,8 @@ export const editRevision = mysqlTable(
 			summaryText: string | null;
 			thumbnail: "source-zero" | "seg0-first-frame" | "unavailable";
 			durationSeconds: number;
+			attestationMac?: string;
+			attestationBody?: string;
 		}>(),
 		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
 		updatedAt: datetime("updatedAt", { fsp: 3 }).notNull(),

@@ -13,6 +13,7 @@ import { ownerOriginalPath } from "@/lib/revision-media-grant";
 import { pageMetadataForRevision } from "@/lib/revision-metadata-snapshot";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import { prepareSourceOnEditorOpen } from "@/lib/revision-publication-origin";
+import { warmSourceFromRow } from "@/lib/revision-source-warm";
 import { getEditSourceKey } from "@/lib/video-edit-processing";
 
 type Database = ReturnType<typeof db>;
@@ -254,9 +255,23 @@ export function selectEditorPlayback(input: {
 	};
 }
 
+async function requestIsActionRefresh(): Promise<boolean> {
+	try {
+		const { headers } = await import("next/headers");
+		return Boolean((await headers()).get("next-action"));
+	} catch {
+		return false;
+	}
+}
+
 export async function openInstantFinishEditor(
 	videoId: string,
 	database: unknown = db(),
+	options?: {
+		actionRefresh?: boolean;
+		now?: Date;
+		prepare?: typeof prepareSourceOnEditorOpen;
+	},
 ): Promise<{ playbackSrc: string; draftSession: string; generation: number }> {
 	const app = database as Database;
 	const [video] = await app
@@ -271,7 +286,22 @@ export async function openInstantFinishEditor(
 		getEditSourceKey(video.ownerId, videoId),
 		app,
 	);
-	const prepared = await prepareSourceOnEditorOpen({ videoId, sourceKey });
+	const now = options?.now ?? new Date();
+	const actionRefresh =
+		options?.actionRefresh ?? (await requestIsActionRefresh());
+	const [existingBeforePrepare] = await app
+		.select()
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, asVideoId(videoId)));
+	const warm = actionRefresh
+		? warmSourceFromRow(existingBeforePrepare ?? null, now)
+		: null;
+	const prepared =
+		warm ??
+		(await (options?.prepare ?? prepareSourceOnEditorOpen)({
+			videoId,
+			sourceKey,
+		}));
 	const warmExpiresAt = new Date(prepared.warmExpiresAt);
 	if (
 		Number.isNaN(warmExpiresAt.getTime()) ||

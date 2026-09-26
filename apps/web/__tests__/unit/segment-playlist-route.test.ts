@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	audioInitExists: false,
 	storageUnavailable: false,
 	denied: false,
+	passwordDenied: false,
 	sourceType: "desktopSegments" as
 		| "desktopSegments"
 		| "webMP4"
@@ -21,7 +22,21 @@ const mocks = vi.hoisted(() => ({
 	head: vi.fn(),
 	read: vi.fn(),
 	dispose: async () => {},
+	publicationUrl: null as string | null,
 }));
+
+vi.mock("@/lib/revision-media-grant", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@/lib/revision-media-grant")>();
+	return {
+		...actual,
+		issueAuthorizedRevisionPlayback: async () => ({
+			enabled: true,
+			url: mocks.publicationUrl,
+			transcriptUrl: null,
+		}),
+	};
+});
 
 vi.mock("@cap/env", () => ({
 	serverEnv: () => ({ WEB_URL: "https://cap.so" }),
@@ -94,18 +109,20 @@ vi.mock("@cap/web-backend", async (importOriginal) => {
 		Videos: Object.assign(Context.GenericTag("PlaylistTestVideos"), {
 			testService: {
 				getByIdForViewing: () =>
-					mocks.denied
-						? Effect.fail(new Policy.PolicyDeniedError())
-						: Effect.succeed(
-								Option.some([
-									{
-										id: "recording",
-										ownerId: "owner",
-										source: { type: mocks.sourceType },
-										metadata: Option.fromNullable(mocks.metadata),
-									},
-								]),
-							),
+					mocks.passwordDenied
+						? Effect.fail({ _tag: "VerifyVideoPasswordError" as const })
+						: mocks.denied
+							? Effect.fail(new Policy.PolicyDeniedError())
+							: Effect.succeed(
+									Option.some([
+										{
+											id: "recording",
+											ownerId: "owner",
+											source: { type: mocks.sourceType },
+											metadata: Option.fromNullable(mocks.metadata),
+										},
+									]),
+								),
 			},
 		}),
 	};
@@ -169,11 +186,13 @@ describe("Instant playlist readiness API", () => {
 		mocks.audioInitExists = false;
 		mocks.storageUnavailable = false;
 		mocks.denied = false;
+		mocks.passwordDenied = false;
 		mocks.sourceType = "desktopSegments";
 		mocks.metadata = null;
 		mocks.videoEditExists = false;
 		mocks.rawFileKey = null;
 		mocks.rawObjectExists = false;
+		mocks.publicationUrl = null;
 		mocks.getAccess.mockClear();
 		mocks.sign.mockClear();
 		mocks.head.mockClear();
@@ -271,8 +290,18 @@ describe("Instant playlist readiness API", () => {
 
 	it("retains viewing authorization before probing private media", async () => {
 		mocks.denied = true;
-		expect((await request()).status).toBe(401);
+		const response = await request();
+		expect(response.status).toBe(401);
+		expect(response.headers.get("location")).toBeNull();
 		expect(mocks.read).not.toHaveBeenCalled();
+	});
+
+	it("does not redirect a password-denied playlist", async () => {
+		mocks.passwordDenied = true;
+		mocks.publicationUrl = "https://cap.so/media/recording/r/rev/playlist.m3u8";
+		const response = await request("mp4", "");
+		expect(response.status).toBe(403);
+		expect(response.headers.get("location")).toBeNull();
 	});
 
 	it("rejects raw previews for videos with a saved edit before using rawFileKey", async () => {
@@ -340,13 +369,29 @@ describe("Instant playlist readiness API", () => {
 		expect(mocks.sign).not.toHaveBeenCalled();
 	});
 
-	it("does not sign the previous MP4 for a flagged owner", async () => {
+	it("redirects flagged mp4 aliases to the current revision playlist and does not presign", async () => {
 		process.env.CAP_INSTANT_FINISH_OWNERS = "owner";
 		mocks.sourceType = "webMP4";
+		mocks.publicationUrl =
+			"https://cap.so/media/recording/r/revcurrent/playlist.m3u8?t=grant";
+		for (const type of ["mp4", "video", "master", "audio"]) {
+			const response = await request(type, "");
+			expect(response.status).toBe(302);
+			expect(response.headers.get("location")).toContain(
+				"/r/revcurrent/playlist.m3u8",
+			);
+			expect(response.headers.get("location")).not.toContain("X-Amz-");
+		}
+		expect(mocks.sign).not.toHaveBeenCalled();
+	});
 
+	it("keeps flagged mp4 at 404 when no publication exists", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner";
+		mocks.sourceType = "webMP4";
+		mocks.publicationUrl = null;
 		const response = await request("mp4", "");
-
 		expect(response.status).toBe(404);
+		expect(response.headers.get("location")).toBeNull();
 		expect(mocks.sign).not.toHaveBeenCalled();
 	});
 

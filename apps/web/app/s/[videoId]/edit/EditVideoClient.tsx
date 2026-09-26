@@ -38,6 +38,7 @@ import { toast } from "sonner";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
 import {
 	getEditorInstantFinishState,
+	prepareVideoRevision,
 	publishVideoRevision,
 } from "@/actions/videos/publish-revision";
 import {
@@ -49,7 +50,7 @@ import {
 	prefetchInstantFinishPlaylist,
 	stashInstantFinishPlayback,
 } from "@/lib/instant-finish-playback-handoff";
-import { readOrCreateDraftSession } from "@/lib/revision-done";
+import { doneRoute, readOrCreateDraftSession } from "@/lib/revision-done";
 import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
@@ -700,11 +701,17 @@ export function EditVideoClient({
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [zoom, setZoom] = useState(1);
 	const [isSaving, setIsSaving] = useState(false);
-	const [instantFinish, setInstantFinish] = useState<{
-		enabled: boolean;
-		generation: number;
-		draftVersion: number;
-	} | null>(null);
+	const [instantFinish, setInstantFinish] = useState<
+		| {
+				enabled: boolean;
+				generation: number;
+				draftVersion: number;
+		  }
+		| null
+		| undefined
+	>(undefined);
+	const instantFinishRef = useRef(instantFinish);
+	instantFinishRef.current = instantFinish;
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 	const committedState = history.entries[history.index] ?? initialState;
@@ -1123,6 +1130,36 @@ export function EditVideoClient({
 		};
 	}, [video.id, video.ownerId]);
 
+	useEffect(() => {
+		if (!instantFinish?.enabled) return;
+		const timer = setTimeout(() => {
+			const current = instantFinishRef.current;
+			if (!current?.enabled) return;
+			const draftStorage = getTimelineDraftStorage();
+			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
+			void prepareVideoRevision({
+				videoId: video.id,
+				editSpec,
+				expectedEditSpec: initialEditSpec,
+				baseGeneration: current.generation ?? 0,
+				draftVersion: (current.draftVersion ?? 0) + 1,
+				draftSession,
+			})
+				.then((prepared) => {
+					setInstantFinish((existing) =>
+						existing
+							? {
+									...existing,
+									generation: prepared.generation,
+								}
+							: existing,
+					);
+				})
+				.catch(() => undefined);
+		}, 400);
+		return () => clearTimeout(timer);
+	}, [editSpec, initialEditSpec, instantFinish?.enabled, video.id]);
+
 	const handleDone = useCallback(async () => {
 		if (isSaving) return;
 		const draftStorage = getTimelineDraftStorage();
@@ -1131,6 +1168,7 @@ export function EditVideoClient({
 			router.push(`/s/${video.id}`);
 			return;
 		}
+		if (doneRoute(instantFinish) === "wait") return;
 		setIsSaving(true);
 		try {
 			const draftStorage = getTimelineDraftStorage();
@@ -1193,9 +1231,7 @@ export function EditVideoClient({
 		editSpec,
 		hasTimelineChanges,
 		initialEditSpec,
-		instantFinish?.draftVersion,
-		instantFinish?.generation,
-		instantFinish?.enabled,
+		instantFinish,
 		isSaving,
 		router,
 		video.id,
@@ -1770,7 +1806,12 @@ export function EditVideoClient({
 							variant="blue"
 							size="sm"
 							spinner={isSaving}
-							disabled={isSaving || isRestoring || keepRanges.length === 0}
+							disabled={
+								isSaving ||
+								isRestoring ||
+								keepRanges.length === 0 ||
+								doneRoute(instantFinish) === "wait"
+							}
 							onClick={handleDone}
 							className="ml-1"
 						>

@@ -1,8 +1,10 @@
+import { serverEnv } from "@cap/env";
 import { provideOptionalAuth, Storage, Videos } from "@cap/web-backend";
 import { Video } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import { type NextRequest, NextResponse } from "next/server";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { previewRedirectOrigin } from "@/lib/mobile-request-origin";
 import { revisionArtifactUrl } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
 
@@ -52,7 +54,13 @@ export async function GET(request: NextRequest) {
 						ownerId: video.ownerId,
 						artifact: "thumbnail",
 						child: "thumbnail.jpg",
-						origin: request.nextUrl.origin,
+						origin: previewRedirectOrigin(
+							serverEnv().WEB_URL,
+							request.url,
+							request.headers.get("x-forwarded-host") ??
+								request.headers.get("host") ??
+								undefined,
+						),
 					}),
 				);
 				return { url, flagged: true };

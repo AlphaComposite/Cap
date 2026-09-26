@@ -1,7 +1,9 @@
 import "server-only";
 
 import { decrypt, encrypt } from "@cap/database/crypto";
+import { serverEnv } from "@cap/env";
 import { cookies } from "next/headers";
+import { passwordCookieSecure } from "@/lib/password-cookie-secure";
 
 const COOKIE_NAME = "x-cap-password";
 
@@ -60,7 +62,7 @@ export async function setVerifiedPasswordCookie(passwordHash: string) {
 		await encrypt(JSON.stringify(hashes.slice(-MAX_VERIFIED_HASHES))),
 		{
 			httpOnly: true,
-			secure: process.env.NODE_ENV === "production",
+			secure: passwordCookieSecure(serverEnv().WEB_URL),
 			sameSite: "lax",
 			path: "/",
 		},

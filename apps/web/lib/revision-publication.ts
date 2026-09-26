@@ -29,6 +29,7 @@ import {
 	deriveRevisionChapters,
 	ENCODER_PROFILE,
 	intentIdFor,
+	isPendingThumbnail,
 	MAPPING_VERSION,
 	OUTBOX_JOBS,
 	playlistDurationSeconds,
@@ -67,10 +68,11 @@ type PublicationTx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 const LEGAL: Record<string, readonly string[]> = {
 	COMMITTED_INTENT: ["PREPARING", "SUPERSEDED"],
 	PREPARING: ["READY", "SUPERSEDED", "FAILED"],
-	READY: ["PUBLISHING", "SUPERSEDED"],
+	READY: ["PUBLISHING", "SUPERSEDED", "EXPIRED"],
 	PUBLISHING: ["CURRENT", "FAILED"],
 	CURRENT: [],
 	SUPERSEDED: [],
+	EXPIRED: [],
 	FAILED: [],
 };
 
@@ -129,6 +131,281 @@ function newRevisionId(intentId: string): string {
 	return revisionId;
 }
 
+type PreparedMedia = {
+	durationSeconds: number;
+	captionsVtt: string;
+	chaptersJson: string;
+	chapters: { title: string; start: number }[];
+	attestedDurationSeconds: number;
+	keepRangeCount: number;
+	initSha256: string;
+	seg0Sha256: string;
+	attestationMac: string;
+	attestationBody: string;
+};
+
+async function storeReadyAttestation(
+	database: Database,
+	revisionId: string,
+	prepared: PreparedMedia,
+	stamp: Date,
+) {
+	await database
+		.update(editRevision)
+		.set({
+			metadataSnapshot: {
+				captionsVtt: prepared.captionsVtt,
+				chapters: prepared.chapters,
+				summaryStatus: "persisted",
+				summaryDerived: false,
+				summaryText: null,
+				thumbnail: "unavailable",
+				durationSeconds: prepared.durationSeconds,
+				attestationMac: prepared.attestationMac,
+				attestationBody: prepared.attestationBody,
+			},
+			updatedAt: stamp,
+		})
+		.where(eq(editRevision.revisionId, revisionId));
+}
+
+export async function expireAbandonedPreparedRevisions(
+	database: unknown,
+	now: Date,
+	maxAgeMs = 15 * 60 * 1000,
+) {
+	const cutoff = new Date(now.getTime() - maxAgeMs);
+	await (database as Database)
+		.update(editRevision)
+		.set({ state: "EXPIRED", error: "expired", updatedAt: now })
+		.where(
+			and(eq(editRevision.state, "READY"), lt(editRevision.updatedAt, cutoff)),
+		);
+}
+
+async function sameSessionPreclick(
+	publication: {
+		generation: number;
+		draftSession: string;
+		currentGeneration: number | null;
+	},
+	input: PublishRevisionInput,
+) {
+	return (
+		input.baseGeneration === publication.generation ||
+		(input.baseGeneration + 1 === publication.generation &&
+			publication.draftSession === input.draftSession &&
+			publication.currentGeneration !== publication.generation)
+	);
+}
+
+async function reuseVerifiedReady(
+	app: Database,
+	input: PublishRevisionInput,
+	spec: VideoEditSpecV2,
+	deps: PublishRevisionDeps,
+	now: () => Date,
+): Promise<PublishRevisionSuccess | null> {
+	const stamp = now();
+	const found = await app.transaction(async (tx) => {
+		await tx
+			.select({ id: videos.id })
+			.from(videos)
+			.where(eq(videos.id, videoId(input.videoId)))
+			.for("update");
+		const [publication] = await tx
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId(input.videoId)))
+			.for("update");
+		if (!publication || !(await sameSessionPreclick(publication, input))) {
+			return null;
+		}
+		const identity = await readReadySource(tx, input.videoId, stamp);
+		const sourceId = sourceIdFromIdentity(identity);
+		const intentId = intentIdFor({
+			sourceId,
+			spec,
+			mappingVersion: MAPPING_VERSION,
+			profile: ENCODER_PROFILE,
+		});
+		const [row] = await tx
+			.select()
+			.from(editRevision)
+			.where(
+				and(
+					eq(editRevision.videoId, videoId(input.videoId)),
+					eq(editRevision.intentId, intentId),
+					eq(editRevision.state, "READY"),
+					eq(editRevision.generation, publication.generation),
+				),
+			);
+		if (
+			!row?.metadataSnapshot?.attestationMac ||
+			!row.metadataSnapshot.attestationBody
+		) {
+			return null;
+		}
+		const attested = parseVerifiedOriginAttestation(
+			row.metadataSnapshot.attestationMac,
+			row.metadataSnapshot.attestationBody,
+		);
+		if (!attested || attested.intentId !== intentId) {
+			throw new RevisionPublicationError(
+				500,
+				"Stored prepare attestation MAC was missing or forged",
+				publication.generation,
+				row.revisionId,
+			);
+		}
+		const previous = await readPreviousSpec(tx, input, spec);
+		if (
+			input.expectedEditSpec &&
+			!areEditSpecDocumentsEquivalent(
+				previous.previousSpec,
+				input.expectedEditSpec,
+			)
+		) {
+			throw new RevisionPublicationError(
+				409,
+				"This video was edited in another session. Reload before publishing.",
+				publication.generation,
+			);
+		}
+		return {
+			allocated: {
+				idempotent: false,
+				revisionId: row.revisionId,
+				generation: row.generation,
+				intentId,
+				sourceId,
+				previousSpec: previous.previousSpec,
+			},
+			attested,
+		};
+	});
+	if (!found) return null;
+	const durationSeconds = getEditSpecOutputDuration(spec);
+	const captions = deriveRevisionCaptions({
+		transcript: input.transcript ?? null,
+		nextSpec: spec,
+	});
+	const chapters = deriveRevisionChapters({
+		storedChapters: input.chapters ?? [],
+		previousSpec: found.allocated.previousSpec,
+		nextSpec: spec,
+	});
+	await transition(app, found.allocated.revisionId, "PUBLISHING", now());
+	await app.transaction(async (tx) => {
+		await flipCurrent(
+			tx,
+			input,
+			spec,
+			found.allocated,
+			{
+				durationSeconds,
+				captionsVtt: captions.vtt,
+				chaptersJson: chaptersDocument({
+					chapters,
+					durationSeconds,
+					sourceId: found.allocated.sourceId,
+				}),
+				chapters,
+				attestedDurationSeconds: found.attested.playlistDurationSeconds,
+				keepRangeCount: spec.keepRanges.length,
+				initSha256: found.attested.initSha256,
+				seg0Sha256: found.attested.seg0Sha256,
+			},
+			now(),
+		);
+	});
+	scheduleRevisionReadback(app, found.allocated.revisionId, deps.origin, now);
+	return {
+		success: true,
+		revisionId: found.allocated.revisionId,
+		generation: found.allocated.generation,
+	};
+}
+
+async function allocateInputAfterPreclick(
+	app: Database,
+	input: PublishRevisionInput,
+): Promise<PublishRevisionInput> {
+	const [publication] = await app
+		.select()
+		.from(videoPublication)
+		.where(eq(videoPublication.videoId, videoId(input.videoId)));
+	if (!publication || input.baseGeneration === publication.generation)
+		return input;
+	if (!(await sameSessionPreclick(publication, input))) return input;
+	const ready = await app
+		.select({ revisionId: editRevision.revisionId })
+		.from(editRevision)
+		.where(
+			and(
+				eq(editRevision.videoId, videoId(input.videoId)),
+				eq(editRevision.generation, publication.generation),
+				eq(editRevision.state, "READY"),
+			),
+		);
+	if (ready.length === 0) return input;
+	return { ...input, baseGeneration: publication.generation };
+}
+
+export async function prepareInstantFinishRevision(
+	database: unknown,
+	input: PublishRevisionInput,
+	deps: PublishRevisionDeps,
+): Promise<PublishRevisionSuccess> {
+	const app = database as Database;
+	const spec = requireV2Spec(input.editSpec);
+	assertServableEncoderProfile(ENCODER_PROFILE);
+	const now = deps.now ?? (() => new Date());
+	await expireAbandonedPreparedRevisions(app, now());
+	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
+	const allocated = await app.transaction(async (tx) =>
+		allocateRevision(
+			tx,
+			await allocateInputAfterPreclick(app, input),
+			spec,
+			now(),
+			mintRevisionId,
+		),
+	);
+	if (allocated.idempotent) {
+		return {
+			success: true,
+			revisionId: allocated.revisionId,
+			generation: allocated.generation,
+		};
+	}
+	try {
+		await transition(app, allocated.revisionId, "PREPARING", now());
+		const prepared = await produceAndVerify(
+			input,
+			spec,
+			allocated,
+			deps.origin,
+		);
+		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
+		await transition(app, allocated.revisionId, "READY", now());
+		return {
+			success: true,
+			revisionId: allocated.revisionId,
+			generation: allocated.generation,
+		};
+	} catch (error) {
+		await failOpenRevision(app, allocated.revisionId, error, now());
+		if (error instanceof RevisionPublicationError) throw error;
+		throw new RevisionPublicationError(
+			500,
+			error instanceof Error ? error.message : "Revision prepare failed",
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
+}
+
 export async function publishInstantFinishRevision(
 	database: unknown,
 	input: PublishRevisionInput,
@@ -138,9 +415,12 @@ export async function publishInstantFinishRevision(
 	const spec = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
+	const reused = await reuseVerifiedReady(app, input, spec, deps, now);
+	if (reused) return reused;
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
+	const publishInput = await allocateInputAfterPreclick(app, input);
 	const allocated = await app.transaction(async (tx) =>
-		allocateRevision(tx, input, spec, now(), mintRevisionId),
+		allocateRevision(tx, publishInput, spec, now(), mintRevisionId),
 	);
 	if (allocated.idempotent) {
 		return {
@@ -158,6 +438,7 @@ export async function publishInstantFinishRevision(
 			allocated,
 			deps.origin,
 		);
+		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
 		await transition(app, allocated.revisionId, "READY", now());
 		await transition(app, allocated.revisionId, "PUBLISHING", now());
 		await app.transaction(async (tx) => {
@@ -292,12 +573,22 @@ async function allocateRevision(
 	}
 	await tx
 		.update(editRevision)
+		.set({ state: "EXPIRED", error: "expired", updatedAt: stamp })
+		.where(
+			and(
+				eq(editRevision.videoId, videoId(input.videoId)),
+				lt(editRevision.generation, nextGeneration),
+				eq(editRevision.state, "READY"),
+			),
+		);
+	await tx
+		.update(editRevision)
 		.set({ state: "SUPERSEDED", error: "superseded", updatedAt: stamp })
 		.where(
 			and(
 				eq(editRevision.videoId, videoId(input.videoId)),
 				lt(editRevision.generation, nextGeneration),
-				sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING','READY')`,
+				sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
 			),
 		);
 	await tx.insert(editIntent).values({
@@ -585,6 +876,8 @@ async function produceAndVerify(
 		keepRangeCount: spec.keepRanges.length,
 		initSha256: attested.initSha256,
 		seg0Sha256: attested.seg0Sha256,
+		attestationMac: prepared.attestationMac,
+		attestationBody: prepared.attestationBody,
 	};
 }
 
@@ -1242,14 +1535,16 @@ async function verifyRevisionArtifacts(
 		method: "GET",
 	});
 	if (
-		thumb.status !== 200 ||
-		!thumbnailBindsDuration(thumb.body, payload.durationSeconds)
+		thumb.status === 200 &&
+		(thumbnailBindsDuration(thumb.body, payload.durationSeconds) ||
+			isPendingThumbnail(thumb.body))
 	) {
-		throw new RevisionPublicationError(
-			500,
-			"Revision thumbnail is missing or not bound to this edition",
-		);
+		return;
 	}
+	throw new RevisionPublicationError(
+		500,
+		"Revision thumbnail is missing or not bound to this edition",
+	);
 }
 
 async function revertCurrentAfterReadback(

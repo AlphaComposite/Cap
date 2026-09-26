@@ -86,11 +86,57 @@ export function startSeekClockPoll(
 	);
 }
 
+export function reconcileSeekSample(
+	storeTime: number,
+	sampledTime: number | null,
+	elementTime: number,
+): number | null {
+	if (sampledTime == null || !Number.isFinite(sampledTime)) return null;
+	if (!Number.isFinite(elementTime) || !Number.isFinite(storeTime)) return null;
+	if (Math.abs(sampledTime - storeTime) <= 0.05) return null;
+	if (
+		Math.abs(elementTime - sampledTime) > 0.05 &&
+		Math.abs(elementTime - storeTime) <= 0.05
+	) {
+		return null;
+	}
+	return sampledTime;
+}
+
 export function displayedSeekTime(
 	storeTime: number,
 	sampledTime: number | null,
+	elementTime?: number,
 ): number {
-	if (sampledTime == null || !Number.isFinite(sampledTime)) return storeTime;
-	if (Math.abs(sampledTime - storeTime) <= 0.05) return storeTime;
-	return sampledTime;
+	if (elementTime == null) {
+		if (sampledTime == null || !Number.isFinite(sampledTime)) return storeTime;
+		if (Math.abs(sampledTime - storeTime) <= 0.05) return storeTime;
+		return sampledTime;
+	}
+	const kept = reconcileSeekSample(storeTime, sampledTime, elementTime);
+	return kept == null ? storeTime : kept;
+}
+
+const watched = new WeakMap<object, number>();
+
+export function watchElementClock(
+	media: SeekClockMedia,
+	options?: { requestFrame?: SeekClockFrame },
+): () => void {
+	const requestFrame = options?.requestFrame ?? defaultFrame;
+	let stopped = false;
+	let last = media.currentTime;
+	const tick = () => {
+		if (stopped) return;
+		if (media.currentTime !== last) {
+			last = media.currentTime;
+			watched.set(media, last);
+			startSeekClockPoll(media, { requestFrame });
+		}
+		requestFrame(tick);
+	};
+	requestFrame(tick);
+	return () => {
+		stopped = true;
+	};
 }
