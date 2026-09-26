@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { failUnjoinedInflightPrepare } from "@/lib/revision-prepare-abort";
 import { RevisionPublicationError } from "@/lib/revision-publication";
 import {
 	parseRevisionRouteBody,
@@ -37,13 +38,59 @@ export async function POST(request: NextRequest) {
 			{ status: 400 },
 		);
 	}
+	const prepared = prepareOwnerRevision(input);
+	const aborted = new Promise<"aborted">((resolve) => {
+		if (request.signal.aborted) {
+			resolve("aborted");
+			return;
+		}
+		request.signal.addEventListener("abort", () => resolve("aborted"), {
+			once: true,
+		});
+	});
 	try {
-		const prepared = await prepareOwnerRevision(input);
+		const winner = await Promise.race([
+			prepared.then((value) => ({ kind: "prepared" as const, value })),
+			aborted.then(() => ({ kind: "aborted" as const })),
+		]);
+		if (winner.kind === "aborted" || request.signal.aborted) {
+			const decision = await failUnjoinedInflightPrepare({
+				videoId: input.videoId,
+			});
+			if (decision.markedFailed) {
+				return NextResponse.json({ error: "Prepare aborted" }, { status: 499 });
+			}
+			const value = winner.kind === "prepared" ? winner.value : await prepared;
+			if (!decision.joined) {
+				const after = await failUnjoinedInflightPrepare({
+					videoId: input.videoId,
+					revisionId: value.revisionId,
+				});
+				if (after.markedFailed) {
+					return NextResponse.json(
+						{ error: "Prepare aborted" },
+						{ status: 499 },
+					);
+				}
+			}
+			return NextResponse.json({
+				revisionId: value.revisionId,
+				generation: value.generation,
+			});
+		}
 		return NextResponse.json({
-			revisionId: prepared.revisionId,
-			generation: prepared.generation,
+			revisionId: winner.value.revisionId,
+			generation: winner.value.generation,
 		});
 	} catch (error) {
+		if (request.signal.aborted) {
+			const decision = await failUnjoinedInflightPrepare({
+				videoId: input.videoId,
+			});
+			if (decision.markedFailed) {
+				return NextResponse.json({ error: "Prepare aborted" }, { status: 499 });
+			}
+		}
 		return revisionRouteError(error);
 	}
 }

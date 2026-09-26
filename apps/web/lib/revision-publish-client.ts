@@ -11,12 +11,14 @@ export class RevisionRouteError extends Error {
 export async function postRevisionRoute<T>(
 	path: string,
 	body: unknown,
+	signal?: AbortSignal,
 ): Promise<T> {
 	const response = await fetch(path, {
 		method: "POST",
 		credentials: "same-origin",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
+		signal,
 	});
 	const payload = (await response.json().catch(() => null)) as
 		| (T & { error?: string })
