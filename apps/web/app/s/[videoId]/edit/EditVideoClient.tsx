@@ -36,11 +36,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
-import {
-	getEditorInstantFinishState,
-	prepareVideoRevision,
-	publishVideoRevision,
-} from "@/actions/videos/publish-revision";
+import { getEditorInstantFinishState } from "@/actions/videos/publish-revision";
 import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
@@ -51,6 +47,7 @@ import {
 	stashInstantFinishPlayback,
 } from "@/lib/instant-finish-playback-handoff";
 import { doneRoute, readOrCreateDraftSession } from "@/lib/revision-done";
+import { postRevisionRoute } from "@/lib/revision-publish-client";
 import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
@@ -712,6 +709,8 @@ export function EditVideoClient({
 	>(undefined);
 	const instantFinishRef = useRef(instantFinish);
 	instantFinishRef.current = instantFinish;
+	const settleTimerRef = useRef<{ clear: () => void } | null>(null);
+	const savingRef = useRef(false);
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 	const committedState = history.entries[history.index] ?? initialState;
@@ -1131,20 +1130,24 @@ export function EditVideoClient({
 	}, [video.id, video.ownerId]);
 
 	useEffect(() => {
-		if (!instantFinish?.enabled) return;
-		const timer = setTimeout(() => {
+		if (!instantFinish?.enabled || isSaving) return;
+		const timer = window.setTimeout(() => {
+			if (savingRef.current) return;
 			const current = instantFinishRef.current;
 			if (!current?.enabled) return;
 			const draftStorage = getTimelineDraftStorage();
 			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
-			void prepareVideoRevision({
-				videoId: video.id,
-				editSpec,
-				expectedEditSpec: initialEditSpec,
-				baseGeneration: current.generation ?? 0,
-				draftVersion: (current.draftVersion ?? 0) + 1,
-				draftSession,
-			})
+			void postRevisionRoute<{ revisionId: string; generation: number }>(
+				"/api/video/revision/prepare",
+				{
+					videoId: video.id,
+					editSpec,
+					expectedEditSpec: initialEditSpec,
+					baseGeneration: current.generation ?? 0,
+					draftVersion: (current.draftVersion ?? 0) + 1,
+					draftSession,
+				},
+			)
 				.then((prepared) => {
 					setInstantFinish((existing) =>
 						existing
@@ -1157,10 +1160,16 @@ export function EditVideoClient({
 				})
 				.catch(() => undefined);
 		}, 400);
-		return () => clearTimeout(timer);
-	}, [editSpec, initialEditSpec, instantFinish?.enabled, video.id]);
+		settleTimerRef.current = { clear: () => window.clearTimeout(timer) };
+		return () => {
+			window.clearTimeout(timer);
+			settleTimerRef.current = null;
+		};
+	}, [editSpec, initialEditSpec, instantFinish?.enabled, isSaving, video.id]);
 
 	const handleDone = useCallback(async () => {
+		settleTimerRef.current?.clear();
+		settleTimerRef.current = null;
 		if (isSaving) return;
 		const draftStorage = getTimelineDraftStorage();
 		if (!hasTimelineChanges) {
@@ -1169,6 +1178,7 @@ export function EditVideoClient({
 			return;
 		}
 		if (doneRoute(instantFinish) === "wait") return;
+		savingRef.current = true;
 		setIsSaving(true);
 		try {
 			const draftStorage = getTimelineDraftStorage();
@@ -1180,7 +1190,18 @@ export function EditVideoClient({
 				router.refresh();
 				return;
 			}
-			const published = await publishVideoRevision({
+			const published = await postRevisionRoute<{
+				success: boolean;
+				revisionId: string;
+				generation: number;
+				playback: {
+					playlistUrl: string;
+					grantExpiresAt: number;
+					revisionMetadata: Parameters<
+						typeof stashInstantFinishPlayback
+					>[0]["revisionMetadata"];
+				} | null;
+			}>("/api/video/revision/publish", {
 				videoId: video.id,
 				editSpec,
 				expectedEditSpec: initialEditSpec,
@@ -1208,6 +1229,7 @@ export function EditVideoClient({
 				return;
 			}
 			toast.error("Failed to publish edit");
+			savingRef.current = false;
 			setIsSaving(false);
 		} catch (error) {
 			const status =
@@ -1224,6 +1246,7 @@ export function EditVideoClient({
 						? error.message
 						: "Failed to start video edit",
 			);
+			savingRef.current = false;
 			setIsSaving(false);
 		}
 	}, [

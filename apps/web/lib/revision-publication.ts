@@ -521,19 +521,6 @@ async function allocateRevision(
 		profile: ENCODER_PROFILE,
 	});
 	const previous = await readPreviousSpec(tx, input, spec);
-	if (
-		input.expectedEditSpec &&
-		!areEditSpecDocumentsEquivalent(
-			previous.previousSpec,
-			input.expectedEditSpec,
-		)
-	) {
-		throw new RevisionPublicationError(
-			409,
-			"This video was edited in another session. Reload before publishing.",
-			publication.generation,
-		);
-	}
 	const current = publication.currentRevisionId
 		? await readRevision(tx, publication.currentRevisionId)
 		: null;
@@ -553,6 +540,19 @@ async function allocateRevision(
 			sourceId,
 			previousSpec: previous.previousSpec,
 		};
+	}
+	if (
+		input.expectedEditSpec &&
+		!areEditSpecDocumentsEquivalent(
+			previous.previousSpec,
+			input.expectedEditSpec,
+		)
+	) {
+		throw new RevisionPublicationError(
+			409,
+			"This video was edited in another session. Reload before publishing.",
+			publication.generation,
+		);
 	}
 	const nextGeneration = publication.generation + 1;
 	const updated = await tx

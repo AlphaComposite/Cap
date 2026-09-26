@@ -718,14 +718,30 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			userIsPro: () => true,
 		}));
 		vi.doMock("next/cache", () => ({ revalidatePath: () => undefined }));
-		const action = await import("@/actions/videos/publish-revision");
-		const published = await action.publishVideoRevision({
-			videoId: videoId as never,
-			editSpec: spec(7),
-			baseGeneration: before?.generation ?? 0,
-			draftVersion: (before?.latestDraftVersion ?? 0) + 1,
-			draftSession: "editor",
-		});
+		const { POST } = await import("@/app/api/video/revision/publish/route");
+		const response = await POST(
+			new Request("http://127.0.0.1:30410/api/video/revision/publish", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					origin: "http://127.0.0.1:30410",
+					host: "127.0.0.1:30410",
+					"x-forwarded-host": "127.0.0.1:30410",
+				},
+				body: JSON.stringify({
+					videoId,
+					editSpec: spec(7),
+					baseGeneration: before?.generation ?? 0,
+					draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+					draftSession: "editor",
+				}),
+			}) as never,
+		);
+		const published = (await response.json()) as {
+			success: boolean;
+			revisionId: string;
+		};
+		expect(response.status).toBe(200);
 		expect(published.success).toBe(true);
 		expect(published.revisionId).not.toBe(before?.currentRevisionId);
 		const [uploads] = await pool.query(
@@ -823,5 +839,118 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
 		expect(after?.currentRevisionId).not.toBe(prepared.revisionId);
+	});
+
+	it("returns the current revision when a late prepare repeats the published spec", async () => {
+		const specA = spec(1.5);
+		const specB = spec(2.5);
+		const [start] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		await publishInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: specA,
+				baseGeneration: start?.generation ?? 0,
+				draftVersion: (start?.latestDraftVersion ?? 0) + 1,
+				draftSession: start?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const [mid] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: specB,
+				expectedEditSpec: specA,
+				baseGeneration: mid?.generation ?? 0,
+				draftVersion: (mid?.latestDraftVersion ?? 0) + 1,
+				draftSession: mid?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const posts = origin.preparePosts;
+		const prepared = await prepareInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: specB,
+				expectedEditSpec: specA,
+				baseGeneration: after?.generation ?? 0,
+				draftVersion: (after?.latestDraftVersion ?? 0) + 1,
+				draftSession: after?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		expect(prepared.success).toBe(true);
+		expect(prepared.revisionId).toBe(published.revisionId);
+		expect(origin.preparePosts).toBe(posts);
+	});
+
+	it("still rejects a different spec with a stale expectedEditSpec", async () => {
+		const specA = spec(3.5);
+		const specB = spec(4.5);
+		const specC = spec(5.5);
+		const [start] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		await publishInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: specA,
+				baseGeneration: start?.generation ?? 0,
+				draftVersion: (start?.latestDraftVersion ?? 0) + 1,
+				draftSession: start?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const [mid] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		await publishInstantFinishRevision(
+			database,
+			{
+				videoId: videoId as never,
+				editSpec: specB,
+				expectedEditSpec: specA,
+				baseGeneration: mid?.generation ?? 0,
+				draftVersion: (mid?.latestDraftVersion ?? 0) + 1,
+				draftSession: mid?.draftSession || "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const posts = origin.preparePosts;
+		await expect(
+			prepareInstantFinishRevision(
+				database,
+				{
+					videoId: videoId as never,
+					editSpec: specC,
+					expectedEditSpec: specA,
+					baseGeneration: after?.generation ?? 0,
+					draftVersion: (after?.latestDraftVersion ?? 0) + 1,
+					draftSession: after?.draftSession || "editor",
+				},
+				{ origin: origin.client() },
+			),
+		).rejects.toThrow(/edited in another session/);
+		expect(origin.preparePosts).toBe(posts);
 	});
 });
