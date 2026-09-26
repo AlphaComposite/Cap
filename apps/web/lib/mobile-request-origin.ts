@@ -91,6 +91,36 @@ export const resolveMobileRequestOrigin = (
 	return configuredOrigin;
 };
 
+export function previewRedirectOrigin(
+	configuredWebUrl: string,
+	requestUrl: string,
+	requestHost?: string,
+): string {
+	let url = requestUrl;
+	if (requestHost) {
+		try {
+			const parsed = new URL(requestUrl);
+			parsed.host = requestHost.split(",")[0]?.trim() ?? parsed.host;
+			url = parsed.toString();
+		} catch {
+			url = requestUrl;
+		}
+	}
+	const resolved = resolveMobileRequestOrigin(
+		configuredWebUrl,
+		url,
+		requestHost,
+	);
+	try {
+		if (new URL(resolved).hostname === "0.0.0.0") {
+			return new URL(configuredWebUrl).origin;
+		}
+	} catch {
+		return new URL(configuredWebUrl).origin;
+	}
+	return resolved;
+}
+
 export const resolveMobileWebResourceUrl = (
 	resourceUrl: string,
 	configuredWebUrl: string,

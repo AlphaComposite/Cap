@@ -4,6 +4,15 @@ export type PublishRevisionResult =
 
 export type DonePlan = "leave" | "legacy" | "published" | "conflict" | "error";
 
+export type DoneRoute = "wait" | "save" | "publish";
+
+export function doneRoute(
+	state: { enabled: boolean } | null | undefined,
+): DoneRoute {
+	if (state == null) return "wait";
+	return state.enabled ? "publish" : "save";
+}
+
 export function planDoneAfterPublish(
 	result: PublishRevisionResult,
 ): Exclude<DonePlan, "leave"> {

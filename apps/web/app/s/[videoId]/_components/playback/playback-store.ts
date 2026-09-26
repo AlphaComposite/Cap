@@ -13,7 +13,11 @@
  */
 
 import { revisionDiscreteSeek } from "@/lib/revision-seek";
-import { subscribeSeekClock } from "@/lib/revision-seek-clock";
+import {
+	startSeekClockPoll,
+	subscribeSeekClock,
+	watchElementClock,
+} from "@/lib/revision-seek-clock";
 
 export type TimeSubscriber = (time: number) => void;
 export type PlayingSubscriber = () => void;
@@ -30,6 +34,7 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 	let element: HTMLVideoElement | null = null;
 	let frame = 0;
 	let clockStop: (() => void) | null = null;
+	let clockWatch: (() => void) | null = null;
 	let time = 0;
 	let playing = false;
 	let fallback = normalizeDuration(fallbackDuration);
@@ -101,12 +106,17 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 
 	const handleTimeChange = () => sample();
 
+	const handleSeeking = () => {
+		if (element) startSeekClockPoll(element);
+		sample(true);
+	};
+
 	const MEDIA_EVENTS = [
 		["play", handlePlay],
 		["playing", handlePlay],
 		["pause", handleStop],
 		["ended", handleStop],
-		["seeking", handleTimeChange],
+		["seeking", handleSeeking],
 		["seeked", handleTimeChange],
 		["timeupdate", handleTimeChange],
 		["loadedmetadata", handleTimeChange],
@@ -116,7 +126,9 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 	const teardown = () => {
 		stopFrames();
 		clockStop?.();
+		clockWatch?.();
 		clockStop = null;
+		clockWatch = null;
 		if (!element) return;
 		for (const [event, handler] of MEDIA_EVENTS) {
 			element.removeEventListener(event, handler);
@@ -141,6 +153,7 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 			element.addEventListener(event, handler);
 		}
 		clockStop = subscribeSeekClock(element, () => sample(true));
+		clockWatch = watchElementClock(element);
 		sample(true);
 		if (!element.paused && !element.ended) handlePlay();
 		else setPlaying(false);

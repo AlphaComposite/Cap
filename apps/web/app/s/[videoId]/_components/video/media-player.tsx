@@ -2630,7 +2630,20 @@ function MediaPlayerTime(props: MediaPlayerTimeProps) {
 		if (!clockMedia) return;
 		return subscribeSeekClock(clockMedia, setSampledSeekTime);
 	}, [clockMedia]);
-	const shownTime = displayedSeekTime(mediaCurrentTime, sampledSeekTime);
+	const shownTime = displayedSeekTime(
+		mediaCurrentTime,
+		sampledSeekTime,
+		clockMedia?.currentTime ?? mediaCurrentTime,
+	);
+	React.useEffect(() => {
+		if (
+			sampledSeekTime != null &&
+			shownTime === mediaCurrentTime &&
+			Math.abs(sampledSeekTime - mediaCurrentTime) > 0.05
+		) {
+			setSampledSeekTime(null);
+		}
+	}, [mediaCurrentTime, sampledSeekTime, shownTime]);
 	const mediaDuration = useMediaSelector(selectDuration);
 	const [, seekableEnd = 0] = useMediaSelector(selectSeekable);
 	const resolvedDuration = React.useMemo(() => {

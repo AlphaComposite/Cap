@@ -413,7 +413,10 @@ export function parseVerifiedOriginAttestation(
 			typeof playlistDurationSeconds !== "number" ||
 			!Number.isFinite(playlistDurationSeconds) ||
 			!attestationHash(parsed.initSha256) ||
-			!attestationHash(parsed.seg0Sha256)
+			!attestationHash(parsed.seg0Sha256) ||
+			(parsed.thumbnailSha256 !== undefined &&
+				parsed.thumbnailSha256 !== "pending" &&
+				!attestationHash(parsed.thumbnailSha256))
 		) {
 			return null;
 		}

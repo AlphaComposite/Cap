@@ -1,3 +1,4 @@
+import { rememberPrefetchedFragment } from "./instant-finish-fragment-cache";
 import type { ClientRevisionPlayback } from "./revision-playback";
 import type { InstantFinishPublicationDto } from "./revision-publication-read";
 
@@ -95,11 +96,11 @@ export function prefetchInstantFinishPlaylist(url: string): void {
 			if (!response.ok) return;
 			const assets = instantFinishStartupUrls(url, await response.text());
 			await Promise.all(
-				assets.map((asset) =>
-					fetch(asset, { credentials: "same-origin" })
-						.then((item) => item.arrayBuffer())
-						.catch(() => undefined),
-				),
+				assets.map(async (asset) => {
+					const item = await fetch(asset, { credentials: "same-origin" });
+					if (!item.ok) return;
+					rememberPrefetchedFragment(asset, await item.arrayBuffer());
+				}),
 			);
 		})
 		.catch(() => undefined);
