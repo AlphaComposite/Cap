@@ -1,8 +1,15 @@
+const MAX_STARTUP_FRAGMENTS = 3;
 const prefetched = new Map<string, ArrayBuffer>();
+let boundRevision: string | null = null;
 
 export function fragmentCacheKey(url: string): string {
 	const parsed = new URL(url, "http://cap.local");
 	return `${parsed.pathname}${parsed.search}`;
+}
+
+function revisionOf(url: string): string | null {
+	const match = /\/r\/([^/]+)\//.exec(fragmentCacheKey(url));
+	return match?.[1] ?? null;
 }
 
 export function rememberPrefetchedFragment(
@@ -10,15 +17,31 @@ export function rememberPrefetchedFragment(
 	bytes: ArrayBuffer,
 ): void {
 	if (bytes.byteLength === 0) return;
-	prefetched.set(fragmentCacheKey(url), bytes);
+	const revision = revisionOf(url);
+	if (revision && boundRevision && revision !== boundRevision) {
+		prefetched.clear();
+	}
+	if (revision) boundRevision = revision;
+	const key = fragmentCacheKey(url);
+	if (prefetched.has(key)) prefetched.delete(key);
+	prefetched.set(key, bytes);
+	while (prefetched.size > MAX_STARTUP_FRAGMENTS) {
+		const oldest = prefetched.keys().next().value;
+		if (!oldest) break;
+		prefetched.delete(oldest);
+	}
 }
 
 export function readPrefetchedFragment(url: string): ArrayBuffer | null {
-	return prefetched.get(fragmentCacheKey(url)) ?? null;
+	const key = fragmentCacheKey(url);
+	const bytes = prefetched.get(key) ?? null;
+	if (bytes) prefetched.delete(key);
+	return bytes;
 }
 
 export function clearPrefetchedFragments(): void {
 	prefetched.clear();
+	boundRevision = null;
 }
 
 export function createPrefetchLoader<

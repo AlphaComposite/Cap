@@ -117,6 +117,7 @@ export function preferInstantFinishFirstPaint(input: {
 	);
 	const expired =
 		stashed != null && stashed.grantExpiresAt * 1000 <= input.nowMs;
+	if (expired) input.storage?.removeItem(INSTANT_FINISH_PLAYBACK_KEY);
 	const matches =
 		stashed != null &&
 		!expired &&
@@ -126,6 +127,7 @@ export function preferInstantFinishFirstPaint(input: {
 	if (!matches || !stashed || input.ssr?.mode !== "hls") {
 		return { playback: input.ssr, fromHandoff: false };
 	}
+	input.storage?.removeItem(INSTANT_FINISH_PLAYBACK_KEY);
 	return {
 		fromHandoff: true,
 		playback: {
