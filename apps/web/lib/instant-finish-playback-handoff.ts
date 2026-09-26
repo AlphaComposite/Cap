@@ -1,4 +1,4 @@
-import { rememberPrefetchedFragment } from "./instant-finish-fragment-cache";
+import { registerInflightFragment } from "./instant-finish-fragment-cache";
 import type { ClientRevisionPlayback } from "./revision-playback";
 import type { InstantFinishPublicationDto } from "./revision-publication-read";
 
@@ -97,9 +97,23 @@ export function prefetchInstantFinishPlaylist(url: string): void {
 			const assets = instantFinishStartupUrls(url, await response.text());
 			await Promise.all(
 				assets.map(async (asset) => {
-					const item = await fetch(asset, { credentials: "same-origin" });
-					if (!item.ok) return;
-					rememberPrefetchedFragment(asset, await item.arrayBuffer());
+					let resolveBytes: (bytes: ArrayBuffer) => void = () => {};
+					let rejectBytes: (error: unknown) => void = () => {};
+					const pending = new Promise<ArrayBuffer>((resolve, reject) => {
+						resolveBytes = resolve;
+						rejectBytes = reject;
+					});
+					registerInflightFragment(asset, pending);
+					try {
+						const item = await fetch(asset, { credentials: "same-origin" });
+						if (!item.ok) {
+							rejectBytes(new Error("prefetch failed"));
+							return;
+						}
+						resolveBytes(await item.arrayBuffer());
+					} catch (error) {
+						rejectBytes(error);
+					}
 				}),
 			);
 		})

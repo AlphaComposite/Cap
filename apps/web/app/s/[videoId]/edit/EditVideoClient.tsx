@@ -49,6 +49,11 @@ import {
 import { doneRoute, readOrCreateDraftSession } from "@/lib/revision-done";
 import { postRevisionRoute } from "@/lib/revision-publish-client";
 import {
+	acceptSettledPrepare,
+	beginDoneFence,
+	nextSettlePrepare,
+} from "@/lib/revision-settle-fence";
+import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
 	getTimelineDraftStorage,
@@ -353,10 +358,14 @@ function ToolButton({
 	);
 }
 
-function useThumbnailCount(ref: React.RefObject<HTMLDivElement | null>) {
+function useThumbnailCount(
+	ref: React.RefObject<HTMLDivElement | null>,
+	active: boolean,
+) {
 	const [count, setCount] = useState(8);
 
 	useEffect(() => {
+		if (!active) return;
 		const node = ref.current;
 		if (!node) return;
 
@@ -371,7 +380,7 @@ function useThumbnailCount(ref: React.RefObject<HTMLDivElement | null>) {
 
 		resizeObserver.observe(node);
 		return () => resizeObserver.disconnect();
-	}, [ref]);
+	}, [active, ref]);
 
 	return count;
 }
@@ -422,10 +431,12 @@ function useVisibleTimelineThumbnailRange({
 	scrollContainerRef,
 	timelineRef,
 	thumbnailCount,
+	active,
 }: {
 	scrollContainerRef: React.RefObject<HTMLDivElement | null>;
 	timelineRef: React.RefObject<HTMLDivElement | null>;
 	thumbnailCount: number;
+	active: boolean;
 }) {
 	const [range, setRange] = useState(() => ({
 		start: 0,
@@ -433,6 +444,7 @@ function useVisibleTimelineThumbnailRange({
 	}));
 
 	useEffect(() => {
+		if (!active) return;
 		const container = scrollContainerRef.current;
 		const timeline = timelineRef.current;
 		if (!container || !timeline || thumbnailCount <= 0) {
@@ -483,7 +495,7 @@ function useVisibleTimelineThumbnailRange({
 			container.removeEventListener("scroll", updateRange);
 			resizeObserver.disconnect();
 		};
-	}, [scrollContainerRef, thumbnailCount, timelineRef]);
+	}, [active, scrollContainerRef, thumbnailCount, timelineRef]);
 
 	return range;
 }
@@ -679,7 +691,8 @@ export function EditVideoClient({
 		videoRef,
 		refresh: refreshOriginalSource,
 	});
-	const thumbnailCount = useThumbnailCount(timelineRef);
+	const [isSaving, setIsSaving] = useState(false);
+	const thumbnailCount = useThumbnailCount(timelineRef, !isSaving);
 	const draftStorageKey = useMemo(
 		() => getTimelineDraftKey(video.id),
 		[video.id],
@@ -697,7 +710,6 @@ export function EditVideoClient({
 	const [playhead, setPlayhead] = useState(0);
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [zoom, setZoom] = useState(1);
-	const [isSaving, setIsSaving] = useState(false);
 	const [instantFinish, setInstantFinish] = useState<
 		| {
 				enabled: boolean;
@@ -710,7 +722,20 @@ export function EditVideoClient({
 	const instantFinishRef = useRef(instantFinish);
 	instantFinishRef.current = instantFinish;
 	const settleTimerRef = useRef<{ clear: () => void } | null>(null);
+	const settlePrepareRef = useRef<AbortController | null>(null);
+	const settleRequestRef = useRef(0);
 	const savingRef = useRef(false);
+	const editorSnapshotRef = useRef({
+		history,
+		draftState,
+		playhead,
+	});
+	editorSnapshotRef.current = { history, draftState, playhead };
+	const publishSnapshotRef = useRef<{
+		history: TimelineHistory;
+		draftState: VideoTimelineState | null;
+		playhead: number;
+	} | null>(null);
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 	const committedState = history.entries[history.index] ?? initialState;
@@ -752,6 +777,7 @@ export function EditVideoClient({
 		scrollContainerRef,
 		timelineRef,
 		thumbnailCount,
+		active: !isSaving,
 	});
 	const thumbnailTimes = useMemo(
 		() =>
@@ -774,7 +800,8 @@ export function EditVideoClient({
 		sourceDuration: state.duration,
 		thumbnailTimes,
 		visibleRange: visibleThumbnailRange,
-		enabled: !isPlaying && activeHandle === null && draftState === null,
+		enabled:
+			!isSaving && !isPlaying && activeHandle === null && draftState === null,
 	});
 	const timelineFrameList = useMemo(
 		() => Object.values(timelineFrames),
@@ -1131,6 +1158,13 @@ export function EditVideoClient({
 
 	useEffect(() => {
 		if (!instantFinish?.enabled || isSaving) return;
+		const started = nextSettlePrepare(
+			settlePrepareRef.current,
+			settleRequestRef.current,
+		);
+		settleRequestRef.current = started.requestId;
+		settlePrepareRef.current = started.controller;
+		const requestId = started.requestId;
 		const timer = window.setTimeout(() => {
 			if (savingRef.current) return;
 			const current = instantFinishRef.current;
@@ -1147,8 +1181,13 @@ export function EditVideoClient({
 					draftVersion: (current.draftVersion ?? 0) + 1,
 					draftSession,
 				},
+				started.controller.signal,
 			)
 				.then((prepared) => {
+					if (!acceptSettledPrepare(requestId, settleRequestRef.current)) {
+						return;
+					}
+					if (savingRef.current) return;
 					setInstantFinish((existing) =>
 						existing
 							? {
@@ -1160,14 +1199,33 @@ export function EditVideoClient({
 				})
 				.catch(() => undefined);
 		}, 400);
-		settleTimerRef.current = { clear: () => window.clearTimeout(timer) };
+		settleTimerRef.current = {
+			clear: () => {
+				window.clearTimeout(timer);
+				started.controller.abort();
+			},
+		};
 		return () => {
 			window.clearTimeout(timer);
+			const fenced = beginDoneFence(
+				settleRequestRef.current,
+				started.controller,
+			);
+			settleRequestRef.current = fenced.requestId;
+			if (settlePrepareRef.current === started.controller) {
+				settlePrepareRef.current = null;
+			}
 			settleTimerRef.current = null;
 		};
 	}, [editSpec, initialEditSpec, instantFinish?.enabled, isSaving, video.id]);
 
 	const handleDone = useCallback(async () => {
+		const fenced = beginDoneFence(
+			settleRequestRef.current,
+			settlePrepareRef.current,
+		);
+		settleRequestRef.current = fenced.requestId;
+		settlePrepareRef.current = null;
 		settleTimerRef.current?.clear();
 		settleTimerRef.current = null;
 		if (isSaving) return;
@@ -1178,8 +1236,23 @@ export function EditVideoClient({
 			return;
 		}
 		if (doneRoute(instantFinish) === "wait") return;
+		publishSnapshotRef.current = {
+			history: editorSnapshotRef.current.history,
+			draftState: editorSnapshotRef.current.draftState,
+			playhead: editorSnapshotRef.current.playhead,
+		};
 		savingRef.current = true;
 		setIsSaving(true);
+		const restoreEditor = () => {
+			const snapshot = publishSnapshotRef.current;
+			savingRef.current = false;
+			if (snapshot) {
+				setHistory(snapshot.history);
+				setDraftState(snapshot.draftState);
+				setPlayhead(snapshot.playhead);
+			}
+			setIsSaving(false);
+		};
 		try {
 			const draftStorage = getTimelineDraftStorage();
 			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
@@ -1229,8 +1302,7 @@ export function EditVideoClient({
 				return;
 			}
 			toast.error("Failed to publish edit");
-			savingRef.current = false;
-			setIsSaving(false);
+			restoreEditor();
 		} catch (error) {
 			const status =
 				typeof error === "object" &&
@@ -1239,15 +1311,20 @@ export function EditVideoClient({
 				typeof error.status === "number"
 					? error.status
 					: 0;
-			toast.error(
+			const message =
 				status === 409
 					? "A newer draft exists. Retry Done."
 					: error instanceof Error
 						? error.message
-						: "Failed to start video edit",
-			);
-			savingRef.current = false;
-			setIsSaving(false);
+						: typeof error === "object" &&
+								error !== null &&
+								"message" in error &&
+								typeof error.message === "string" &&
+								error.message.length > 0
+							? error.message
+							: "Failed to start video edit";
+			toast.error(message);
+			restoreEditor();
 		}
 	}, [
 		draftStorageKey,
@@ -1489,7 +1566,7 @@ export function EditVideoClient({
 	);
 
 	useEffect(() => {
-		if (!activePlaybackSrc) return;
+		if (isSaving || !activePlaybackSrc) return;
 		let frameId = 0;
 		let playbackFrameId = 0;
 		let detachVideoListeners: (() => void) | null = null;
@@ -1625,9 +1702,10 @@ export function EditVideoClient({
 			cancelAnimationFrame(frameId);
 			detachVideoListeners?.();
 		};
-	}, [activePlaybackSrc, keepRanges, setPlayheadOnFrame]);
+	}, [activePlaybackSrc, isSaving, keepRanges, setPlayheadOnFrame]);
 
 	useEffect(() => {
+		if (isSaving) return;
 		const videoElement = videoRef.current;
 		if (!videoElement) return;
 		const nextTime = findNextPlayableTime(videoElement.currentTime, editSpec);
@@ -1637,9 +1715,10 @@ export function EditVideoClient({
 		) {
 			videoElement.currentTime = nextTime;
 		}
-	}, [editSpec]);
+	}, [editSpec, isSaving]);
 
 	useEffect(() => {
+		if (isSaving) return;
 		const container = scrollContainerRef.current;
 		if (!container || zoom <= 1 || isTrimming) return;
 		const playheadFraction =
@@ -1659,9 +1738,17 @@ export function EditVideoClient({
 				behavior: isPlaying ? "auto" : "smooth",
 			});
 		}
-	}, [displayPlayhead, zoom, isPlaying, isTrimming, timelineDisplayDuration]);
+	}, [
+		displayPlayhead,
+		isSaving,
+		zoom,
+		isPlaying,
+		isTrimming,
+		timelineDisplayDuration,
+	]);
 
 	useEffect(() => {
+		if (isSaving) return;
 		const container = scrollContainerRef.current;
 		if (!container) return;
 		const handleWheel = (event: WheelEvent) => {
@@ -1674,9 +1761,10 @@ export function EditVideoClient({
 		};
 		container.addEventListener("wheel", handleWheel, { passive: false });
 		return () => container.removeEventListener("wheel", handleWheel);
-	}, [updateZoomAround]);
+	}, [isSaving, updateZoomAround]);
 
 	useEffect(() => {
+		if (isSaving) return;
 		updatePlayheadOverlay();
 		const container = scrollContainerRef.current;
 		if (!container) return;
@@ -1693,10 +1781,11 @@ export function EditVideoClient({
 			container.removeEventListener("scroll", onScroll);
 			resizeObserver.disconnect();
 		};
-	}, [updatePlayheadOverlay]);
+	}, [isSaving, updatePlayheadOverlay]);
 
 	useEffect(() => {
 		const handleKeyDown = (event: KeyboardEvent) => {
+			if (isSaving) return;
 			if (isEditorShortcutTarget(event.target, event.defaultPrevented)) return;
 			const isMeta = event.metaKey || event.ctrlKey;
 
@@ -1770,14 +1859,31 @@ export function EditVideoClient({
 		handleRedo,
 		handleSplit,
 		handleUndo,
+		isSaving,
 		playhead,
 		seekTo,
 		togglePlayPause,
 		updateZoomAround,
 	]);
 
+	// Unmount the timeline before publish resolves. Reconciling this tree on
+	// setIsSaving hides the already-arrived response on WebKit (cap-fzp.8.7.10).
+	if (isSaving) {
+		return (
+			<div
+				data-editor-shell="publishing"
+				className="flex min-h-screen items-center justify-center bg-gray-1 text-gray-12"
+			>
+				<p>Saving / Publishing</p>
+			</div>
+		);
+	}
+
 	return (
-		<div className="flex min-h-screen flex-col bg-gray-1 text-gray-12">
+		<div
+			data-editor-shell="editor"
+			className="flex min-h-screen flex-col bg-gray-1 text-gray-12"
+		>
 			<header className="sticky top-0 z-30 border-b border-gray-4 bg-white/85 backdrop-blur">
 				<div className="mx-auto flex h-14 w-full max-w-[1500px] items-center justify-between gap-2 px-3 sm:h-16 sm:px-5">
 					<div className="flex items-center gap-1.5">
