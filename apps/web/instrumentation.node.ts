@@ -38,7 +38,11 @@ export async function register() {
 	// Add a timeout to trigger migrations after 5 seconds on server start
 	setTimeout(() => triggerMigrations(), 5000);
 	setTimeout(() => createS3Bucket(), 5000);
-	if (process.env.CAP_INSTANT_FINISH_ORIGIN_URL && process.env.DATABASE_URL) {
+	if (
+		(process.env.CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL ||
+			process.env.CAP_INSTANT_FINISH_ORIGIN_URL) &&
+		process.env.DATABASE_URL
+	) {
 		const { db } = await import("@cap/database");
 		const { httpOriginClient } = await import(
 			"@/lib/revision-publication-origin"

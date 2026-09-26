@@ -78,7 +78,11 @@ export type OriginClient = {
 };
 
 export function originBaseUrl(): string {
-	const raw = process.env.CAP_INSTANT_FINISH_ORIGIN_URL?.trim() ?? "";
+	const raw = (
+		process.env.CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL ??
+		process.env.CAP_INSTANT_FINISH_ORIGIN_URL ??
+		""
+	).trim();
 	if (!raw) {
 		throw new Error("Instant finish origin is not configured");
 	}
