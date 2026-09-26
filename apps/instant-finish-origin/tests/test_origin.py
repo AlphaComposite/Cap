@@ -263,10 +263,10 @@ class MediaTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
 
-    def _write_source(self, timescale: int, audio_rate: int, duration: float = 1.2) -> str:
-        key = f"owner/{VIDEO}/source/original.mp4"
+    def _write_source_at(self, key: str, timescale: int, audio_rate: int, duration: float = 1.2) -> str:
         dest = self.objects / key
-        dest.parent.mkdir(parents=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        encoded = self.root / "encoded.mp4"
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=30:duration={duration}",
@@ -274,12 +274,21 @@ class MediaTests(unittest.TestCase):
             "-c:v", "libx264", "-bf", "2", "-g", "60", "-pix_fmt", "yuv420p",
             "-video_track_timescale", str(timescale),
             "-c:a", "aac", "-ar", str(audio_rate), "-ac", "1",
-            "-shortest", str(dest),
+            "-shortest", str(encoded),
         ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         if result.returncode:
             self.fail(result.stderr.decode()[-400:])
+        dest.write_bytes(encoded.read_bytes())
         return key
+
+    def _write_source(self, timescale: int, audio_rate: int, duration: float = 1.2) -> str:
+        return self._write_source_at(
+            f"owner/{VIDEO}/source/original.mp4",
+            timescale,
+            audio_rate,
+            duration,
+        )
 
     def _service(self, method: str, path: str, body: bytes = b"") -> dict[str, str]:
         return {
@@ -332,6 +341,22 @@ class MediaTests(unittest.TestCase):
         stream = json.loads(probe.stdout)["streams"][0]
         self.assertEqual(stream["time_base"], "1/16000")
         self.assertEqual(stream["has_b_frames"], 0)
+
+    def test_16000_timescale_segment_muxes(self) -> None:
+        key = self._write_source(16000, 48000, 1.0)
+        self._prepare(key)
+        ranges = [{"start": 0.0, "end": 0.8}]
+        self.store.put_revision(RevisionRow(REV, VIDEO, "pendinghash", SOURCE, 1, "READY"))
+        body = json.dumps({
+            "videoId": VIDEO,
+            "sourceId": SOURCE,
+            "keepRanges": ranges,
+            "captions": [],
+            "chapters": [],
+        }).encode()
+        path = f"/internal/revisions/{REV}/prepare"
+        status, _, payload = self._req(path, "POST", self._service("POST", path, body), body)
+        self.assertEqual(status, 200, payload)
 
     def test_seg0_range_cache_and_warm(self) -> None:
         key = self._write_source(15360, 48000, 1.5)
@@ -507,6 +532,29 @@ class MediaTests(unittest.TestCase):
         finally:
             stop.set()
             thread.join()
+
+    def test_relocated_private_key_prepare_rebuilds_when_bind_sha_mismatches(self) -> None:
+        key = f"private/source/{VIDEO}/opaquekey01"
+        self._write_source_at(key, 15360, 48000, 1.2)
+        self.store.put_source(SourceRow(VIDEO, key, "a" * 64, "PURGED"))
+        first = self._prepare(key)
+        self.assertEqual(first["sourceKey"], key)
+        self._write_source_at("tmp/replacement.mp4", 15360, 48000, 1.6)
+        (self.objects / key).write_bytes((self.objects / "tmp/replacement.mp4").read_bytes())
+        body = json.dumps({"sourceId": SOURCE, "sourceKey": key, "videoId": VIDEO}).encode()
+        path = f"/internal/sources/{VIDEO}/prepare"
+        status, _, payload = self._req(path, "POST", self._service("POST", path, body), body)
+        self.assertEqual(status, 200, payload)
+        second = json.loads(payload)
+        self.assertEqual(second["sourceKey"], key)
+        self.assertNotEqual(second["sha256"], first["sha256"])
+        denied = json.dumps({
+            "sourceId": SOURCE,
+            "sourceKey": f"owner/{VIDEO}/source/original.mp4",
+            "videoId": VIDEO,
+        }).encode()
+        status, _, payload = self._req(path, "POST", self._service("POST", path, denied), denied)
+        self.assertEqual(status, 409, payload)
 
 
 if __name__ == "__main__":

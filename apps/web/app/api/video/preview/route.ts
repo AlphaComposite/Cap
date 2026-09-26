@@ -6,6 +6,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { previewRedirectOrigin } from "@/lib/mobile-request-origin";
 import { revisionArtifactUrl } from "@/lib/revision-media-grant";
+import { neutralPreviewJpeg } from "@/lib/revision-thumbnail";
 import { runPromise } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -87,7 +88,16 @@ export async function GET(request: NextRequest) {
 	}
 
 	if (!preview.url) {
-		if (preview.flagged) return new NextResponse(null, { status: 404 });
+		if (preview.flagged) {
+			return new NextResponse(new Uint8Array(neutralPreviewJpeg()), {
+				status: 200,
+				headers: {
+					"content-type": "image/jpeg",
+					"cache-control": "private, no-store",
+					"x-cap-thumbnail": "placeholder",
+				},
+			});
+		}
 		return getFallbackResponse(request, rawVideoId);
 	}
 

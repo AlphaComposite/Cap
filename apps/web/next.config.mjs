@@ -92,7 +92,19 @@ const nextConfig = {
 		].filter(Boolean),
 	},
 	async rewrites() {
+		const origin = process.env.CAP_INSTANT_FINISH_ORIGIN_URL?.replace(
+			/\/$/,
+			"",
+		);
 		return [
+			...(origin
+				? [
+						{
+							source: "/media/:path*",
+							destination: `${origin}/media/:path*`,
+						},
+					]
+				: []),
 			{
 				source: "/r/:path*",
 				destination: "https://dub.cap.link/:path*",

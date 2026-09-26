@@ -5,7 +5,6 @@ vi.mock("server-only", () => ({}));
 import {
 	clearPrefetchedFragments,
 	createPrefetchLoader,
-	readPrefetchedFragment,
 	rememberPrefetchedFragment,
 } from "@/lib/instant-finish-fragment-cache";
 import { previewRedirectOrigin } from "@/lib/mobile-request-origin";
@@ -109,12 +108,11 @@ describe("seek clock without media events", () => {
 });
 
 describe("prefetched fragment loader", () => {
-	it("serves the prefetched seg0 bytes without another load", () => {
+	it("serves the prefetched seg0 bytes without another load and does not reuse them", () => {
 		clearPrefetchedFragments();
 		const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
 		const url = "http://127.0.0.1:32120/media/v/r/rev/seg/0.m4s?t=grant";
 		rememberPrefetchedFragment(url, bytes);
-		expect(readPrefetchedFragment(url)).toBe(bytes);
 		const network = vi.fn();
 		class Base {
 			load(_context?: unknown, _config?: unknown, _callbacks?: unknown) {
@@ -128,5 +126,7 @@ describe("prefetched fragment loader", () => {
 		expect(network).not.toHaveBeenCalled();
 		expect(success).toHaveBeenCalled();
 		expect(success.mock.calls[0]?.[0].data).toBe(bytes);
+		loader.load({ url }, {}, { onSuccess: success });
+		expect(network).toHaveBeenCalledOnce();
 	});
 });

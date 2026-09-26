@@ -9,13 +9,15 @@ import { fileURLToPath } from "node:url";
 import {
 	comments,
 	editRevision,
+	revisionOutbox,
 	sourceObject,
+	sourceRelocation,
 	videoEdits,
 	videoPublication,
 	videos,
 } from "@cap/database/schema";
 import type { VideoEditSpecV2 } from "@cap/database/types";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import mysql from "mysql2/promise";
@@ -24,7 +26,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/env", () => ({
 	buildEnv: { NEXT_PUBLIC_WEB_URL: "http://127.0.0.1:30410" },
-	serverEnv: () => ({ NEXTAUTH_SECRET: "test-secret-with-enough-entropy" }),
+	serverEnv: () => ({
+		NEXTAUTH_SECRET: "test-secret-with-enough-entropy",
+		WEB_URL: "http://127.0.0.1:30410",
+	}),
 }));
 vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
@@ -36,8 +41,11 @@ import {
 } from "@/lib/revision-media-token";
 import {
 	claimArtifactLease,
+	claimRevisionReadback,
+	completeRevisionReadback,
 	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
+	sweepRevisionReadbacks,
 } from "@/lib/revision-publication";
 import {
 	RevisionPublicationError,
@@ -379,15 +387,24 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		]);
 		await database.insert(sourceObject).values({
 			videoId: videoId as never,
-			liveKey: `${ownerId}/${videoId}/source/original.mp4`,
+			liveKey: `private/source/${videoId}/wireopaque`,
 			sha256: "b".repeat(64),
-			relocationState: "LIVE",
+			relocationState: "PURGED",
 			codec: "h264",
 			timebase: "1/15360",
 			frameMode: "vfr",
 			a1Digest: "c".repeat(64),
 			indexId: "index-1",
 			warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+		await database.insert(sourceRelocation).values({
+			videoId: videoId as never,
+			revisionId: "relocate",
+			oldKey: `${ownerId}/${videoId}/source/original.mp4`,
+			newKey: `private/source/${videoId}/wireopaque`,
+			sha256: "b".repeat(64),
+			state: "PURGED",
+			createdAt: new Date(),
 		});
 	}, 180_000);
 
@@ -436,15 +453,24 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		await pool.query("SET FOREIGN_KEY_CHECKS=1");
 		await database.insert(sourceObject).values({
 			videoId: videoId as never,
-			liveKey: `${ownerId}/${videoId}/source/original.mp4`,
+			liveKey: `private/source/${videoId}/wireopaque`,
 			sha256: "b".repeat(64),
-			relocationState: "LIVE",
+			relocationState: "PURGED",
 			codec: "h264",
 			timebase: "1/15360",
 			frameMode: "vfr",
 			a1Digest: "c".repeat(64),
 			indexId: "index-1",
 			warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+		await database.insert(sourceRelocation).values({
+			videoId: videoId as never,
+			revisionId: "relocate",
+			oldKey: `${ownerId}/${videoId}/source/original.mp4`,
+			newKey: `private/source/${videoId}/wireopaque`,
+			sha256: "b".repeat(64),
+			state: "PURGED",
+			createdAt: new Date(),
 		});
 	});
 
@@ -536,7 +562,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		});
 		expect(secondLease.claimed).toBe(false);
 		expect(await resolveRollbackSourceKey(videoId, "old/key", database)).toBe(
-			`${ownerId}/${videoId}/source/original.mp4`,
+			`private/source/${videoId}/wireopaque`,
 		);
 		const [publication] = await database
 			.select({ policyEpoch: videoPublication.policyEpoch })
@@ -590,9 +616,6 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 	});
 
 	it("flips on a signed attestation, then reverts CURRENT when async readback fails", async () => {
-		const { pendingRevisionReadbacks } = await import(
-			"@/lib/revision-publication"
-		);
 		const [before] = await database
 			.select()
 			.from(videoPublication)
@@ -617,7 +640,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
 		expect(flipped?.currentRevisionId).toBe(published.revisionId);
-		await pendingRevisionReadbacks();
+		await sweepRevisionReadbacks(database, { origin: origin.client() });
 		origin.failCaptions = false;
 		const [reverted] = await database
 			.select()
@@ -643,7 +666,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			{ origin: origin.client() },
 		);
 		expect(retried.revisionId).not.toBe(published.revisionId);
-		await pendingRevisionReadbacks();
+		await sweepRevisionReadbacks(database, { origin: origin.client() });
 		const [after] = await database
 			.select()
 			.from(videoPublication)
@@ -952,5 +975,154 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			),
 		).rejects.toThrow(/edited in another session/);
 		expect(origin.preparePosts).toBe(posts);
+	});
+
+	it("restarts a stranded readback and does not let a stale readback revert a later current", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		origin.failCaptions = true;
+		origin.artifactReads = 0;
+		const stranded = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(7),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		expect(origin.artifactReads).toBe(0);
+		origin.failCaptions = false;
+		const later = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(8),
+				baseGeneration: (before?.generation ?? 0) + 1,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 2,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const swept = await sweepRevisionReadbacks(database, {
+			origin: origin.client(),
+		});
+		expect(swept.some((row) => row.reason === "stale" && !row.reverted)).toBe(
+			true,
+		);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).toBe(later.revisionId);
+		expect(after?.currentRevisionId).not.toBe(stranded.revisionId);
+	});
+
+	it("does not let two workers process the same readback", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(8.5),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const [first, second] = await Promise.all([
+			sweepRevisionReadbacks(database, {
+				origin: origin.client(),
+				workerId: "a",
+				revisionId: published.revisionId,
+			}),
+			sweepRevisionReadbacks(database, {
+				origin: origin.client(),
+				workerId: "b",
+				revisionId: published.revisionId,
+			}),
+		]);
+		const processed = [...first, ...second].filter((row) => !row.skipped);
+		expect(processed).toHaveLength(1);
+	});
+
+	it("does not revert a readback killed during its lease until the lease expires", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(9),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const claimedAt = new Date();
+		const claimed = await claimRevisionReadback(database, {
+			now: claimedAt,
+			revisionId: published.revisionId,
+			workerId: "killed",
+		});
+		expect(claimed?.leaseToken).toBeTruthy();
+		origin.failCaptions = true;
+		const duringLease = await sweepRevisionReadbacks(database, {
+			origin: origin.client(),
+			now: new Date(claimedAt.getTime() + 1_000),
+			revisionId: published.revisionId,
+			workerId: "other",
+		});
+		expect(duringLease.filter((row) => row.reverted)).toHaveLength(0);
+		const [held] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(held?.currentRevisionId).toBe(published.revisionId);
+		await database
+			.update(revisionOutbox)
+			.set({
+				payload: sql`JSON_SET(payload, '$.leaseToken', 'replaced-token')`,
+			})
+			.where(eq(revisionOutbox.id, claimed?.id ?? 0));
+		if (!claimed) throw new Error("readback was not claimed");
+		const lost = await completeRevisionReadback(
+			database,
+			claimed,
+			origin.client(),
+			claimedAt,
+		);
+		expect(lost.reverted).toBe(false);
+		expect(lost.reason).toBe("lease-lost");
+		await database
+			.update(revisionOutbox)
+			.set({
+				payload: sql`JSON_SET(payload, '$.leaseUntilMs', 1, '$.leaseUntil', '2000-01-01T00:00:00.000Z')`,
+			})
+			.where(eq(revisionOutbox.id, claimed?.id ?? 0));
+		const expired = await sweepRevisionReadbacks(database, {
+			origin: origin.client(),
+			now: new Date(claimedAt.getTime() + 60_000),
+			revisionId: published.revisionId,
+			workerId: "after-expiry",
+		});
+		expect(expired.some((row) => row.reverted)).toBe(true);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).toBe(before?.currentRevisionId);
+		origin.failCaptions = false;
 	});
 });
