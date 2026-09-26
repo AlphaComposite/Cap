@@ -39,13 +39,16 @@ import { getVideoDownloadInfo } from "@/actions/videos/download";
 import {
 	getEditorInstantFinishState,
 	publishVideoRevision,
-	recordServerEditDraft,
 } from "@/actions/videos/publish-revision";
 import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
 } from "@/actions/videos/save-edits";
 import { isEditorShortcutTarget } from "@/lib/editor-keyboard";
+import {
+	prefetchInstantFinishPlaylist,
+	stashInstantFinishPlayback,
+} from "@/lib/instant-finish-playback-handoff";
 import { readOrCreateDraftSession } from "@/lib/revision-done";
 import {
 	clearTimelineDraft,
@@ -1139,23 +1142,31 @@ export function EditVideoClient({
 				router.refresh();
 				return;
 			}
-			const recorded = await recordServerEditDraft({
-				videoId: video.id,
-				draftVersion: (instantFinish.draftVersion ?? 0) + 1,
-				draftSession,
-			});
 			const published = await publishVideoRevision({
 				videoId: video.id,
 				editSpec,
 				expectedEditSpec: initialEditSpec,
-				baseGeneration: recorded.generation,
-				draftVersion: recorded.draftVersion,
-				draftSession: recorded.draftSession,
+				baseGeneration: instantFinish.generation ?? 0,
+				draftVersion: (instantFinish.draftVersion ?? 0) + 1,
+				draftSession,
 			});
 			if (published.success) {
+				if (published.playback && typeof sessionStorage !== "undefined") {
+					stashInstantFinishPlayback(
+						{
+							videoId: video.id,
+							revisionId: published.revisionId,
+							generation: published.generation,
+							playlistUrl: published.playback.playlistUrl,
+							grantExpiresAt: published.playback.grantExpiresAt,
+							revisionMetadata: published.playback.revisionMetadata,
+						},
+						sessionStorage,
+					);
+					prefetchInstantFinishPlaylist(published.playback.playlistUrl);
+				}
 				if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
 				router.push(`/s/${video.id}`);
-				router.refresh();
 				return;
 			}
 			toast.error("Failed to publish edit");
@@ -1183,6 +1194,7 @@ export function EditVideoClient({
 		hasTimelineChanges,
 		initialEditSpec,
 		instantFinish?.draftVersion,
+		instantFinish?.generation,
 		instantFinish?.enabled,
 		isSaving,
 		router,
