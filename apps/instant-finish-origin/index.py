@@ -100,7 +100,12 @@ def stss_samples(data: bytes) -> list[int] | None:
     return None
 
 
+probe_calls = 0
+
+
 def probe(path: Path) -> Probe:
+    global probe_calls
+    probe_calls += 1
     import av
 
     container = av.open(str(path))
@@ -194,8 +199,9 @@ def write_keyframe_index(mezz: Path, rows: list[dict], mezz_sha: str, prepare_ms
         "keyframe_count": len(rows),
         "mezz": mezz.name,
         "mezz_sha256": mezz_sha,
+        "keyframe_source": "stss",
         "prepare_ms": prepare_ms,
-        "prepare_ms_source": "stss",
+        "prepare_ms_source": "mezzanine",
     }
     prep = mezz.with_suffix(".prep.json")
     atomic_write(prep, (json.dumps(record, sort_keys=True, indent=2) + "\n").encode())

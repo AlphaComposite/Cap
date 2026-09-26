@@ -20,6 +20,7 @@ from storage import atomic_write, private, sha256_file
 
 JIT_X264 = "scenecut=0:open-gop=0:b-adapt=0:repeat-headers=1"
 SEGMENT_PLAN_VERSION = 2
+AUDIO_ALIGN_VERSION = 6
 MAPPING_VERSION = 1
 # Gated placeholder. rewrite_fragment stamps real durations afterwards.
 # 512 ticks is one 30 fps step only when the timescale is 15360; the option set stays the approved one.
@@ -75,6 +76,11 @@ class Profile:
     height: int
 
 
+def encoder_threads() -> str:
+    import limits
+    return str(limits.origin_cpus())
+
+
 def jit_options() -> dict[str, str]:
     return {
         "bf": "0",
@@ -84,7 +90,7 @@ def jit_options() -> dict[str, str]:
         "level": "4.1",
         "preset": "veryfast",
         "profile": "high",
-        "threads": "4",
+        "threads": encoder_threads(),
         "x264-params": JIT_X264,
     }
 
@@ -93,7 +99,7 @@ def jit_args(profile: Profile) -> list[str]:
     return [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
         "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1",
-        "-bf", "0", "-g", "300", "-forced-idr", "1", "-threads", "4",
+        "-bf", "0", "-g", "300", "-forced-idr", "1", "-threads", encoder_threads(),
         "-x264-params", JIT_X264,
         "-fps_mode", "passthrough",
         "-enc_time_base:v", f"1/{profile.timescale}",
@@ -330,12 +336,11 @@ def extinf(ticks: int, tb: int) -> str:
 
 
 def playlist_text(segments: list[Segment], tb: int) -> str:
-    max_ticks = max(segment.duration_ticks for segment in segments)
-    target = max(1, round(max_ticks / tb))
+    if tb <= 0:
+        raise RuntimeError(f"bad timescale {tb}")
+    target = 1
     for segment in segments:
-        rounded = round(segment.duration_ticks / tb)
-        if rounded > target:
-            target = rounded
+        target = max(target, (segment.duration_ticks + tb - 1) // tb)
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:7",
@@ -429,6 +434,23 @@ def _is_sync(flags: int) -> bool:
     return depends == 2 and non_sync == 0
 
 
+def _tfhd_default_duration(tfhd: bytes, duration: int) -> bytes:
+    """Default sample duration must cover the longest sample. It does not close WebKit's VFR hold gaps."""
+    if duration <= 0:
+        raise RuntimeError(f"bad default sample duration {duration}")
+    flags = int.from_bytes(tfhd[9:12], "big")
+    if not flags & 0x08:
+        return tfhd
+    cursor = 16
+    if flags & 0x01:
+        cursor += 8
+    if flags & 0x02:
+        cursor += 4
+    patched = bytearray(tfhd)
+    patched[cursor:cursor + 4] = int(duration).to_bytes(4, "big")
+    return bytes(patched)
+
+
 def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: int) -> tuple[bytes, bytes, bytes]:
     top = list(_iter_boxes(data, 0, len(data)))
     init = bytearray()
@@ -476,6 +498,7 @@ def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: in
         durs = durations[consumed:consumed + count]
         if len(durs) != count:
             raise RuntimeError(f"sample count {count} exceeds remaining durations")
+        tfhd = _tfhd_default_duration(tfhd, max(durs))
         header_len = 16 if int.from_bytes(mdat[:4], "big") == 1 else 8
         if sum(trun_info["sizes"]) != len(mdat) - header_len:
             raise RuntimeError("trun sizes do not match mdat")
@@ -621,6 +644,9 @@ def warm_for_source(source_id: str, mezz_path: Path, audio_source_path: Path, *,
         raise RuntimeError("warm decode primed fewer than 2 frames")
     phases["decoder_open_prime_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
     started = time.perf_counter()
+    cached_mezz_index(mezz_path)
+    phases["index_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    started = time.perf_counter()
     lib_audio._sha256(audio_source_path)
     phases["source_digest_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
     started = time.perf_counter()
@@ -667,6 +693,8 @@ def reset_process_state() -> None:
     close_source()
     lib_audio.reset_aac_pool()
     lib_audio.clear_sha_cache()
+    lib_audio.clear_presentation_cache()
+    clear_mezz_index_cache()
     with _WARM_LOCK:
         _WARM.clear()
 
@@ -767,9 +795,44 @@ def load_keyframes(mezz: Path, mezz_sha: str) -> tuple[list[dict], dict]:
         raise CacheIntegrityError("keyframe index is not bound to this mezzanine")
     if record.get("index_sha256") != hashlib.sha256(dest.read_bytes()).hexdigest():
         raise CacheIntegrityError("keyframe index digest mismatch")
-    if record.get("prepare_ms_source") != "stss":
+    key_source = record.get("keyframe_source")
+    if key_source is None and record.get("prepare_ms_source") == "stss":
+        key_source = "stss"
+    if key_source != "stss":
         raise CacheIntegrityError("refusing a non-stss keyframe index")
+    if record.get("prepare_ms_source") not in {"stss", "mezzanine"}:
+        raise CacheIntegrityError("refusing an unknown prepare timing source")
     return rows, record
+
+
+_MEZZ_INDEX: dict[str, tuple] = {}
+_MEZZ_INDEX_LOCK = threading.Lock()
+
+
+def clear_mezz_index_cache() -> None:
+    with _MEZZ_INDEX_LOCK:
+        _MEZZ_INDEX.clear()
+
+
+def cached_mezz_index(mezz: Path) -> tuple:
+    """Probe, packet table, and mezz sha, keyed by path identity. A new spec must not demux again."""
+    stat = mezz.stat()
+    key = f"{mezz.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    with _MEZZ_INDEX_LOCK:
+        found = _MEZZ_INDEX.get(key)
+    if found is not None:
+        return found
+    from index import probe
+    sha = sha256_file(mezz)
+    probed = probe(mezz)
+    ticks, durs = load_frames(mezz)
+    keyframes, prep = load_keyframes(mezz, sha)
+    found = (sha, probed, tuple(ticks), tuple(durs), keyframes, prep)
+    with _MEZZ_INDEX_LOCK:
+        _MEZZ_INDEX[key] = found
+        while len(_MEZZ_INDEX) > 32:
+            _MEZZ_INDEX.pop(next(iter(_MEZZ_INDEX)))
+    return found
 
 
 class Origin:
@@ -778,14 +841,15 @@ class Origin:
         self.audio_source = Path(audio_source)
         if not self.mezz.is_file():
             raise MezzanineRequired("refusing to serve without an A1 mezzanine")
-        self.mezz_sha256 = sha256_file(self.mezz)
+        mezz_sha, probed, ticks, durs, keyframes, prep = cached_mezz_index(self.mezz)
+        self.mezz_sha256 = mezz_sha
         self.source_sha256 = source_sha
         if self.source_sha256 == self.mezz_sha256:
             raise RuntimeError("source sha and mezzanine sha must be distinct")
-        self._keyframes, self.index_prep = load_keyframes(self.mezz, self.mezz_sha256)
-        self.ticks, self.durs = load_frames(self.mezz)
-        from index import probe
-        probed = probe(self.mezz)
+        self._keyframes = [dict(row) for row in keyframes]
+        self.index_prep = dict(prep)
+        self.ticks = list(ticks)
+        self.durs = list(durs)
         self.profile = Profile(probed.timescale, probed.width, probed.height)
         if probed.has_b_frames:
             raise RuntimeError("refusing a mezzanine with B-frames")
@@ -810,6 +874,7 @@ class Origin:
         self._lock = threading.Lock()
         self._init_avcc: bytes | None = None
         self._init_bytes: bytes | None = None
+        self._segment_bytes: dict[int, bytes] = {}
         self.productions: list[dict] = []
         self._last_produce: dict | None = None
         self._served_body = b""
@@ -821,6 +886,7 @@ class Origin:
     def _binding(self, artifact: str, seg: int | None) -> dict:
         return {
             "artifact": artifact,
+            "audio_align": AUDIO_ALIGN_VERSION,
             "encoder": self.encoder_hash,
             "namespace": self.namespace,
             "rev": self.rev,
@@ -938,10 +1004,20 @@ class Origin:
                 tmp.unlink()
         if "error" in audio_box:
             raise audio_box["error"]
-        media = lib_audio.mux_audio(media, audio_box["frames"], lib_audio.audio_tfdt(j0, leading=leading), tail=tail)
+        media = lib_audio.mux_audio(
+            media,
+            audio_box["frames"],
+            lib_audio.audio_tfdt(j0, leading=leading),
+            tail=tail,
+            video_start_ticks=segment.out_pts,
+            video_duration_ticks=segment.duration_ticks,
+            video_tb=self.profile.timescale,
+            leading=leading,
+        )
         self._bind_init(index, init, avcc)
         body = styp() + media
         self._write_bound(self.segment_path(index), body, "seg", index)
+        self._segment_bytes[index] = body
         elapsed = time.perf_counter() - started
         self._last_produce = {
             "aac_pool_miss": bool(audio_box.get("aac_pool_miss")),
@@ -963,9 +1039,16 @@ class Origin:
             raise IndexError(index)
         wall0 = time.perf_counter()
         with self._lock:
+            cached = self._segment_bytes.get(index)
+            path = self.segment_path(index)
+            if cached is not None and path.is_file() and sidecar_path(path).is_file():
+                self._record(index, (time.perf_counter() - wall0) * 1000.0, hit=True, retry=False)
+                return cached
+            self._segment_bytes.pop(index, None)
             try:
                 return self._ensure_locked(index, retry=False, wall0=wall0)
             except CacheIntegrityError:
+                self._segment_bytes.pop(index, None)
                 self._unlink_bound(self.segment_path(index))
                 return self._ensure_locked(index, retry=True, wall0=wall0)
 
@@ -974,6 +1057,7 @@ class Origin:
         present = path.exists() or sidecar_path(path).exists()
         if present:
             body = self._read_bound(path, "seg", index)
+            self._segment_bytes[index] = body
             self._record(index, (time.perf_counter() - wall0) * 1000.0, hit=True, retry=retry)
             return body
         self.produce(index)
@@ -982,15 +1066,25 @@ class Origin:
 
     def ensure_init(self) -> bytes:
         with self._lock:
+            if self._init_bytes is not None and self.init_path.is_file() and sidecar_path(self.init_path).is_file():
+                return self._init_bytes
+            self._init_bytes = None
             if self.init_path.exists() or sidecar_path(self.init_path).exists():
                 try:
-                    return self._read_bound(self.init_path, "init", None)
+                    data = self._read_bound(self.init_path, "init", None)
+                    self._init_bytes = data
+                    self._init_avcc = avcc_bytes(data)
+                    return data
                 except CacheIntegrityError:
                     self._unlink_bound(self.init_path)
+                    self._init_bytes = None
+                    self._init_avcc = None
             wall0 = time.perf_counter()
             self.produce(0)
             self._record(0, (time.perf_counter() - wall0) * 1000.0, hit=False, retry=False)
-            return self._read_bound(self.init_path, "init", None)
+            if self._init_bytes is None:
+                self._init_bytes = self._read_bound(self.init_path, "init", None)
+            return self._init_bytes
 
     def _record(self, index: int, ensure_ms: float, *, hit: bool, retry: bool) -> None:
         produced = self._last_produce or {}

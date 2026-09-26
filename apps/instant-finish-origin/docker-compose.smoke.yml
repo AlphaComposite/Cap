@@ -64,6 +64,7 @@ services:
       ORIGIN_DATABASE_URL: mysql://root:capwire-root@mysql:3306/cap
       REVISION_MEDIA_GRANT_KEYS: k1:capwire-grant-secret-capwire-grant-secret
       REVISION_ORIGIN_SERVICE_SECRET: capwire-service-token-capwire-service-token
+      ORIGIN_CPUS: "2"
     ports:
       - "127.0.0.1:3119:3020"
     cpus: "1.5"
