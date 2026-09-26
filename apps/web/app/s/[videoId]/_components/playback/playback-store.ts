@@ -13,6 +13,7 @@
  */
 
 import { revisionDiscreteSeek } from "@/lib/revision-seek";
+import { subscribeSeekClock } from "@/lib/revision-seek-clock";
 
 export type TimeSubscriber = (time: number) => void;
 export type PlayingSubscriber = () => void;
@@ -28,6 +29,7 @@ const normalizeDuration = (value: number | null | undefined): number =>
 export function createPlaybackStore(fallbackDuration: number | null = 0) {
 	let element: HTMLVideoElement | null = null;
 	let frame = 0;
+	let clockStop: (() => void) | null = null;
 	let time = 0;
 	let playing = false;
 	let fallback = normalizeDuration(fallbackDuration);
@@ -113,6 +115,8 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 
 	const teardown = () => {
 		stopFrames();
+		clockStop?.();
+		clockStop = null;
 		if (!element) return;
 		for (const [event, handler] of MEDIA_EVENTS) {
 			element.removeEventListener(event, handler);
@@ -136,6 +140,7 @@ export function createPlaybackStore(fallbackDuration: number | null = 0) {
 		for (const [event, handler] of MEDIA_EVENTS) {
 			element.addEventListener(event, handler);
 		}
+		clockStop = subscribeSeekClock(element, () => sample(true));
 		sample(true);
 		if (!element.paused && !element.ended) handlePlay();
 		else setPlaying(false);
