@@ -342,6 +342,22 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(stream["time_base"], "1/16000")
         self.assertEqual(stream["has_b_frames"], 0)
 
+    def test_16000_timescale_segment_muxes(self) -> None:
+        key = self._write_source(16000, 48000, 1.0)
+        self._prepare(key)
+        ranges = [{"start": 0.0, "end": 0.8}]
+        self.store.put_revision(RevisionRow(REV, VIDEO, "pendinghash", SOURCE, 1, "READY"))
+        body = json.dumps({
+            "videoId": VIDEO,
+            "sourceId": SOURCE,
+            "keepRanges": ranges,
+            "captions": [],
+            "chapters": [],
+        }).encode()
+        path = f"/internal/revisions/{REV}/prepare"
+        status, _, payload = self._req(path, "POST", self._service("POST", path, body), body)
+        self.assertEqual(status, 200, payload)
+
     def test_seg0_range_cache_and_warm(self) -> None:
         key = self._write_source(15360, 48000, 1.5)
         self._prepare(key)
