@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { VideoEditSpecV2 } from "@cap/database/types";
 import { Agent, fetch as originFetch } from "undici";
 import {
+	ORIGIN_ATTESTATION_HEADER,
 	ORIGIN_SERVICE_HEADER,
 	signInternalServiceRequest,
 } from "@/lib/revision-media-token";
@@ -56,6 +57,8 @@ export type RevisionPrepareResult = {
 	initSha256: string;
 	seg0Sha256: string;
 	playlistDurationSeconds: number;
+	attestationMac: string;
+	attestationBody: string;
 };
 
 export type OriginArtifact = {
@@ -123,7 +126,10 @@ export function httpOriginClient(): OriginClient {
 			if (!response.ok) {
 				throw new Error(`Revision prepare failed with HTTP ${response.status}`);
 			}
-			const payload = (await response.json()) as Partial<RevisionPrepareResult>;
+			const attestationBody = await response.text();
+			const payload = JSON.parse(
+				attestationBody,
+			) as Partial<RevisionPrepareResult>;
 			if (
 				payload.playlistHasEndList !== true ||
 				typeof payload.intentId !== "string" ||
@@ -150,6 +156,8 @@ export function httpOriginClient(): OriginClient {
 				initSha256: payload.initSha256,
 				seg0Sha256: payload.seg0Sha256,
 				playlistDurationSeconds: payload.playlistDurationSeconds,
+				attestationMac: response.headers.get(ORIGIN_ATTESTATION_HEADER) ?? "",
+				attestationBody,
 			};
 		},
 		async fetchArtifact(input) {

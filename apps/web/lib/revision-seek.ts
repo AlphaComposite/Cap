@@ -1,3 +1,8 @@
+import {
+	type SeekClockFrame,
+	startSeekClockPoll,
+} from "@/lib/revision-seek-clock";
+
 export const DEFAULT_FRAME_SPAN_SECONDS = 1 / 30;
 export const OVERSHOOT_SLACK_SECONDS = 0.02;
 
@@ -72,6 +77,7 @@ export async function revisionSeek(
 		frameSpanSeconds?: number;
 		resume?: boolean;
 		correctOvershoot?: boolean;
+		requestFrame?: SeekClockFrame;
 	},
 ): Promise<RevisionSeekResult> {
 	const span = input.frameSpanSeconds ?? DEFAULT_FRAME_SPAN_SECONDS;
@@ -91,6 +97,7 @@ export async function revisionSeek(
 		hls.startLoad(target);
 	}
 	video.currentTime = target;
+	startSeekClockPoll(video, { requestFrame: input.requestFrame });
 	let corrected = false;
 	let correctionTarget: number | null = null;
 	const shouldCorrect = input.correctOvershoot !== false;

@@ -107,6 +107,7 @@ interface Props {
 	mediaPlayerClassName?: string;
 	disableCaptions?: boolean;
 	autoplay?: boolean;
+	muted?: boolean;
 	hasActiveUpload?: boolean;
 	isLiveSegments?: boolean;
 	allowSegmentProbeDuringUpload?: boolean;
@@ -143,6 +144,7 @@ export function HLSVideoPlayer({
 	videoRef,
 	mediaPlayerClassName,
 	autoplay = false,
+	muted = false,
 	hasActiveUpload,
 	isLiveSegments = false,
 	allowSegmentProbeDuringUpload = false,
@@ -424,6 +426,12 @@ export function HLSVideoPlayer({
 
 			hls.loadSource(playbackSrc);
 			hls.attachMedia(video);
+			if (autoplay) {
+				video.muted = true;
+				hls.on(Hls.Events.MANIFEST_PARSED, () => {
+					void video.play().catch(() => undefined);
+				});
+			}
 			if (isLiveSegments) {
 				hls.startLoad(0);
 			}
@@ -620,6 +628,7 @@ export function HLSVideoPlayer({
 		reloadPlayback,
 		router,
 		videoRef.current,
+		autoplay,
 	]);
 
 	useEffect(() => {
@@ -922,7 +931,7 @@ export function HLSVideoPlayer({
 				}}
 				playsInline
 				autoPlay={autoplay}
-				muted={isBackgroundPreview}
+				muted={isBackgroundPreview || muted || autoplay}
 				loop={isBackgroundPreview}
 				preload="auto"
 			>

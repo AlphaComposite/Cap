@@ -15,6 +15,7 @@ import {
 	use,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useOptimistic,
 	useRef,
@@ -26,6 +27,7 @@ import {
 } from "@/actions/videos/get-status";
 import type { OrganizationSettings } from "@/app/(org)/dashboard/dashboard-data";
 import { SignedImageUrl } from "@/components/SignedImageUrl";
+import { preferInstantFinishFirstPaint } from "@/lib/instant-finish-playback-handoff";
 import {
 	applyRevisionCommentTimes,
 	type ClientRevisionPlayback,
@@ -301,6 +303,19 @@ export const Share = ({
 	revisionPlayback = null,
 }: ShareProps) => {
 	const isScreenshot = data.isScreenshot === true;
+	const [arrivalPlayback, setArrivalPlayback] = useState(revisionPlayback);
+	const [fromHandoff, setFromHandoff] = useState(false);
+	useLayoutEffect(() => {
+		const preferred = preferInstantFinishFirstPaint({
+			videoId: data.id,
+			ssr: revisionPlayback ?? null,
+			storage: window.sessionStorage,
+			nowMs: Date.now(),
+		});
+		setArrivalPlayback(preferred.playback);
+		setFromHandoff(preferred.fromHandoff);
+	}, [data.id, revisionPlayback]);
+	const playback = arrivalPlayback;
 	// Memoized: a fresh Date each render would defeat the memoized `data`
 	// objects below and re-render Sidebar's whole tree on every poll tick.
 	const customCreatedAt = data.metadata?.customCreatedAt;
@@ -344,14 +359,14 @@ export const Share = ({
 		() => ({
 			title: videoStatus?.aiTitle || null,
 			summary: videoStatus?.summary || null,
-			chapters: revisionPlayback
-				? revisionPlayback.mode === "hls"
-					? revisionPlayback.chapters
+			chapters: playback
+				? playback.mode === "hls"
+					? playback.chapters
 					: []
 				: videoStatus?.chapters || null,
 			aiGenerationStatus: videoStatus?.aiGenerationStatus || null,
 		}),
-		[revisionPlayback, videoStatus],
+		[playback, videoStatus],
 	);
 
 	useEffect(() => {
@@ -556,20 +571,16 @@ export const Share = ({
 	}, [optimisticComments]);
 
 	const revisionComments = useMemo(() => {
-		if (!revisionPlayback) return null;
+		if (!playback) return null;
 		return applyRevisionCommentTimes(
 			visibleComments,
-			revisionPlayback.mode === "hls"
-				? revisionPlayback.commentTimestamps
-				: null,
+			playback.mode === "hls" ? playback.commentTimestamps : null,
 		);
-	}, [revisionPlayback, visibleComments]);
+	}, [playback, visibleComments]);
 	const revisionChapters =
-		revisionPlayback?.mode === "hls" ? (revisionPlayback.chapters ?? []) : null;
+		playback?.mode === "hls" ? (playback.chapters ?? []) : null;
 	const revisionDownloadPreparing = Boolean(
-		revisionPlayback &&
-			(revisionPlayback.mode === "unavailable" ||
-				!revisionPlayback.downloadReady),
+		playback && (playback.mode === "unavailable" || !playback.downloadReady),
 	);
 
 	// Stable identities for the spreads handed to ShareVideo and Sidebar —
@@ -578,17 +589,17 @@ export const Share = ({
 	const shareVideoData = useMemo(
 		() => ({
 			...data,
-			transcriptionStatus: revisionPlayback ? null : transcriptionStatus,
+			transcriptionStatus: playback ? null : transcriptionStatus,
 		}),
-		[data, revisionPlayback, transcriptionStatus],
+		[data, playback, transcriptionStatus],
 	);
 	const sidebarData = useMemo(
 		() => ({
 			...data,
 			createdAt: effectiveDate,
-			transcriptionStatus: revisionPlayback ? null : transcriptionStatus,
+			transcriptionStatus: playback ? null : transcriptionStatus,
 		}),
-		[data, effectiveDate, revisionPlayback, transcriptionStatus],
+		[data, effectiveDate, playback, transcriptionStatus],
 	);
 
 	const reduceMotion = useReducedMotion() ?? false;
@@ -628,14 +639,14 @@ export const Share = ({
 				kind: "hls" as const,
 			};
 		})();
-		return filmstripForRevision(revisionPlayback, legacy);
+		return filmstripForRevision(playback, legacy);
 	}, [
 		isScreenshot,
 		data.source.type,
 		data.owner.id,
 		data.id,
 		data.hasActiveUpload,
-		revisionPlayback,
+		playback,
 	]);
 	// The theater block hugs the video: width-driven height from the real
 	// aspect ratio, capped so the deck below stays reachable without scrolling.
@@ -979,7 +990,8 @@ export const Share = ({
 												) : (
 													<ShareVideo
 														initialPlaybackUrl={initialPlaybackUrl}
-														revisionPlayback={revisionPlayback}
+														revisionPlayback={playback}
+														arrivalAutoplay={fromHandoff}
 														data={shareVideoData}
 														comments={
 															revisionComments
@@ -1021,7 +1033,9 @@ export const Share = ({
 															viewerId === data.owner.id
 														}
 														showPlaybackStatusBadge={viewerId === data.owner.id}
-														isEditProcessing={isEditProcessing}
+														isEditProcessing={
+															playback ? false : isEditProcessing
+														}
 														recordingStopped={recordingStopped}
 														defaultPlaybackSpeed={defaultPlaybackSpeed}
 														viewerIsOwner={viewerId === data.owner.id}
