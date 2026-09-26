@@ -9,6 +9,7 @@ import {
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { relocateFlaggedSource } from "@/lib/instant-finish-source-relocate";
 import { ownerOriginalPath } from "@/lib/revision-media-grant";
 import { pageMetadataForRevision } from "@/lib/revision-metadata-snapshot";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
@@ -271,6 +272,7 @@ export async function openInstantFinishEditor(
 		actionRefresh?: boolean;
 		now?: Date;
 		prepare?: typeof prepareSourceOnEditorOpen;
+		relocate?: typeof relocateFlaggedSource;
 	},
 ): Promise<{ playbackSrc: string; draftSession: string; generation: number }> {
 	const app = database as Database;
@@ -296,12 +298,31 @@ export async function openInstantFinishEditor(
 	const warm = actionRefresh
 		? warmSourceFromRow(existingBeforePrepare ?? null, now)
 		: null;
-	const prepared =
+	const preparedSource =
 		warm ??
 		(await (options?.prepare ?? prepareSourceOnEditorOpen)({
 			videoId,
 			sourceKey,
 		}));
+	const alreadyPurged =
+		existingBeforePrepare?.relocationState === "PURGED" &&
+		existingBeforePrepare.liveKey.startsWith("private/source/");
+	const relocated = alreadyPurged
+		? {
+				liveKey: existingBeforePrepare.liveKey,
+				sha256: existingBeforePrepare.sha256,
+			}
+		: await (options?.relocate ?? relocateFlaggedSource)({
+				videoId,
+				ownerId: video.ownerId,
+				sourceKey: preparedSource.sourceKey,
+				database: app,
+			});
+	const prepared = {
+		...preparedSource,
+		sourceKey: relocated.liveKey,
+		sha256: relocated.sha256,
+	};
 	const warmExpiresAt = new Date(prepared.warmExpiresAt);
 	if (
 		Number.isNaN(warmExpiresAt.getTime()) ||

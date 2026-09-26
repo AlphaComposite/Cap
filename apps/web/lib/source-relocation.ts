@@ -41,6 +41,9 @@ export type ObjectStore = {
 	deleteAllVersions(key: string): Promise<void>;
 	exists(key: string): Promise<boolean>;
 	presignGet(key: string): Promise<string>;
+	presignHead?(key: string): Promise<string>;
+	list?(prefix: string): Promise<string[]>;
+	listVersions?(key: string): Promise<string[]>;
 	request(url: string, method: "GET" | "HEAD", range?: string): Promise<number>;
 };
 
@@ -57,6 +60,7 @@ export type RelocationJournal = {
 	): Promise<void>;
 	getLiveKey(videoId: string): Promise<string | null>;
 	listOpen(): Promise<RelocationRow[]>;
+	listForVideo(videoId: string): Promise<RelocationRow[]>;
 	get(id: number): Promise<RelocationRow | null>;
 };
 
@@ -79,6 +83,7 @@ export function inventoryExposedKeys(input: {
 	outputKey?: string | null;
 	thumbnailKey?: string | null;
 	previewKey?: string | null;
+	extraKeys?: Array<string | null | undefined>;
 }): ExposedKey[] {
 	const prefix = `${input.ownerId}/${input.videoId}/`;
 	const keys = new Map<string, RelocationKind>();
@@ -100,6 +105,9 @@ export function inventoryExposedKeys(input: {
 	add(input.previewKey, "rollback");
 	add(`${prefix}screenshot/screen-capture.jpg`, "rollback");
 	add(`${prefix}preview/animated-preview.gif`, "rollback");
+	for (const key of input.extraKeys ?? []) {
+		add(key, key?.includes("/source/") ? "original" : "rollback");
+	}
 	return [...keys.entries()].map(([key, kind]) => ({ key, kind }));
 }
 
@@ -129,6 +137,7 @@ export async function relocateKey(input: {
 	purge?: PurgeClient;
 	purgeUrls?: string[];
 	preissuedUrl?: string;
+	probes?: Array<{ url: string; method: "GET" | "HEAD"; range?: string }>;
 	crash?: CrashPoint;
 	flagged?: boolean;
 }): Promise<{ id: number; sha256: string; purged: boolean }> {
@@ -151,6 +160,7 @@ export async function relocateKey(input: {
 		purge: input.purge,
 		purgeUrls: input.purgeUrls,
 		preissuedUrl: input.preissuedUrl,
+		probes: input.probes,
 		crash: input.crash,
 	});
 	return { id: row.id, sha256: sha, purged: !input.crash };
@@ -165,6 +175,7 @@ async function continueRelocation(
 		purge?: PurgeClient;
 		purgeUrls?: string[];
 		preissuedUrl?: string;
+		probes?: Array<{ url: string; method: "GET" | "HEAD"; range?: string }>;
 		crash?: CrashPoint;
 	},
 ) {
@@ -212,13 +223,26 @@ async function continueRelocation(
 		crashAt("after_delete", extra.crash);
 	}
 	if (state === "DELETED") {
-		if (extra.preissuedUrl) {
-			const statuses = await Promise.all([
-				store.request(extra.preissuedUrl, "GET"),
-				store.request(extra.preissuedUrl, "HEAD"),
-				store.request(extra.preissuedUrl, "GET", "bytes=0-0"),
-			]);
-			if (statuses.some((status) => status < 400)) {
+		if (row.oldKey !== row.newKey && (await store.exists(row.oldKey))) {
+			throw new Error("old key still exists after delete");
+		}
+		const probes = [
+			...(extra.preissuedUrl
+				? [
+						{ url: extra.preissuedUrl, method: "GET" as const },
+						{ url: extra.preissuedUrl, method: "HEAD" as const },
+						{
+							url: extra.preissuedUrl,
+							method: "GET" as const,
+							range: "bytes=0-0",
+						},
+					]
+				: []),
+			...(extra.probes ?? []),
+		];
+		for (const probe of probes) {
+			const status = await store.request(probe.url, probe.method, probe.range);
+			if (status < 400) {
 				throw new Error("preissued url still readable after delete");
 			}
 		}
@@ -228,6 +252,9 @@ async function continueRelocation(
 			if (!purged?.accepted) return;
 		}
 		await journal.mark(row.id, "PURGED", row.sha256);
+		if (extra.kind === "original") {
+			await journal.setLiveKey(row.videoId, row.newKey, row.sha256, "PURGED");
+		}
 		crashAt("after_purge", extra.crash);
 	}
 }
@@ -310,6 +337,9 @@ export function createMemoryJournal(): RelocationJournal & {
 				["INTENT", "COPIED", "POINTER", "DELETED"].includes(row.state),
 			);
 		},
+		async listForVideo(videoId) {
+			return rows.filter((row) => row.videoId === videoId);
+		},
 		async get(id) {
 			return rows.find((row) => row.id === id) ?? null;
 		},
@@ -323,12 +353,13 @@ export function assertFinishSourceKey(input: {
 	const relocated = input.relocations.find(
 		(item) =>
 			item.newKey.startsWith("private/source/") &&
-			(item.state === "POINTER" ||
-				item.state === "DELETED" ||
-				item.state === "PURGED"),
+			item.state === "PURGED" &&
+			item.newKey === input.liveKey,
 	);
-	if (relocated && input.liveKey !== relocated.newKey) {
-		throw new Error("Finish SourceId must use the relocated liveKey");
+	if (!relocated) {
+		throw new Error(
+			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+		);
 	}
 	return input.liveKey;
 }
@@ -353,4 +384,139 @@ export function resolveLegacySourceKey(input: {
 	if (input.liveKey && moved) return input.liveKey;
 	if (moved) return moved.newKey;
 	return input.sourceKey;
+}
+
+export type KeyProbe = { get: number; head: number; range: number };
+
+export type RelocationProof = {
+	before: Record<string, KeyProbe>;
+	after: Record<string, KeyProbe>;
+	liveKey: string | null;
+	liveKeyPrivate: boolean;
+	idempotent: boolean;
+	moved: number;
+};
+
+async function probeUrl(
+	store: ObjectStore,
+	getUrl: string,
+	headUrl: string,
+): Promise<KeyProbe> {
+	return {
+		get: await store.request(getUrl, "GET"),
+		head: await store.request(headUrl, "HEAD"),
+		range: await store.request(getUrl, "GET", "bytes=0-0"),
+	};
+}
+
+function refused(probe: KeyProbe) {
+	return probe.get >= 400 && probe.head >= 400 && probe.range >= 400;
+}
+
+export async function relocateOwnerVideo(input: {
+	ownerId: string;
+	videoId: string;
+	store: ObjectStore;
+	journal: RelocationJournal;
+	referencedKeys?: Array<string | null | undefined>;
+	sourceKey?: string | null;
+	rawFileKey?: string | null;
+	outputKey?: string | null;
+	revisionId?: string;
+	crash?: CrashPoint;
+	reconcileOnly?: boolean;
+}): Promise<RelocationProof> {
+	const prefix = `${input.ownerId}/${input.videoId}/`;
+	const listed = input.store.list ? await input.store.list(prefix) : [];
+	const exposed = inventoryExposedKeys({
+		ownerId: input.ownerId,
+		videoId: input.videoId,
+		sourceKey: input.sourceKey,
+		rawFileKey: input.rawFileKey,
+		outputKey: input.outputKey,
+		extraKeys: [...(input.referencedKeys ?? []), ...listed],
+	});
+	const presigned = new Map<string, string>();
+	const headSigned = new Map<string, string>();
+	for (const item of exposed) {
+		if (!(await input.store.exists(item.key))) continue;
+		presigned.set(item.key, await input.store.presignGet(item.key));
+		if (input.store.presignHead) {
+			headSigned.set(item.key, await input.store.presignHead(item.key));
+		}
+	}
+	const before: Record<string, KeyProbe> = {};
+	for (const [key, url] of presigned) {
+		before[key] = await probeUrl(input.store, url, headSigned.get(key) ?? url);
+	}
+	const kindFor = (row: RelocationRow): RelocationKind =>
+		row.newKey.startsWith("private/source/") ? "original" : "rollback";
+	if (input.reconcileOnly) {
+		await reconcileRelocations({
+			store: input.store,
+			journal: input.journal,
+			kindFor,
+			preissuedUrlFor: (row) => presigned.get(row.oldKey),
+		});
+	}
+	const moved: string[] = [];
+	if (!input.reconcileOnly) {
+		for (const item of exposed) {
+			if (!(await input.store.exists(item.key))) continue;
+			const open = await input.journal.listOpen();
+			if (open.some((row) => row.oldKey === item.key)) continue;
+			const newKey = privateKeyFor(item.kind, input.videoId);
+			const getUrl = presigned.get(item.key);
+			const headUrl = headSigned.get(item.key);
+			await relocateKey({
+				videoId: input.videoId,
+				revisionId: input.revisionId ?? "relocate",
+				oldKey: item.key,
+				newKey,
+				kind: item.kind,
+				store: input.store,
+				journal: input.journal,
+				preissuedUrl: getUrl,
+				probes: headUrl ? [{ url: headUrl, method: "HEAD" }] : undefined,
+				crash: input.crash,
+				flagged: true,
+			});
+			if (input.store.listVersions) {
+				const versions = await input.store.listVersions(item.key);
+				if (versions.length > 0) {
+					throw new Error(`old key versions remain for ${item.key}`);
+				}
+			}
+			moved.push(item.key);
+		}
+	}
+	const after: Record<string, KeyProbe> = {};
+	for (const [key, url] of presigned) {
+		after[key] = await probeUrl(input.store, url, headSigned.get(key) ?? url);
+		if (!refused(after[key])) {
+			throw new Error(`preissued url still readable for ${key}`);
+		}
+		if (await input.store.exists(key)) {
+			throw new Error(`old key still exists after relocation: ${key}`);
+		}
+	}
+	const rows = await input.journal.listForVideo(input.videoId);
+	const liveKey = await input.journal.getLiveKey(input.videoId);
+	const purged = rows.find(
+		(row) =>
+			row.state === "PURGED" &&
+			row.newKey.startsWith("private/source/") &&
+			row.newKey === liveKey,
+	);
+	if (!purged) {
+		throw new Error("relocation no-op is not a successful purge");
+	}
+	return {
+		before,
+		after,
+		liveKey,
+		liveKeyPrivate: liveKey?.startsWith("private/source/") === true,
+		idempotent: moved.length === 0,
+		moved: moved.length,
+	};
 }
