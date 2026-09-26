@@ -201,8 +201,31 @@ def _parse_packet_lines(text: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, 
     )
 
 
+def _reusable_audio_index(source: Path) -> dict | None:
+    dest = index_path(source)
+    prep = index_prep_path(source)
+    if not dest.is_file() or not prep.is_file():
+        return None
+    try:
+        record = json.loads(prep.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    source_sha = _sha256(source)
+    index_sha = _sha256(dest)
+    if record.get("source_sha256") != source_sha or record.get("index_sha256") != index_sha:
+        return None
+    if not isinstance(record.get("packets"), int) or isinstance(record.get("packets"), bool):
+        return None
+    reused = dict(record)
+    reused["reused"] = True
+    return reused
+
+
 def build_audio_index(source: Path) -> dict:
     """Eager packet index. Not called from a segment request."""
+    reused = _reusable_audio_index(source)
+    if reused is not None:
+        return reused
     started = time.perf_counter()
     result = subprocess.run(
         [
