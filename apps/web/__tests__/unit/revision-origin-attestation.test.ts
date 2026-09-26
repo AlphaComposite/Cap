@@ -8,10 +8,14 @@ import {
 
 const vector = JSON.parse(
 	readFileSync(
-		new URL("./fixtures/origin-attestation.json", import.meta.url),
+		new URL(
+			"../../../instant-finish-origin/tests/vectors/attestation.json",
+			import.meta.url,
+		),
 		"utf8",
 	),
 ) as {
+	header: string;
 	body: string;
 	mac: string;
 	serviceSecret: string;
@@ -24,19 +28,33 @@ const env = {
 
 describe("origin prepare attestation", () => {
 	it("MACs the raw prepare body and rejects a re-serialized or forged body", () => {
+		expect(vector.header).toBe("x-cap-origin-attestation");
 		expect(vector.body.endsWith("\n")).toBe(true);
+		const parsed = JSON.parse(vector.body) as Record<string, unknown>;
+		const recanonical = `{${Object.keys(parsed)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}: ${JSON.stringify(parsed[key])}`)
+			.join(", ")}}\n`;
+		expect(recanonical).toBe(vector.body);
 		expect(signOriginAttestation(vector.body, env)).toBe(vector.mac);
 		expect(verifyOriginAttestation(vector.mac, vector.body, env)).toBe(true);
+		expect(
+			verifyOriginAttestation(
+				vector.mac,
+				`${JSON.stringify(parsed)}\n`,
+				env,
+			),
+		).toBe(false);
 		expect(
 			parseVerifiedOriginAttestation(vector.mac, vector.body, env),
 		).toBeNull();
 		const fenced = `${vector.body.trimEnd().slice(0, -1)},"playlistDurationSeconds":1.5,"seg0DecodedFrames":4}\n`;
 		const fencedMac = signOriginAttestation(fenced, env);
-		const parsed = parseVerifiedOriginAttestation(fencedMac, fenced, env);
-		expect(parsed?.intentId).toBe("intent-vector-01");
-		expect(parsed?.decodedFrames).toBe(4);
-		expect(parsed?.seg0DecodedFrames).toBe(4);
-		expect(parsed?.playlistHasEndList).toBe(true);
+		const attested = parseVerifiedOriginAttestation(fencedMac, fenced, env);
+		expect(attested?.intentId).toBe("intent-vector-01");
+		expect(attested?.decodedFrames).toBe(4);
+		expect(attested?.seg0DecodedFrames).toBe(4);
+		expect(attested?.playlistHasEndList).toBe(true);
 		expect(verifyOriginAttestation(vector.mac, vector.body.trim(), env)).toBe(
 			false,
 		);
