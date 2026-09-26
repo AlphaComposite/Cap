@@ -266,8 +266,44 @@ def probe_audio_rate(source: Path) -> int:
     return int(text[0].strip())
 
 
+def _reusable_presentation(dest: Path, meta: Path, source_sha: str) -> dict | None:
+    if not dest.is_file() or not meta.is_file():
+        return None
+    try:
+        record = json.loads(meta.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if record.get("source_sha256") != source_sha:
+        return None
+    pcm_sha = record.get("pcm_sha256")
+    if not isinstance(pcm_sha, str) or len(pcm_sha) != 64:
+        return None
+    samples = record.get("samples")
+    if isinstance(samples, bool) or not isinstance(samples, int) or samples <= 0:
+        return None
+    if dest.stat().st_size != samples * 8:
+        return None
+    resampled = record.get("resampled_from")
+    if resampled not in {None, 16000}:
+        return None
+    return record
+
+
 def prepare_presentation(source: Path) -> dict:
-    """One full-file decode. Sample i is presentation time i/SR. Not a request path."""
+    """One full-file decode. Sample i is presentation time i/SR. Not a request path.
+
+    Editor-open reuses the PCM when its prep record is still bound to this source
+    sha. POST /internal/sources/{videoId}/prepare at upload time is what should
+    populate it; editor-open remains the fallback.
+    """
+    dest = presentation_pcm_path(source)
+    meta = presentation_meta_path(source)
+    source_sha = _sha256(source)
+    reused = _reusable_presentation(dest, meta, source_sha)
+    if reused is not None:
+        reused = dict(reused)
+        reused["reused"] = True
+        return reused
     policy = audio_rate_policy(probe_audio_rate(source))
     started = time.perf_counter()
     dest = presentation_pcm_path(source)
@@ -929,7 +965,140 @@ def inject_audio_track(init: bytes) -> bytes:
     return bytes(inserted)
 
 
-def mux_audio(media: bytes, raw_frames: list[bytes], tfdt: int, tail: int = 0) -> bytes:
+def presentation_samples(ticks: int, video_tb: int) -> int:
+    if isinstance(video_tb, bool) or not isinstance(video_tb, int) or video_tb <= 0 or ticks < 0:
+        raise RuntimeError(f"bad audio alignment ticks {ticks} tb {video_tb}")
+    return (ticks * SR + video_tb // 2) // video_tb
+
+
+def _fit_frame_durations(count: int, target: int) -> list[int]:
+    if count < 1 or target < count:
+        raise RuntimeError(f"cannot align {target} samples across {count} frames")
+    durations = [FRAME] * count
+    remaining = target - FRAME * count
+    limit = FRAME * 4
+    index = count - 1
+    while remaining != 0:
+        if index < 0:
+            raise RuntimeError(f"audio alignment residual {remaining}")
+        if remaining > 0:
+            step = min(remaining, limit - durations[index])
+        else:
+            step = -min(-remaining, durations[index] - 256)
+        durations[index] += step
+        remaining -= step
+        index -= 1
+    if sum(durations) != target:
+        raise RuntimeError("audio alignment drifted")
+    return durations
+
+
+def align_audio_timing(
+    sample_count: int,
+    *,
+    leading: bool,
+    video_start_ticks: int,
+    video_duration_ticks: int,
+    video_tb: int,
+) -> tuple[int, list[int]]:
+    """Container timing so this fragment's audio presentation matches the video fragment.
+
+    WebKit gaps the SourceBuffer when the two tracks in one moof disagree by a few
+    milliseconds, which VFR frame durations do against a fixed 1024-sample AAC grid.
+    The AAC payloads are unchanged. Segment 0's leading frame stays one frame before
+    presentation 0 so the init edit list still applies.
+    """
+    if sample_count < 1 or video_duration_ticks <= 0:
+        raise RuntimeError("audio alignment needs frames and a video duration")
+    start = presentation_samples(video_start_ticks, video_tb)
+    end = presentation_samples(video_start_ticks + video_duration_ticks, video_tb)
+    target = end - start
+    if target <= 0:
+        raise RuntimeError("video fragment has no presentation samples")
+    if leading:
+        if start != 0:
+            raise RuntimeError("leading segment must start at presentation 0")
+        if sample_count < 2:
+            raise RuntimeError("leading segment needs a kept audio frame")
+    # WebKit's SourceBuffer ignores the init edit list. A +1024 elst bias makes
+    # audio start 21 ms after video on every later fragment and splits the buffer.
+    return start, _fit_frame_durations(sample_count, target)
+
+
+def _trun_duration(body: bytes) -> int:
+    flags = int.from_bytes(body[1:4], "big")
+    count = int.from_bytes(body[4:8], "big")
+    cursor = 8
+    if flags & 0x1:
+        cursor += 4
+    if flags & 0x4:
+        cursor += 4
+    if not flags & 0x100:
+        raise RuntimeError("trun has no sample durations")
+    total = 0
+    for _ in range(count):
+        total += int.from_bytes(body[cursor:cursor + 4], "big")
+        cursor += 4
+        if flags & 0x200:
+            cursor += 4
+        if flags & 0x400:
+            cursor += 4
+        if flags & 0x800:
+            cursor += 4
+    return total
+
+
+def fragment_track_spans(segment: bytes) -> dict:
+    start = 0
+    if len(segment) >= 8 and segment[4:8] == b"styp":
+        start = int.from_bytes(segment[:4], "big")
+    video_ticks = 0
+    audio_samples = 0
+    audio_tfdt = None
+    video_tfdt = None
+    for off, size, header, name in _children(segment, start, len(segment)):
+        if name != b"moof":
+            continue
+        for toff, tsize, theader, tname in _children(segment, off + header, off + size):
+            if tname != b"traf":
+                continue
+            track = None
+            tfdt = None
+            dur_sum = 0
+            for xoff, xsize, xheader, xname in _children(segment, toff + theader, toff + tsize):
+                body = segment[xoff + xheader:xoff + xsize]
+                if xname == b"tfhd":
+                    track = int.from_bytes(body[4:8], "big")
+                elif xname == b"tfdt":
+                    version = body[0]
+                    tfdt = int.from_bytes(body[4:12] if version == 1 else body[4:8], "big")
+                elif xname == b"trun":
+                    dur_sum = _trun_duration(body)
+            if track == AUDIO_TRACK_ID:
+                audio_samples = dur_sum
+                audio_tfdt = tfdt
+            else:
+                video_ticks += dur_sum
+                video_tfdt = tfdt
+    return {
+        "audio_samples": audio_samples,
+        "audio_tfdt": audio_tfdt,
+        "video_tfdt": video_tfdt,
+        "video_ticks": video_ticks,
+    }
+
+
+def mux_audio(
+    media: bytes,
+    raw_frames: list[bytes],
+    tfdt: int,
+    tail: int = 0,
+    *,
+    video_start_ticks: int | None = None,
+    video_duration_ticks: int | None = None,
+    video_tb: int | None = None,
+    leading: bool = False,
+) -> bytes:
     top = list(_children(media, 0, len(media)))
     moofs = [item for item in top if item[3] == b"moof"]
     if len(moofs) != 1 or top[-1][3] != b"mdat":
@@ -940,11 +1109,25 @@ def mux_audio(media: bytes, raw_frames: list[bytes], tfdt: int, tail: int = 0) -
     video_payload = media[mdat[0] + header:mdat[0] + mdat[1]]
     audio_payload = b"".join(raw_frames)
     count = len(raw_frames)
-    durations = [FRAME] * count
-    if tail:
-        if count < 1 or tail <= 0 or tail >= FRAME:
-            raise RuntimeError(f"audio tail trim {tail} is outside one frame")
-        durations[-1] = FRAME - tail
+    if video_start_ticks is not None:
+        if video_duration_ticks is None or video_tb is None:
+            raise RuntimeError("audio alignment needs video start, duration, and timescale")
+        found = fragment_track_spans(media)["video_ticks"]
+        if found != video_duration_ticks:
+            raise RuntimeError(f"video fragment is {found} ticks, alignment expected {video_duration_ticks}")
+        tfdt, durations = align_audio_timing(
+            count,
+            leading=leading,
+            video_start_ticks=video_start_ticks,
+            video_duration_ticks=video_duration_ticks,
+            video_tb=video_tb,
+        )
+    else:
+        durations = [FRAME] * count
+        if tail:
+            if count < 1 or tail <= 0 or tail >= FRAME:
+                raise RuntimeError(f"audio tail trim {tail} is outside one frame")
+            durations[-1] = FRAME - tail
     trun_payload = count.to_bytes(4, "big") + (0).to_bytes(4, "big", signed=True) + (0x02000000).to_bytes(4, "big")
     for frame, duration in zip(raw_frames, durations, strict=True):
         trun_payload += duration.to_bytes(4, "big") + len(frame).to_bytes(4, "big")
@@ -1030,14 +1213,14 @@ def _track_id(buf: bytes, trak: tuple) -> int:
 
 
 def add_audio_elst(init: bytes, segment_duration: int) -> bytes:
-    """One audio edit in the init. No per-segment edit list."""
+    """One audio edit in the init. media_time is 0: WebKit MSE applies a non-zero value and fragment tfdt is already presentation time."""
     if segment_duration <= 0 or segment_duration > 0xFFFFFFFF:
         raise RuntimeError("elst segment_duration out of range")
     elst = _fullbox(
         b"elst", 0, 0,
         (1).to_bytes(4, "big")
         + int(segment_duration).to_bytes(4, "big")
-        + ELST_MEDIA_TIME.to_bytes(4, "big", signed=True)
+        + (0).to_bytes(4, "big", signed=True)
         + (1 << 16).to_bytes(4, "big"),
     )
     edts = _box(b"edts", elst)
