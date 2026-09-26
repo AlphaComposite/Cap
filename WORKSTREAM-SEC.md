@@ -37,3 +37,24 @@ bun test apps/instant-finish-origin/tests was not a JS suite; the Python unittes
 systemctl --user stop capsec-web
 docker compose -p capsec -f /srv/styrir/scratch/capsec-fzp/compose.yml --env-file /srv/styrir/scratch/capsec-fzp/secrets.env down --remove-orphans
 The secrets file remains at /srv/styrir/scratch/capsec-fzp/secrets.env mode 600 and was not printed.
+
+## Completion pass
+
+S1 root cause: editor-open prepare downloaded the relocated object and found a cached mezz `.source-bind.json` whose `source_sha256` did not match those bytes. The handler returned HTTP 500 body `unavailable` and did not log the exception type, which is why the capsec-web journal only said `Source prepare failed with HTTP 500` (21:29 and 21:35; the 21:27 409 was `mezzanine_required`). The mismatch return is now a rebuild in `apps/instant-finish-origin/server.py:170` (`_bound_mezzanine`); a still-mismatched bind returns 500 at line 194. A key that is not the recorded live key is 409 `source_key_mismatch`. Origin MinIO policy allows GetObject/GetObjectVersion only on the recorded `private/source/<videoId>/<opaque>` keys, plus ListBucket conditioned on those exact prefixes. Recorded policy: `/srv/styrir/scratch/cap-fzp-8-wire/sec-evidence/origin-policy.json`.
+
+Follow-on blockers found while proving Done, each fixed at the cause:
+- Next's patched fetch memoized the pre-delete GET, so the revocation probe still saw 200. Probe now uses node:http (`apps/web/scripts/instant-finish-relocate.ts`).
+- A fixed 512-tick placeholder pts is one 30fps step only at timescale 15360. At 16000 the muxer reported `non monotonically increasing dts` and revision prepare returned 500. Step is now `timescale // 30` (`apps/instant-finish-origin/lib_origin.py`).
+- The self-host proxy sent `/media` to `/login`, so the share page never loaded the playlist. `/media/` is allowlisted (`apps/web/proxy.ts`).
+
+Commits after 8e58317465: cf9337ae8d, 261032ccd9, 655b823d5a, baa8410fdb, 2b8e8a0cf7, 4ebeadc929, e3e63bb3ba, 0fa2a622c4, baea860ad2.
+
+Tests: relocated-key prepare failed in the origin image before the rebuild (HTTP 500 `unavailable`) and passed after. `test_16000_timescale_segment_muxes` covers the dts fix. Versioning OFF and ON purge: `/srv/styrir/scratch/cap-fzp-8-wire/sec-evidence/version-purge.json` (unversioned VersionId `"null"` still deletes the current object).
+
+S2: Chromium and Playwright WebKit 2311. Open editor on a never-relocated fixture, relocation ran, Done appeared, share page painted the new revision from `/media` only (playlist, init, seg/0, seg/1 all 200). Chromium rVFC mediaTime 0.033312 before and after reload. WebKit rVFC mediaTime 0.066687 on first paint; reload click-to-play mediaTime 0.033312 in `webkit-reload.json`. Pre-editor presigned GET/HEAD/Range for original, raw, result, and segment are 404 after. Evidence: `/srv/styrir/scratch/cap-fzp-8-wire/sec-evidence/e2e.json` and the six `chromium-*.png` / `webkit-*.png` shots.
+
+S3: Sec-Fetch-Site cross-site 403, same-site 403, same-origin pass, absent plus good Origin pass; non-default port is compared. Covered by `revision-route-guard.test.ts`.
+
+S4: claim is a short transaction with `for("update").skipLocked()`, complete checks the lease token, attempts stop at 5 with an error log, revert requires CURRENT generation, and publish only inserts the outbox. Integration test `does not revert a readback killed during its lease until the lease expires` passed on disposable MySQL, not skipped.
+
+Gates: vitest revision/save-video-edits/video-edit/instant-finish/fix2/source-relocation plus the new policy and route-guard files, 25 files, 204 passed. Disposable-MySQL integration 13 passed. Origin unittest discover ORIGIN_IMAGE=capsec2-origin:wire-sec (sha256:d6119849e8246757b725c7af54cbf5a08d5deb13e68e3fa82a84d946fbed4762), 41 tests, OK, 1 skipped. typegen then `tsc -b apps/web` with heap 6144, 0 errors. Biome on the changed files, clean.
