@@ -29,7 +29,7 @@ def mezz_command(source: Path, dest: Path, timescale: int) -> list[str]:
         "-g", "1000",
         "-force_key_frames", "expr:gte(t,n_forced*1)",
         "-x264-params", MEZZ_X264,
-        "-threads", "4",
+        "-threads", str(limits.origin_cpus()),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
         "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1",
         "-bf", "0", "-forced-idr", "1",

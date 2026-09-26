@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 
 def _int(name: str, default: int) -> int:
@@ -81,6 +82,70 @@ def source_duration_s(path) -> float:
 
 def timeout_for_source(path) -> float:
     return timeout_for_duration(source_duration_s(path))
+
+
+def origin_cpus() -> int:
+    """Encoder thread count. ORIGIN_CPUS wins; otherwise the cgroup quota; else 4."""
+    raw = os.environ.get("ORIGIN_CPUS", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise InputRejected(f"bad ORIGIN_CPUS {raw}") from exc
+        if value <= 0:
+            raise InputRejected(f"bad ORIGIN_CPUS {raw}")
+        return max(1, int(value + 0.5))
+    detected = _cgroup_cpus()
+    if detected is not None:
+        return detected
+    return 4
+
+
+def _cgroup_cpus() -> int | None:
+    try:
+        lines = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) != 3 or not parts[2].strip("/"):
+            continue
+        root = Path("/sys/fs/cgroup") / parts[2].lstrip("/")
+        parsed = _cpu_max(root / "cpu.max")
+        if parsed is not None:
+            return parsed
+        parsed = _cpu_quota(root / "cpu.cfs_quota_us", root / "cpu.cfs_period_us")
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _cpu_max(path: Path) -> int | None:
+    try:
+        quota, period = path.read_text().split()
+    except (OSError, ValueError):
+        return None
+    if quota == "max":
+        return None
+    return _quota_cpus(quota, period)
+
+
+def _cpu_quota(quota_path: Path, period_path: Path) -> int | None:
+    try:
+        return _quota_cpus(quota_path.read_text().strip(), period_path.read_text().strip())
+    except OSError:
+        return None
+
+
+def _quota_cpus(quota: str, period: str) -> int | None:
+    try:
+        q = int(quota)
+        p = int(period)
+    except ValueError:
+        return None
+    if q <= 0 or p <= 0:
+        return None
+    return max(1, int(q / p + 0.5))
 
 
 def probe_walk_timeout(path) -> float:
