@@ -10,6 +10,7 @@ import {
 	comments,
 	editRevision,
 	sourceObject,
+	sourceRelocation,
 	videoEdits,
 	videoPublication,
 	videos,
@@ -24,7 +25,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/env", () => ({
 	buildEnv: { NEXT_PUBLIC_WEB_URL: "http://127.0.0.1:30410" },
-	serverEnv: () => ({ NEXTAUTH_SECRET: "test-secret-with-enough-entropy" }),
+	serverEnv: () => ({
+		NEXTAUTH_SECRET: "test-secret-with-enough-entropy",
+		WEB_URL: "http://127.0.0.1:30410",
+	}),
 }));
 vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
@@ -38,6 +42,7 @@ import {
 	claimArtifactLease,
 	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
+	sweepRevisionReadbacks,
 } from "@/lib/revision-publication";
 import {
 	RevisionPublicationError,
@@ -379,15 +384,24 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		]);
 		await database.insert(sourceObject).values({
 			videoId: videoId as never,
-			liveKey: `${ownerId}/${videoId}/source/original.mp4`,
+			liveKey: `private/source/${videoId}/wireopaque`,
 			sha256: "b".repeat(64),
-			relocationState: "LIVE",
+			relocationState: "PURGED",
 			codec: "h264",
 			timebase: "1/15360",
 			frameMode: "vfr",
 			a1Digest: "c".repeat(64),
 			indexId: "index-1",
 			warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+		await database.insert(sourceRelocation).values({
+			videoId: videoId as never,
+			revisionId: "relocate",
+			oldKey: `${ownerId}/${videoId}/source/original.mp4`,
+			newKey: `private/source/${videoId}/wireopaque`,
+			sha256: "b".repeat(64),
+			state: "PURGED",
+			createdAt: new Date(),
 		});
 	}, 180_000);
 
@@ -436,15 +450,24 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		await pool.query("SET FOREIGN_KEY_CHECKS=1");
 		await database.insert(sourceObject).values({
 			videoId: videoId as never,
-			liveKey: `${ownerId}/${videoId}/source/original.mp4`,
+			liveKey: `private/source/${videoId}/wireopaque`,
 			sha256: "b".repeat(64),
-			relocationState: "LIVE",
+			relocationState: "PURGED",
 			codec: "h264",
 			timebase: "1/15360",
 			frameMode: "vfr",
 			a1Digest: "c".repeat(64),
 			indexId: "index-1",
 			warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+		await database.insert(sourceRelocation).values({
+			videoId: videoId as never,
+			revisionId: "relocate",
+			oldKey: `${ownerId}/${videoId}/source/original.mp4`,
+			newKey: `private/source/${videoId}/wireopaque`,
+			sha256: "b".repeat(64),
+			state: "PURGED",
+			createdAt: new Date(),
 		});
 	});
 
@@ -590,9 +613,6 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 	});
 
 	it("flips on a signed attestation, then reverts CURRENT when async readback fails", async () => {
-		const { pendingRevisionReadbacks } = await import(
-			"@/lib/revision-publication"
-		);
 		const [before] = await database
 			.select()
 			.from(videoPublication)
@@ -617,7 +637,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
 		expect(flipped?.currentRevisionId).toBe(published.revisionId);
-		await pendingRevisionReadbacks();
+		await sweepRevisionReadbacks(database, { origin: origin.client() });
 		origin.failCaptions = false;
 		const [reverted] = await database
 			.select()
@@ -643,7 +663,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			{ origin: origin.client() },
 		);
 		expect(retried.revisionId).not.toBe(published.revisionId);
-		await pendingRevisionReadbacks();
+		await sweepRevisionReadbacks(database, { origin: origin.client() });
 		const [after] = await database
 			.select()
 			.from(videoPublication)
@@ -952,5 +972,81 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			),
 		).rejects.toThrow(/edited in another session/);
 		expect(origin.preparePosts).toBe(posts);
+	});
+
+	it("restarts a stranded readback and does not let a stale readback revert a later current", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		origin.failCaptions = true;
+		const stranded = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(7),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		expect(origin.artifactReads).toBe(0);
+		origin.failCaptions = false;
+		const later = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(8),
+				baseGeneration: (before?.generation ?? 0) + 1,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 2,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const swept = await sweepRevisionReadbacks(database, {
+			origin: origin.client(),
+		});
+		expect(swept.some((row) => row.reason === "stale" && !row.reverted)).toBe(
+			true,
+		);
+		const [after] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).toBe(later.revisionId);
+		expect(after?.currentRevisionId).not.toBe(stranded.revisionId);
+	});
+
+	it("does not let two workers process the same readback", async () => {
+		const [before] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(8.5),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		const [first, second] = await Promise.all([
+			sweepRevisionReadbacks(database, {
+				origin: origin.client(),
+				workerId: "a",
+				revisionId: published.revisionId,
+			}),
+			sweepRevisionReadbacks(database, {
+				origin: origin.client(),
+				workerId: "b",
+				revisionId: published.revisionId,
+			}),
+		]);
+		const processed = [...first, ...second].filter((row) => !row.skipped);
+		expect(processed).toHaveLength(1);
 	});
 });
