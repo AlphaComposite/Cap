@@ -559,7 +559,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		});
 		expect(secondLease.claimed).toBe(false);
 		expect(await resolveRollbackSourceKey(videoId, "old/key", database)).toBe(
-			`${ownerId}/${videoId}/source/original.mp4`,
+			`private/source/${videoId}/wireopaque`,
 		);
 		const [publication] = await database
 			.select({ policyEpoch: videoPublication.policyEpoch })
@@ -980,6 +980,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
 		origin.failCaptions = true;
+		origin.artifactReads = 0;
 		const stranded = await publishInstantFinishRevision(
 			database,
 			{
