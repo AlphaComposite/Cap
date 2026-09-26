@@ -13,6 +13,7 @@ export const REVISION_MEDIA_CACHE_CONTROL = "private, no-store";
 export const REVISION_MEDIA_REFERRER_POLICY = "no-referrer";
 
 export const ORIGIN_SERVICE_HEADER = "x-cap-origin-service";
+export const ORIGIN_ATTESTATION_HEADER = "x-cap-origin-attestation";
 export const ORIGIN_SERVICE_TTL_SECONDS = 30;
 const MIN_SECRET_BYTES = 32;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -104,7 +105,7 @@ export function originBodySha256(body: string | Uint8Array = ""): string {
 	return createHash("sha256").update(body).digest("hex");
 }
 
-const hmac = (secret: string, payload: string) =>
+const hmac = (secret: string, payload: string | Uint8Array) =>
 	createHmac("sha256", secret).update(payload).digest("base64url");
 
 const constantTimeEqual = (left: string, right: string) => {
@@ -343,6 +344,92 @@ export function verifyInternalServiceRequest(
 	return (
 		claims.iat <= now + REVISION_MEDIA_GRANT_SKEW_SECONDS && now <= claims.exp
 	);
+}
+
+const SHA256_HEX = /^[a-f0-9]{64}$/i;
+
+export type OriginAttestation = {
+	decodedFrames: number;
+	durationSeconds: number;
+	initSha256: string;
+	intentId: string;
+	playlistDurationSeconds: number;
+	playlistHasEndList: true;
+	seg0DecodedFrames: number;
+	seg0Sha256: string;
+};
+
+export function signOriginAttestation(
+	body: string | Uint8Array,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const secret = resolveServiceSecret(env);
+	if (!secret) throw new Error("origin service secret is not configured");
+	const payload = typeof body === "string" ? body : Buffer.from(body);
+	return hmac(secret, payload);
+}
+
+export function verifyOriginAttestation(
+	mac: string,
+	body: string | Uint8Array,
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	const secret = resolveServiceSecret(env);
+	if (!secret || mac.length === 0) return false;
+	try {
+		const payload = typeof body === "string" ? body : Buffer.from(body);
+		return constantTimeEqual(mac, hmac(secret, payload));
+	} catch {
+		return false;
+	}
+}
+
+function attestationHash(value: unknown): value is string {
+	return typeof value === "string" && SHA256_HEX.test(value);
+}
+
+export function parseVerifiedOriginAttestation(
+	mac: string,
+	body: string,
+	env: NodeJS.ProcessEnv = process.env,
+): OriginAttestation | null {
+	if (!verifyOriginAttestation(mac, body, env)) return null;
+	try {
+		const parsed = JSON.parse(body) as Record<string, unknown>;
+		const decodedFrames = parsed.decodedFrames;
+		const seg0DecodedFrames = parsed.seg0DecodedFrames;
+		const durationSeconds = parsed.durationSeconds;
+		const playlistDurationSeconds = parsed.playlistDurationSeconds;
+		if (
+			parsed.playlistHasEndList !== true ||
+			typeof parsed.intentId !== "string" ||
+			parsed.intentId.length === 0 ||
+			!Number.isSafeInteger(decodedFrames) ||
+			(decodedFrames as number) < 1 ||
+			!Number.isSafeInteger(seg0DecodedFrames) ||
+			(seg0DecodedFrames as number) < 1 ||
+			typeof durationSeconds !== "number" ||
+			!Number.isFinite(durationSeconds) ||
+			typeof playlistDurationSeconds !== "number" ||
+			!Number.isFinite(playlistDurationSeconds) ||
+			!attestationHash(parsed.initSha256) ||
+			!attestationHash(parsed.seg0Sha256)
+		) {
+			return null;
+		}
+		return {
+			decodedFrames: decodedFrames as number,
+			durationSeconds,
+			initSha256: parsed.initSha256,
+			intentId: parsed.intentId,
+			playlistDurationSeconds,
+			playlistHasEndList: true,
+			seg0DecodedFrames: seg0DecodedFrames as number,
+			seg0Sha256: parsed.seg0Sha256,
+		};
+	} catch {
+		return null;
+	}
 }
 
 export function getRevisionPlaybackUrl(input: {

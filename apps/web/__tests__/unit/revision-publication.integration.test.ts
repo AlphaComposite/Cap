@@ -30,7 +30,10 @@ vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
 }));
 
-import { verifyInternalServiceRequest } from "@/lib/revision-media-token";
+import {
+	signOriginAttestation,
+	verifyInternalServiceRequest,
+} from "@/lib/revision-media-token";
 import {
 	claimArtifactLease,
 	publishInstantFinishRevision,
@@ -68,6 +71,7 @@ type Prepared = RevisionPrepareBody & {
 class FakeOrigin {
 	readonly prepared = new Map<string, Prepared>();
 	failCaptions = false;
+	artifactReads = 0;
 	server = createServer((req, res) => this.handle(req, res));
 	url = "";
 
@@ -103,7 +107,14 @@ class FakeOrigin {
 					},
 				);
 				if (!response.ok) throw new Error(`prepare ${response.status}`);
-				return response.json() as Promise<RevisionPrepareResult>;
+				const attestationBody = await response.text();
+				const payload = JSON.parse(attestationBody) as RevisionPrepareResult;
+				return {
+					...payload,
+					attestationMac:
+						response.headers.get("x-cap-origin-attestation") ?? "",
+					attestationBody,
+				};
 			},
 			fetchArtifact: async (input) => {
 				const response = await fetch(
@@ -200,20 +211,25 @@ class FakeOrigin {
 					playlist,
 					thumb,
 				});
-				res.writeHead(200, { "content-type": "application/json" }).end(
-					JSON.stringify({
-						ready: true,
-						intentId: body.intentId,
-						decoded: true,
-						decodedFrames: 1,
-						seg0DecodedFrames: 1,
-						playlistHasEndList: true,
-						initSha256: sha256Hex(init),
-						seg0Sha256: sha256Hex(seg0),
-						playlistDurationSeconds: body.durationSeconds,
-						durationSeconds: body.durationSeconds,
-					}),
-				);
+				const payload = {
+					ready: true,
+					intentId: body.intentId,
+					decoded: true,
+					decodedFrames: 1,
+					seg0DecodedFrames: 1,
+					playlistHasEndList: true,
+					initSha256: sha256Hex(init),
+					seg0Sha256: sha256Hex(seg0),
+					playlistDurationSeconds: body.durationSeconds,
+					durationSeconds: body.durationSeconds,
+				};
+				const attestationBody = `${JSON.stringify(payload)}\n`;
+				res
+					.writeHead(200, {
+						"content-type": "application/json",
+						"x-cap-origin-attestation": signOriginAttestation(attestationBody),
+					})
+					.end(attestationBody);
 			});
 			return;
 		}
@@ -222,6 +238,7 @@ class FakeOrigin {
 			res.writeHead(404).end();
 			return;
 		}
+		this.artifactReads += 1;
 		const prepared = this.prepared.get(media[2] ?? "");
 		if (!prepared) {
 			res.writeHead(404).end();
@@ -569,53 +586,66 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(after?.currentRevisionId).toBe(before?.currentRevisionId);
 	});
 
-	it("blocks 200 and CURRENT when metadata readback fails, then retries with a fresh revision", async () => {
+	it("flips on a signed attestation, then reverts CURRENT when async readback fails", async () => {
+		const { pendingRevisionReadbacks } = await import(
+			"@/lib/revision-publication"
+		);
 		const [before] = await database
 			.select()
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
 		origin.failCaptions = true;
-		await expect(
-			publishInstantFinishRevision(
-				database,
-				{
-					videoId,
-					editSpec: spec(4),
-					baseGeneration: before?.generation ?? 0,
-					draftVersion: (before?.latestDraftVersion ?? 0) + 1,
-					draftSession: "editor",
-				},
-				{ origin: origin.client() },
-			),
-		).rejects.toMatchObject({ status: 500 });
-		origin.failCaptions = false;
-		const [mid] = await database
+		origin.artifactReads = 0;
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				videoId,
+				editSpec: spec(4),
+				baseGeneration: before?.generation ?? 0,
+				draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+				draftSession: "editor",
+			},
+			{ origin: origin.client() },
+		);
+		expect(published.success).toBe(true);
+		expect(origin.artifactReads).toBe(0);
+		const [flipped] = await database
 			.select()
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
-		expect(mid?.currentRevisionId).toBe(before?.currentRevisionId);
+		expect(flipped?.currentRevisionId).toBe(published.revisionId);
+		await pendingRevisionReadbacks();
+		origin.failCaptions = false;
+		const [reverted] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(reverted?.currentRevisionId).toBe(before?.currentRevisionId);
+		const failed = await database
+			.select()
+			.from(editRevision)
+			.where(eq(editRevision.videoId, videoId as never));
+		expect(
+			failed.find((row) => row.revisionId === published.revisionId)?.state,
+		).toBe("FAILED");
 		const retried = await publishInstantFinishRevision(
 			database,
 			{
 				videoId,
 				editSpec: spec(4),
-				baseGeneration: mid?.generation ?? 0,
-				draftVersion: (mid?.latestDraftVersion ?? 0) + 1,
+				baseGeneration: reverted?.generation ?? 0,
+				draftVersion: (reverted?.latestDraftVersion ?? 0) + 1,
 				draftSession: "editor",
 			},
 			{ origin: origin.client() },
 		);
-		expect(retried.revisionId).not.toBe(before?.currentRevisionId);
-		const failed = await database
+		expect(retried.revisionId).not.toBe(published.revisionId);
+		await pendingRevisionReadbacks();
+		const [after] = await database
 			.select()
-			.from(editRevision)
-			.where(eq(editRevision.videoId, videoId as never));
-		expect(failed.some((row) => row.state === "FAILED")).toBe(true);
-		expect(
-			failed
-				.filter((row) => row.state === "CURRENT")
-				.map((row) => row.revisionId),
-		).toContain(retried.revisionId);
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).toBe(retried.revisionId);
 	});
 
 	it("does not let a stale S0 become current after a newer generation flips", async () => {
