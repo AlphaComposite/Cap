@@ -108,7 +108,7 @@ describe("seek clock without media events", () => {
 });
 
 describe("prefetched fragment loader", () => {
-	it("serves the prefetched seg0 bytes without another load and does not reuse them", () => {
+	it("serves the prefetched seg0 bytes without another load and does not reuse them", async () => {
 		clearPrefetchedFragments();
 		const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
 		const url = "http://127.0.0.1:32120/media/v/r/rev/seg/0.m4s?t=grant";
@@ -127,6 +127,7 @@ describe("prefetched fragment loader", () => {
 		expect(success).toHaveBeenCalled();
 		expect(success.mock.calls[0]?.[0].data).toBe(bytes);
 		loader.load({ url }, {}, { onSuccess: success });
-		expect(network).toHaveBeenCalledOnce();
+		expect(success).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(network).toHaveBeenCalledOnce());
 	});
 });
