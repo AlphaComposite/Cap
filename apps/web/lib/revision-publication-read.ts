@@ -9,7 +9,10 @@ import {
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
-import { relocateFlaggedSource } from "@/lib/instant-finish-source-relocate";
+import {
+	refreshOriginReadPolicy,
+	relocateFlaggedSource,
+} from "@/lib/instant-finish-source-relocate";
 import { ownerOriginalPath } from "@/lib/revision-media-grant";
 import { pageMetadataForRevision } from "@/lib/revision-metadata-snapshot";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
@@ -295,15 +298,6 @@ export async function openInstantFinishEditor(
 		.select()
 		.from(sourceObject)
 		.where(eq(sourceObject.videoId, asVideoId(videoId)));
-	const warm = actionRefresh
-		? warmSourceFromRow(existingBeforePrepare ?? null, now)
-		: null;
-	const preparedSource =
-		warm ??
-		(await (options?.prepare ?? prepareSourceOnEditorOpen)({
-			videoId,
-			sourceKey,
-		}));
 	const alreadyPurged =
 		existingBeforePrepare?.relocationState === "PURGED" &&
 		existingBeforePrepare.liveKey.startsWith("private/source/");
@@ -315,9 +309,20 @@ export async function openInstantFinishEditor(
 		: await (options?.relocate ?? relocateFlaggedSource)({
 				videoId,
 				ownerId: video.ownerId,
-				sourceKey: preparedSource.sourceKey,
+				sourceKey,
 				database: app,
 			});
+	await refreshOriginReadPolicy(app, relocated.liveKey);
+	const warm =
+		actionRefresh && alreadyPurged
+			? warmSourceFromRow(existingBeforePrepare ?? null, now)
+			: null;
+	const preparedSource =
+		warm ??
+		(await (options?.prepare ?? prepareSourceOnEditorOpen)({
+			videoId,
+			sourceKey: relocated.liveKey,
+		}));
 	const prepared = {
 		...preparedSource,
 		sourceKey: relocated.liveKey,
