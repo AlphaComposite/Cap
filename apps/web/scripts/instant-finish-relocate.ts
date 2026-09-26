@@ -4,6 +4,7 @@ import {
 	DeleteObjectCommand,
 	GetObjectCommand,
 	HeadObjectCommand,
+	ListObjectsV2Command,
 	ListObjectVersionsCommand,
 	PutBucketVersioningCommand,
 	PutObjectCommand,
@@ -13,36 +14,18 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createConnection } from "mysql2/promise";
 import {
 	type CrashPoint,
-	inventoryExposedKeys,
 	type ObjectStore,
-	privateKeyFor,
 	type RelocationJournal,
-	type RelocationKind,
 	type RelocationRow,
 	type RelocationState,
-	reconcileRelocations,
-	relocateKey,
+	relocateOwnerVideo as relocateOwnerVideoShared,
 } from "../lib/source-relocation";
-
-type Statuses = { get: number; head: number; range: number };
-
-export type RelocationProof = {
-	before: Statuses;
-	after: Statuses;
-	rollbackRetained: boolean;
-	liveKeyPrivate: boolean;
-	idempotent: boolean;
-	reconciled: number;
-};
-
-const privatePrefix = (key: string) =>
-	key.startsWith("private/source/") || key.startsWith("private/rollback/");
 
 export function createS3Store(
 	client: S3Client,
 	bucket: string,
 ): ObjectStore & {
-	presignHead: (key: string) => Promise<{ key: string; url: string }>;
+	presignHead: (key: string) => Promise<string>;
 } {
 	return {
 		async copy(oldKey, newKey) {
@@ -105,13 +88,55 @@ export function createS3Store(
 				return false;
 			}
 		},
+		async list(prefix) {
+			const keys: string[] = [];
+			let token: string | undefined;
+			do {
+				const listed = await client.send(
+					new ListObjectsV2Command({
+						Bucket: bucket,
+						Prefix: prefix,
+						ContinuationToken: token,
+					}),
+				);
+				for (const item of listed.Contents ?? []) {
+					if (item.Key) keys.push(item.Key);
+				}
+				token = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+			} while (token);
+			return keys;
+		},
+		async listVersions(key) {
+			const versions: string[] = [];
+			let keyMarker: string | undefined;
+			let versionMarker: string | undefined;
+			do {
+				const listed = await client.send(
+					new ListObjectVersionsCommand({
+						Bucket: bucket,
+						Prefix: key,
+						KeyMarker: keyMarker,
+						VersionIdMarker: versionMarker,
+					}),
+				);
+				for (const item of [
+					...(listed.Versions ?? []),
+					...(listed.DeleteMarkers ?? []),
+				]) {
+					if (item.Key === key && item.VersionId) versions.push(item.VersionId);
+				}
+				keyMarker = listed.NextKeyMarker;
+				versionMarker = listed.NextVersionIdMarker;
+				if (!listed.IsTruncated) break;
+			} while (keyMarker);
+			return versions;
+		},
 		async presignHead(key) {
-			const url = await getSignedUrl(
+			return getSignedUrl(
 				client,
 				new HeadObjectCommand({ Bucket: bucket, Key: key }),
 				{ expiresIn: 60 },
 			);
-			return { key, url };
 		},
 		async presignGet(key) {
 			return getSignedUrl(
@@ -128,6 +153,15 @@ export function createS3Store(
 			await response.arrayBuffer().catch(() => undefined);
 			return response.status;
 		},
+	};
+}
+
+function mapRow(row: RelocationRow): RelocationRow {
+	return {
+		...row,
+		id: Number(row.id),
+		createdAt: String(row.createdAt),
+		state: row.state as RelocationState,
 	};
 }
 
@@ -183,12 +217,15 @@ export async function createMysqlJournal(
 				 FROM source_relocation
 				 WHERE state IN ('INTENT', 'COPIED', 'POINTER', 'DELETED')`,
 			);
-			return (rows as RelocationRow[]).map((row) => ({
-				...row,
-				id: Number(row.id),
-				createdAt: String(row.createdAt),
-				state: row.state as RelocationState,
-			}));
+			return (rows as RelocationRow[]).map(mapRow);
+		},
+		async listForVideo(videoId) {
+			const [rows] = await connection.execute(
+				`SELECT id, videoId, revisionId, oldKey, newKey, sha256, state, createdAt
+				 FROM source_relocation WHERE videoId = ?`,
+				[videoId],
+			);
+			return (rows as RelocationRow[]).map(mapRow);
 		},
 		async get(id) {
 			const [rows] = await connection.execute(
@@ -209,122 +246,32 @@ export async function createMysqlJournal(
 	return journal;
 }
 
-async function statusesFor(
-	store: ObjectStore,
-	getUrl: string,
-	headUrl: string,
-): Promise<Statuses> {
-	return {
-		get: await store.request(getUrl, "GET"),
-		head: await store.request(headUrl, "HEAD"),
-		range: await store.request(getUrl, "GET", "bytes=0-0"),
-	};
-}
-
 export async function relocateOwnerVideo(input: {
 	ownerId: string;
 	videoId: string;
 	bucket: string;
 	store: ObjectStore;
 	journal: RelocationJournal;
+	referencedKeys?: Array<string | null | undefined>;
+	sourceKey?: string | null;
 	revisionId?: string;
 	crash?: CrashPoint;
 	reconcileOnly?: boolean;
-}): Promise<RelocationProof> {
+}) {
 	const prefix = `${input.ownerId}/${input.videoId}/`;
-	const exposed = inventoryExposedKeys({
+	return relocateOwnerVideoShared({
 		ownerId: input.ownerId,
 		videoId: input.videoId,
+		store: input.store,
+		journal: input.journal,
+		sourceKey: input.sourceKey ?? `${prefix}source/original.mp4`,
 		rawFileKey: `${prefix}raw-upload.mp4`,
 		outputKey: `${prefix}.recording/outputs/result.mp4`,
+		referencedKeys: input.referencedKeys,
+		revisionId: input.revisionId,
+		crash: input.crash,
+		reconcileOnly: input.reconcileOnly,
 	});
-	const presigned = new Map<string, string>();
-	const headSigned = new Map<string, string>();
-	const signing = input.store as ObjectStore & {
-		presignHead?: (key: string) => Promise<{ url: string }>;
-	};
-	for (const item of exposed) {
-		if (await input.store.exists(item.key)) {
-			presigned.set(item.key, await input.store.presignGet(item.key));
-			if (signing.presignHead) {
-				headSigned.set(item.key, (await signing.presignHead(item.key)).url);
-			}
-		}
-	}
-	const sampleKey = Array.from(presigned.keys())[0];
-	const sampleUrl = sampleKey ? presigned.get(sampleKey) : undefined;
-	const sampleHead = sampleKey
-		? (headSigned.get(sampleKey) ?? sampleUrl)
-		: undefined;
-	const before =
-		sampleUrl && sampleHead
-			? await statusesFor(input.store, sampleUrl, sampleHead)
-			: { get: 404, head: 404, range: 404 };
-	const kindFor = (row: RelocationRow): RelocationKind =>
-		row.newKey.startsWith("private/source/") ? "original" : "rollback";
-	if (input.reconcileOnly) {
-		const reconciled = await reconcileRelocations({
-			store: input.store,
-			journal: input.journal,
-			kindFor,
-			preissuedUrlFor: (row) => presigned.get(row.oldKey),
-		});
-		const liveKey = await input.journal.getLiveKey(input.videoId);
-		const afterUrl = sampleUrl;
-		const afterHead = sampleHead;
-		return {
-			before,
-			after:
-				afterUrl && afterHead
-					? await statusesFor(input.store, afterUrl, afterHead)
-					: { get: 404, head: 404, range: 404 },
-			rollbackRetained: exposed.some((item) => item.kind === "rollback"),
-			liveKeyPrivate: liveKey != null && privatePrefix(liveKey),
-			idempotent: true,
-			reconciled,
-		};
-	}
-	const moved: Array<{ oldKey: string; newKey: string; kind: RelocationKind }> =
-		[];
-	for (const item of exposed) {
-		if (!(await input.store.exists(item.key))) continue;
-		const open = await input.journal.listOpen();
-		if (open.some((row) => row.oldKey === item.key)) continue;
-		const newKey = privateKeyFor(item.kind, input.videoId);
-		await relocateKey({
-			videoId: input.videoId,
-			revisionId: input.revisionId ?? "relocate",
-			oldKey: item.key,
-			newKey,
-			kind: item.kind,
-			store: input.store,
-			journal: input.journal,
-			preissuedUrl: presigned.get(item.key),
-			crash: input.crash,
-			flagged: true,
-		});
-		moved.push({ oldKey: item.key, newKey, kind: item.kind });
-	}
-	const after =
-		sampleUrl && sampleHead
-			? await statusesFor(input.store, sampleUrl, sampleHead)
-			: { get: 404, head: 404, range: 404 };
-	const liveKey = await input.journal.getLiveKey(input.videoId);
-	const rollbackRetained = (
-		await Promise.all(
-			moved
-				.filter((item) => item.kind === "rollback")
-				.map((item) => input.store.exists(item.newKey)),
-		)
-	).some(Boolean);
-	return {
-		before,
-		after,
-		rollbackRetained,
-		liveKeyPrivate: liveKey != null && privatePrefix(liveKey),
-		idempotent: moved.length >= 0,
-		reconciled: 0,
-	};
 }
 
 export async function applyMigration0047(databaseUrl: string, sqlPath: string) {
@@ -379,12 +326,15 @@ async function main() {
 		`${JSON.stringify({
 			before: proof.before,
 			after: proof.after,
-			rollbackRetained: proof.rollbackRetained,
+			liveKey: proof.liveKey,
 			liveKeyPrivate: proof.liveKeyPrivate,
 			idempotent: proof.idempotent,
-			reconciled: proof.reconciled,
+			moved: proof.moved,
 		})}\n`,
 	);
+	if (proof.idempotent && proof.moved === 0 && !proof.liveKeyPrivate) {
+		throw new Error("relocation no-op is not a successful purge");
+	}
 }
 
 const invokedDirectly = process.argv[1]?.includes("instant-finish-relocate.ts");

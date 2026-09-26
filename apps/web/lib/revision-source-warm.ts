@@ -25,7 +25,7 @@ export function warmSourceFromRow(
 ): WarmSource | null {
 	if (
 		!row ||
-		row.relocationState !== "LIVE" ||
+		(row.relocationState !== "LIVE" && row.relocationState !== "PURGED") ||
 		!row.codec ||
 		!row.timebase ||
 		(row.frameMode !== "vfr" && row.frameMode !== "cfr") ||
