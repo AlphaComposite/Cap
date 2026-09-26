@@ -17,6 +17,10 @@ import type { Video } from "@cap/web-domain";
 import { and, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
+import {
+	type OriginAttestation,
+	parseVerifiedOriginAttestation,
+} from "@/lib/revision-media-token";
 import { finishMetadataSnapshot } from "@/lib/revision-metadata-snapshot";
 import {
 	assertServableEncoderProfile,
@@ -39,6 +43,7 @@ import {
 import {
 	digestMatches,
 	type OriginClient,
+	type RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
 import { assertFinishSourceKey } from "@/lib/source-relocation";
 
@@ -158,6 +163,7 @@ export async function publishInstantFinishRevision(
 		await app.transaction(async (tx) => {
 			await flipCurrent(tx, input, spec, allocated, prepared, now());
 		});
+		scheduleRevisionReadback(app, allocated.revisionId, deps.origin, now);
 		return {
 			success: true,
 			revisionId: allocated.revisionId,
@@ -564,136 +570,22 @@ async function produceAndVerify(
 		chaptersJson,
 		thumbnailPolicy,
 	});
-	if (
-		prepared.seg0DecodedFrames < 1 ||
-		prepared.playlistHasEndList !== true ||
-		prepared.intentId !== allocated.intentId
-	) {
-		throw new RevisionPublicationError(
-			500,
-			"Origin fence rejected the revision before it became current",
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	const initHead = await origin.fetchArtifact({
-		videoId: input.videoId,
-		revisionId: allocated.revisionId,
-		name: "init.mp4",
-		method: "HEAD",
-	});
-	const segHead = await origin.fetchArtifact({
-		videoId: input.videoId,
-		revisionId: allocated.revisionId,
-		name: "seg/0.m4s",
-		method: "HEAD",
-	});
-	if (initHead.status !== 200 || segHead.status !== 200) {
-		throw new RevisionPublicationError(
-			500,
-			`HEAD init=${initHead.status} seg0=${segHead.status}`,
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	const init = await origin.fetchArtifact({
-		videoId: input.videoId,
-		revisionId: allocated.revisionId,
-		name: "init.mp4",
-		method: "GET",
-	});
-	const segment = await origin.fetchArtifact({
-		videoId: input.videoId,
-		revisionId: allocated.revisionId,
-		name: "seg/0.m4s",
-		method: "GET",
-	});
-	if (init.status !== 200 || segment.status !== 200) {
-		throw new RevisionPublicationError(
-			500,
-			"GET of init or segment 0 failed",
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	if (
-		!init.body.includes(Buffer.from("ftyp")) ||
-		!segment.body.includes(Buffer.from("moof"))
-	) {
-		throw new RevisionPublicationError(
-			500,
-			"Fetched init or segment 0 is not a fragmented MP4",
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	if (
-		!digestMatches(init.body, prepared.initSha256) ||
-		!digestMatches(segment.body, prepared.seg0Sha256)
-	) {
-		throw new RevisionPublicationError(
-			500,
-			"Fetched media does not match the decode attestation",
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	const firstPlaylist = await readPlaylist(
-		origin,
-		input.videoId,
+	const attested = assertSignedPrepareAttestation(
+		prepared,
 		allocated,
 		durationSeconds,
-		prepared.playlistDurationSeconds,
 		spec.keepRanges.length,
 	);
-	const secondPlaylist = await readPlaylist(
-		origin,
-		input.videoId,
-		allocated,
+	return {
 		durationSeconds,
-		prepared.playlistDurationSeconds,
-		spec.keepRanges.length,
-	);
-	if (firstPlaylist !== secondPlaylist) {
-		throw new RevisionPublicationError(
-			500,
-			"Playlist duration is not stable",
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	await readVerifiedText(
-		origin,
-		input.videoId,
-		allocated,
-		"captions.vtt",
-		captions.vtt,
-	);
-	await readVerifiedText(
-		origin,
-		input.videoId,
-		allocated,
-		"chapters.json",
+		captionsVtt: captions.vtt,
 		chaptersJson,
-	);
-	const thumb = await origin.fetchArtifact({
-		videoId: input.videoId,
-		revisionId: allocated.revisionId,
-		name: "thumbnail.jpg",
-		method: "GET",
-	});
-	if (
-		thumb.status !== 200 ||
-		!thumbnailBindsDuration(thumb.body, durationSeconds)
-	) {
-		throw new RevisionPublicationError(
-			500,
-			"Revision thumbnail is missing or not bound to this edition",
-			allocated.generation,
-			allocated.revisionId,
-		);
-	}
-	return { durationSeconds, captionsVtt: captions.vtt, chaptersJson, chapters };
+		chapters,
+		attestedDurationSeconds: attested.playlistDurationSeconds,
+		keepRangeCount: spec.keepRanges.length,
+		initSha256: attested.initSha256,
+		seg0Sha256: attested.seg0Sha256,
+	};
 }
 
 async function readPlaylist(
@@ -782,7 +674,12 @@ async function flipCurrent(
 	prepared: {
 		durationSeconds: number;
 		captionsVtt: string;
+		chaptersJson: string;
 		chapters: { title: string; start: number }[];
+		attestedDurationSeconds: number;
+		keepRangeCount: number;
+		initSha256: string;
+		seg0Sha256: string;
 	},
 	stamp: Date,
 ) {
@@ -868,6 +765,8 @@ async function flipCurrent(
 			spec.keepRanges[0]?.start === 0 ? "source-zero" : "seg0-first-frame",
 		durationSeconds: prepared.durationSeconds,
 	});
+	const previousRevisionId = publication.currentRevisionId;
+	const previousGeneration = publication.currentGeneration;
 	const flipped = await tx
 		.update(editRevision)
 		.set({
@@ -943,12 +842,28 @@ async function flipCurrent(
 			videoId: videoId(input.videoId),
 			revisionId: allocated.revisionId,
 			job,
-			payload: {
-				job,
-				revisionId: allocated.revisionId,
-				durationSeconds: prepared.durationSeconds,
-				downloadReady: false,
-			},
+			payload:
+				job === "readback"
+					? {
+							job,
+							revisionId: allocated.revisionId,
+							videoId: input.videoId,
+							previousRevisionId,
+							previousGeneration,
+							durationSeconds: prepared.durationSeconds,
+							attestedDurationSeconds: prepared.attestedDurationSeconds,
+							keepRangeCount: prepared.keepRangeCount,
+							initSha256: prepared.initSha256,
+							seg0Sha256: prepared.seg0Sha256,
+							captionsVtt: prepared.captionsVtt,
+							chaptersJson: prepared.chaptersJson,
+						}
+					: {
+							job,
+							revisionId: allocated.revisionId,
+							durationSeconds: prepared.durationSeconds,
+							downloadReady: false,
+						},
 			createdAt: stamp,
 		});
 	}
@@ -1092,4 +1007,346 @@ export async function markArtifactFailed(
 				eq(revisionArtifactStatus.artifact, input.artifact),
 			),
 		);
+}
+
+type ReadbackPayload = {
+	videoId: string;
+	revisionId: string;
+	previousRevisionId: string | null;
+	previousGeneration: number | null;
+	durationSeconds: number;
+	attestedDurationSeconds: number;
+	keepRangeCount: number;
+	initSha256: string;
+	seg0Sha256: string;
+	captionsVtt: string;
+	chaptersJson: string;
+};
+
+export type ReadbackResult = {
+	ok: boolean;
+	reverted: boolean;
+	skipped: boolean;
+	reason?: string;
+};
+
+const pendingReadbacks: Promise<unknown>[] = [];
+
+export function alertRevisionReadbackFailure(detail: {
+	videoId: string;
+	revisionId: string;
+	reason: string;
+}) {
+	console.error(
+		"cap-revision-readback-failed",
+		detail.videoId,
+		detail.revisionId,
+		detail.reason,
+	);
+}
+
+export function pendingRevisionReadbacks(): Promise<void> {
+	return Promise.all(pendingReadbacks).then(() => undefined);
+}
+
+function scheduleRevisionReadback(
+	database: Database,
+	revisionId: string,
+	origin: OriginClient,
+	now: () => Date,
+) {
+	const job = new Promise((resolve) => {
+		setTimeout(() => {
+			resolve(
+				runRevisionReadback(database, {
+					revisionId,
+					origin,
+					now: now(),
+				}).catch((error: unknown) => {
+					console.error(
+						"cap-revision-readback-failed",
+						revisionId,
+						error instanceof Error ? error.message : "readback failed",
+					);
+				}),
+			);
+		}, 0);
+	});
+	pendingReadbacks.push(job);
+}
+
+function assertSignedPrepareAttestation(
+	prepared: RevisionPrepareResult,
+	allocated: Allocated,
+	durationSeconds: number,
+	keepRangeCount: number,
+): OriginAttestation {
+	const attested = parseVerifiedOriginAttestation(
+		prepared.attestationMac,
+		prepared.attestationBody,
+	);
+	if (
+		!attested ||
+		attested.seg0DecodedFrames < 1 ||
+		attested.playlistHasEndList !== true ||
+		attested.intentId !== allocated.intentId ||
+		attested.decodedFrames < 1
+	) {
+		throw new RevisionPublicationError(
+			500,
+			"Origin attestation MAC was missing or forged",
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
+	if (
+		Math.abs(attested.playlistDurationSeconds - attested.durationSeconds) > 0.05
+	) {
+		throw new RevisionPublicationError(
+			500,
+			`attested duration ${attested.playlistDurationSeconds} != origin ${attested.durationSeconds}`,
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
+	const snapAllowance = Math.max(0.05, keepRangeCount / 24);
+	if (
+		Math.abs(attested.playlistDurationSeconds - durationSeconds) > snapAllowance
+	) {
+		throw new RevisionPublicationError(
+			500,
+			`attested duration ${attested.playlistDurationSeconds} != spec ${durationSeconds}`,
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
+	return attested;
+}
+
+function isReadbackPayload(value: unknown): value is ReadbackPayload {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as Record<string, unknown>;
+	return (
+		typeof record.videoId === "string" &&
+		typeof record.revisionId === "string" &&
+		typeof record.durationSeconds === "number" &&
+		typeof record.attestedDurationSeconds === "number" &&
+		typeof record.keepRangeCount === "number" &&
+		typeof record.initSha256 === "string" &&
+		typeof record.seg0Sha256 === "string" &&
+		typeof record.captionsVtt === "string" &&
+		typeof record.chaptersJson === "string"
+	);
+}
+
+async function verifyRevisionArtifacts(
+	origin: OriginClient,
+	payload: ReadbackPayload,
+) {
+	const allocated = {
+		revisionId: payload.revisionId,
+		generation: 0,
+		idempotent: false,
+		intentId: "",
+		sourceId: "",
+		previousSpec: { version: 1, sourceDuration: 0, keepRanges: [] },
+	} as Allocated;
+	const initHead = await origin.fetchArtifact({
+		videoId: payload.videoId,
+		revisionId: payload.revisionId,
+		name: "init.mp4",
+		method: "HEAD",
+	});
+	const segHead = await origin.fetchArtifact({
+		videoId: payload.videoId,
+		revisionId: payload.revisionId,
+		name: "seg/0.m4s",
+		method: "HEAD",
+	});
+	if (initHead.status !== 200 || segHead.status !== 200) {
+		throw new RevisionPublicationError(
+			500,
+			`HEAD init=${initHead.status} seg0=${segHead.status}`,
+		);
+	}
+	const init = await origin.fetchArtifact({
+		videoId: payload.videoId,
+		revisionId: payload.revisionId,
+		name: "init.mp4",
+		method: "GET",
+	});
+	const segment = await origin.fetchArtifact({
+		videoId: payload.videoId,
+		revisionId: payload.revisionId,
+		name: "seg/0.m4s",
+		method: "GET",
+	});
+	if (init.status !== 200 || segment.status !== 200) {
+		throw new RevisionPublicationError(500, "GET of init or segment 0 failed");
+	}
+	if (
+		!init.body.includes(Buffer.from("ftyp")) ||
+		!segment.body.includes(Buffer.from("moof"))
+	) {
+		throw new RevisionPublicationError(
+			500,
+			"Fetched init or segment 0 is not a fragmented MP4",
+		);
+	}
+	if (
+		!digestMatches(init.body, payload.initSha256) ||
+		!digestMatches(segment.body, payload.seg0Sha256)
+	) {
+		throw new RevisionPublicationError(
+			500,
+			"Fetched media does not match the decode attestation",
+		);
+	}
+	const firstPlaylist = await readPlaylist(
+		origin,
+		payload.videoId,
+		allocated,
+		payload.durationSeconds,
+		payload.attestedDurationSeconds,
+		payload.keepRangeCount,
+	);
+	const secondPlaylist = await readPlaylist(
+		origin,
+		payload.videoId,
+		allocated,
+		payload.durationSeconds,
+		payload.attestedDurationSeconds,
+		payload.keepRangeCount,
+	);
+	if (firstPlaylist !== secondPlaylist) {
+		throw new RevisionPublicationError(500, "Playlist duration is not stable");
+	}
+	await readVerifiedText(
+		origin,
+		payload.videoId,
+		allocated,
+		"captions.vtt",
+		payload.captionsVtt,
+	);
+	await readVerifiedText(
+		origin,
+		payload.videoId,
+		allocated,
+		"chapters.json",
+		payload.chaptersJson,
+	);
+	const thumb = await origin.fetchArtifact({
+		videoId: payload.videoId,
+		revisionId: payload.revisionId,
+		name: "thumbnail.jpg",
+		method: "GET",
+	});
+	if (
+		thumb.status !== 200 ||
+		!thumbnailBindsDuration(thumb.body, payload.durationSeconds)
+	) {
+		throw new RevisionPublicationError(
+			500,
+			"Revision thumbnail is missing or not bound to this edition",
+		);
+	}
+}
+
+async function revertCurrentAfterReadback(
+	database: Database,
+	payload: ReadbackPayload,
+	reason: string,
+	stamp: Date,
+): Promise<boolean> {
+	return database.transaction(async (tx) => {
+		await tx
+			.update(editRevision)
+			.set({ state: "FAILED", error: reason.slice(0, 500), updatedAt: stamp })
+			.where(
+				and(
+					eq(editRevision.revisionId, payload.revisionId),
+					eq(editRevision.state, "CURRENT"),
+				),
+			);
+		await tx
+			.update(revisionArtifactStatus)
+			.set({ state: "ERROR", leaseUntil: null, heartbeatAt: stamp })
+			.where(eq(revisionArtifactStatus.revisionId, payload.revisionId));
+		const [publication] = await tx
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId(payload.videoId)))
+			.for("update");
+		if (!publication || publication.currentRevisionId !== payload.revisionId) {
+			return false;
+		}
+		const pointed = await tx
+			.update(videoPublication)
+			.set({
+				currentRevisionId: payload.previousRevisionId,
+				currentGeneration: payload.previousGeneration,
+				publicationEpoch: publication.publicationEpoch + 1,
+			})
+			.where(
+				and(
+					eq(videoPublication.videoId, videoId(payload.videoId)),
+					eq(videoPublication.currentRevisionId, payload.revisionId),
+				),
+			);
+		if (affectedRows(pointed) !== 1) return false;
+		await bumpPolicyEpoch(payload.videoId, tx);
+		return true;
+	});
+}
+
+export async function runRevisionReadback(
+	database: unknown,
+	input: {
+		revisionId: string;
+		origin: OriginClient;
+		now?: Date;
+		alert?: (detail: {
+			videoId: string;
+			revisionId: string;
+			reason: string;
+		}) => void;
+	},
+): Promise<ReadbackResult> {
+	const app = database as Database;
+	const stamp = input.now ?? new Date();
+	const claimed = await app.transaction(async (tx) => {
+		const [row] = await tx
+			.select()
+			.from(revisionOutbox)
+			.where(
+				and(
+					eq(revisionOutbox.revisionId, input.revisionId),
+					eq(revisionOutbox.job, "readback"),
+				),
+			)
+			.for("update");
+		if (!row || !isReadbackPayload(row.payload)) return null;
+		await tx.delete(revisionOutbox).where(eq(revisionOutbox.id, row.id));
+		return row.payload;
+	});
+	if (!claimed) return { ok: true, reverted: false, skipped: true };
+	try {
+		await verifyRevisionArtifacts(input.origin, claimed);
+		return { ok: true, reverted: false, skipped: false };
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : "readback failed";
+		const alert = input.alert ?? alertRevisionReadbackFailure;
+		alert({
+			videoId: claimed.videoId,
+			revisionId: claimed.revisionId,
+			reason,
+		});
+		const reverted = await revertCurrentAfterReadback(
+			app,
+			claimed,
+			reason,
+			stamp,
+		);
+		return { ok: false, reverted, skipped: false, reason };
+	}
 }

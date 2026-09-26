@@ -1,0 +1,6 @@
+{
+  "body": "{\"captionsSha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"chaptersSha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"decodedFrames\": 4, \"durationSeconds\": 1.5, \"initSha256\": \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\", \"intentId\": \"intent-vector-01\", \"playlistHasEndList\": true, \"playlistSha256\": \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\", \"seg0Sha256\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\", \"segmentCount\": 2, \"thumbnailSha256\": \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}\n",
+  "mac": "2RMwRL6Tq6AX2OEtqxSm0TMotcaT-0-iCLMnQDjcFag",
+  "serviceSecret": "service-token-service-token-svc01",
+  "header": "x-cap-origin-attestation"
+}
