@@ -39,11 +39,7 @@ describe("origin prepare attestation", () => {
 		expect(signOriginAttestation(vector.body, env)).toBe(vector.mac);
 		expect(verifyOriginAttestation(vector.mac, vector.body, env)).toBe(true);
 		expect(
-			verifyOriginAttestation(
-				vector.mac,
-				`${JSON.stringify(parsed)}\n`,
-				env,
-			),
+			verifyOriginAttestation(vector.mac, `${JSON.stringify(parsed)}\n`, env),
 		).toBe(false);
 		expect(
 			parseVerifiedOriginAttestation(vector.mac, vector.body, env),

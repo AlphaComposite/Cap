@@ -1,6 +1,6 @@
+import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "bun:test";
 
 type AttestationVector = {
 	header: string;
@@ -20,11 +20,15 @@ function attestationMac(secret: string, body: string): string {
 describe("shared origin attestation vector", () => {
 	test("header and mac match the python signer", () => {
 		expect(vectors.header).toBe("x-cap-origin-attestation");
-		expect(attestationMac(vectors.serviceSecret, vectors.body)).toBe(vectors.mac);
+		expect(attestationMac(vectors.serviceSecret, vectors.body)).toBe(
+			vectors.mac,
+		);
 	});
 
 	test("a flipped body does not verify", () => {
 		const flipped = `x${vectors.body.slice(1)}`;
-		expect(attestationMac(vectors.serviceSecret, flipped)).not.toBe(vectors.mac);
+		expect(attestationMac(vectors.serviceSecret, flipped)).not.toBe(
+			vectors.mac,
+		);
 	});
 });
