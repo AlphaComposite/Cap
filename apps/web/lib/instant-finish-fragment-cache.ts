@@ -30,8 +30,8 @@ export function createPrefetchLoader<
 		...args: never[]
 	) => { load(...args: never[]): void }) {
 		load(...args: never[]) {
-			const context = args[0] as { url?: unknown };
-			const callbacks = args[2] as { onSuccess?: unknown };
+			const context = args[0] as unknown as { url?: unknown };
+			const callbacks = args[2] as unknown as { onSuccess?: unknown };
 			const url = typeof context?.url === "string" ? context.url : "";
 			const cached = readPrefetchedFragment(url);
 			const onSuccess =
