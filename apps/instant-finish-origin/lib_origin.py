@@ -165,7 +165,9 @@ def encoder_implementation_ids() -> dict:
 
 
 def encoder_identity(profile: Profile) -> dict:
-    return {
+    from lib_vui import configured_tick_rate
+
+    identity = {
         "audio": lib_audio.AUDIO_SPEC,
         "encoder_impl": encoder_implementation_ids(),
         "height": profile.height,
@@ -175,6 +177,10 @@ def encoder_identity(profile: Profile) -> dict:
         "width": profile.width,
         "x264": JIT_X264,
     }
+    rate = configured_tick_rate()
+    if rate is not None:
+        identity["vui_tick_rate"] = rate
+    return identity
 
 
 def encoder_config_hash(profile: Profile) -> str:
@@ -724,6 +730,18 @@ def _decode_kept(mezz: Path, keyframes: list[dict], frames: tuple[FrameRec, ...]
     return [copied[frame.src_pts] for frame in frames]
 
 
+def apply_configured_vui(dest: Path) -> None:
+    from lib_vui import apply_vui_tick_rate, configured_tick_rate
+
+    if configured_tick_rate() is None:
+        return
+    encoded = dest.read_bytes()
+    patched = apply_vui_tick_rate(encoded)
+    if patched != encoded:
+        atomic_write(dest, patched, sync=False)
+        private(dest)
+
+
 def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
     import av
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -757,6 +775,7 @@ def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
     finally:
         out.close()
     private(dest)
+    apply_configured_vui(dest)
 
 
 def encode_segment(mezz: Path, keyframes: list[dict], frames: tuple[FrameRec, ...], dest: Path, profile: Profile, phases: dict | None = None) -> None:

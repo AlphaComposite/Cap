@@ -231,7 +231,7 @@ class OriginApp:
             seg0 = origin.ensure(0)
             decoded = _decode_check(init, seg0)
             duration = lib_origin.duration_ticks(origin.segments) / origin.profile.timescale
-            captions, chapters, thumb = self._write_side_artifacts(origin, body, duration)
+            captions, chapters = self._write_side_artifacts(origin, body, duration)
         except lib_origin.MezzanineRequired:
             return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
         except Exception:
@@ -257,7 +257,7 @@ class OriginApp:
             "seg0Sha256": hashlib.sha256(seg0).hexdigest(),
             "segmentCount": len(origin.segments),
             "segmentPlanVersion": lib_origin.SEGMENT_PLAN_VERSION,
-            "thumbnailSha256": hashlib.sha256(thumb).hexdigest(),
+            "thumbnailSha256": "pending",
         })
 
     def _media(self, method: str, match: re.Match, query: dict, headers) -> tuple[int, bytes, str, dict[str, str]]:
@@ -310,6 +310,8 @@ class OriginApp:
             "Cache-Control": NO_STORE,
             "Referrer-Policy": REFERRER,
         }
+        if kind == "thumbnail.jpg":
+            extra["X-Cap-Thumbnail"] = "ready" if body != _pending_thumbnail() else "pending"
         if range_header:
             status, chunk, content_range = _slice(body, range_header)
             if status != 206:
@@ -373,7 +375,8 @@ class OriginApp:
         if kind == "chapters.json":
             return _read_cache(origin, "chapters.json"), "application/json"
         if kind == "thumbnail.jpg":
-            return _read_cache(origin, "thumbnail.jpg"), "image/jpeg"
+            body, _label = read_thumbnail(origin)
+            return body, "image/jpeg"
         if kind == "download.mp4":
             path = origin.cache / "download.mp4"
             if not path.is_file():
@@ -505,7 +508,7 @@ class OriginApp:
         path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
         atomic_write(path, json.dumps(ranges).encode(), sync=False)
 
-    def _write_side_artifacts(self, origin: lib_origin.Origin, body: dict, duration: float) -> tuple[bytes, bytes, bytes]:
+    def _write_side_artifacts(self, origin: lib_origin.Origin, body: dict, duration: float) -> tuple[bytes, bytes]:
         if isinstance(body.get("captionsVtt"), str):
             vtt = body["captionsVtt"].encode()
         else:
@@ -518,11 +521,10 @@ class OriginApp:
             chapters_doc = (json.dumps({"chapters": chapters}, sort_keys=True) + "\n").encode()
         atomic_write(origin.cache / "captions.vtt", vtt, sync=False)
         atomic_write(origin.cache / "chapters.json", chapters_doc, sync=False)
-        thumb = origin.cache / "thumbnail.jpg"
         note_duration = body.get("durationSeconds")
         bound = float(note_duration) if isinstance(note_duration, (int, float)) else duration
-        _thumbnail(origin, thumb, bound)
-        return vtt, chapters_doc, thumb.read_bytes()
+        schedule_thumbnail(origin, bound)
+        return vtt, chapters_doc
 
     def _remember_source(self, video_id: str, cache_id: str, source_key: str) -> None:
         path = self.cache / "by-video" / f"{_safe(video_id)}.json"
@@ -563,7 +565,13 @@ class OriginApp:
             elif kind == "chapters.json":
                 body, content_type = _read_cache(origin, "chapters.json"), "application/json"
             elif kind == "thumbnail.jpg":
-                body, content_type = _read_cache(origin, "thumbnail.jpg"), "image/jpeg"
+                body, label = read_thumbnail(origin)
+                content_type = "image/jpeg"
+                return 200, body, content_type, {
+                    "Cache-Control": NO_STORE,
+                    "Accept-Ranges": "bytes",
+                    "X-Cap-Thumbnail": label,
+                }
             else:
                 return self._text(404, b"not found")
         except Exception:
@@ -760,6 +768,40 @@ def _decode_check(init: bytes, seg0: bytes) -> int:
         return count
     finally:
         container.close()
+
+
+def _pending_thumbnail() -> bytes:
+    return b"\xff\xd8\xff\xd9"
+
+
+def read_thumbnail(origin: lib_origin.Origin) -> tuple[bytes, str]:
+    path = origin.cache / "thumbnail.jpg"
+    if path.is_file():
+        return path.read_bytes(), "ready"
+    return _pending_thumbnail(), "pending"
+
+
+_THUMBNAIL_JOBS: list[threading.Thread] = []
+
+
+def schedule_thumbnail(origin: lib_origin.Origin, duration_seconds: float) -> None:
+    def run() -> None:
+        try:
+            dest = origin.cache / "thumbnail.jpg"
+            if dest.is_file():
+                return
+            _thumbnail(origin, dest, duration_seconds)
+        except Exception:
+            return
+
+    thread = threading.Thread(target=run, daemon=True)
+    _THUMBNAIL_JOBS.append(thread)
+    thread.start()
+
+
+def drain_thumbnails() -> None:
+    for thread in list(_THUMBNAIL_JOBS):
+        thread.join(timeout=30)
 
 
 def _thumbnail(origin: lib_origin.Origin, dest: Path, duration_seconds: float) -> None:
