@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	instantFinishStartupUrls,
 	preferInstantFinishFirstPaint,
 	stashInstantFinishPlayback,
 } from "@/lib/instant-finish-playback-handoff";
@@ -100,5 +101,35 @@ describe("instant finish playback handoff", () => {
 		if (mismatch.playback?.mode === "hls") {
 			expect(mismatch.playback.playlistUrl).toContain("ssr-grant");
 		}
+	});
+
+	it("prefetches init and the first two segments from the granted playlist", () => {
+		const playlist = [
+			"#EXTM3U",
+			'#EXT-X-MAP:URI="init.mp4?t=publish-grant"',
+			"#EXTINF:0.04,",
+			"seg/0.m4s?t=publish-grant",
+			"#EXTINF:2.0,",
+			"seg/1.m4s?t=publish-grant",
+			"#EXTINF:2.0,",
+			"seg/2.m4s?t=publish-grant",
+			"#EXT-X-ENDLIST",
+		].join("\n");
+		expect(
+			instantFinishStartupUrls(
+				"/media/video-1/r/rev-new/playlist.m3u8?t=publish-grant",
+				playlist,
+			),
+		).toEqual([
+			"/media/video-1/r/rev-new/init.mp4?t=publish-grant",
+			"/media/video-1/r/rev-new/seg/0.m4s?t=publish-grant",
+			"/media/video-1/r/rev-new/seg/1.m4s?t=publish-grant",
+		]);
+		expect(
+			instantFinishStartupUrls(
+				"/media/video-1/r/rev-new/playlist.m3u8?t=publish-grant",
+				'#EXT-X-MAP:URI="https://evil.example/init.mp4"',
+			),
+		).toEqual([]);
 	});
 });
