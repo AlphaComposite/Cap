@@ -349,7 +349,8 @@ async function reuseVerifiedReady(
 				captionsVtt: captions.vtt,
 				chaptersJson: chaptersDocument({
 					chapters,
-					durationSeconds: mediaDuration,
+					// Origin wrote this at prepare, before the snap was known. Readback compares bytes.
+					durationSeconds: getEditSpecOutputDuration(spec),
 					sourceId: found.allocated.sourceId,
 				}),
 				chapters,
@@ -982,6 +983,11 @@ async function produceAndVerify(
 	});
 	const thumbnailPolicy =
 		spec.keepRanges[0]?.start === 0 ? "source-zero" : "seg0-first-frame";
+	const chaptersJson = chaptersDocument({
+		chapters,
+		durationSeconds,
+		sourceId: allocated.sourceId,
+	});
 	const prepared = await origin.prepareRevision({
 		videoId: input.videoId,
 		revisionId: allocated.revisionId,
@@ -992,11 +998,7 @@ async function produceAndVerify(
 		keepRanges: spec.keepRanges,
 		editSpec: spec,
 		captionsVtt: captions.vtt,
-		chaptersJson: chaptersDocument({
-			chapters,
-			durationSeconds,
-			sourceId: allocated.sourceId,
-		}),
+		chaptersJson,
 		thumbnailPolicy,
 	});
 	const attested = assertSignedPrepareAttestation(
@@ -1005,11 +1007,6 @@ async function produceAndVerify(
 		spec.keepRanges,
 	);
 	const mediaDuration = attested.playlistDurationSeconds;
-	const chaptersJson = chaptersDocument({
-		chapters,
-		durationSeconds: mediaDuration,
-		sourceId: allocated.sourceId,
-	});
 	return {
 		durationSeconds: mediaDuration,
 		captionsVtt: captions.vtt,
