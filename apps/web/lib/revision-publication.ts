@@ -16,6 +16,7 @@ import type { VideoEditSpec, VideoEditSpecV2 } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
 import { and, asc, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
+import { runtimeObjectStore } from "@/lib/instant-finish-source-relocate";
 import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
 	snappedDurationError,
@@ -916,6 +917,32 @@ async function readReadySource(
 				: "Finish SourceId must use the relocated liveKey",
 		);
 	}
+	if (relocations.some((row) => row.state !== "PURGED")) {
+		throw new RevisionPublicationError(
+			409,
+			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+		);
+	}
+	const [owner] = await tx
+		.select({ ownerId: videos.ownerId })
+		.from(videos)
+		.where(eq(videos.id, videoId(id)));
+	const prefix = `${owner?.ownerId ?? ""}/${id}/`;
+	const listed = finishInventoryProbe.listPrefix
+		? await finishInventoryProbe.listPrefix(prefix)
+		: await runtimeObjectStore().list?.(prefix);
+	if (
+		!listed ||
+		listed.some(
+			(key) =>
+				!key.includes("private/source/") && !key.includes("private/rollback/"),
+		)
+	) {
+		throw new RevisionPublicationError(
+			409,
+			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+		);
+	}
 	return {
 		key: row.liveKey,
 		sha256: row.sha256,
@@ -988,6 +1015,10 @@ async function lockVideoRow(tx: PublicationTx, id: Video.VideoId) {
 
 export const revisionLockProbe: {
 	afterPublicationLock?: () => Promise<void>;
+} = {};
+
+export const finishInventoryProbe: {
+	listPrefix?: (prefix: string) => Promise<string[]>;
 } = {};
 
 export async function transition(
