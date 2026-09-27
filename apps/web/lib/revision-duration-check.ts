@@ -14,7 +14,9 @@ export type SnappedDurationInput = {
 	rangeSnaps: RangeSnap[];
 };
 
-export function snappedDurationError(input: SnappedDurationInput): string | null {
+export function snappedDurationError(
+	input: SnappedDurationInput,
+): string | null {
 	const { keepRanges, timescale, maxHoldTicks, durationTicks, rangeSnaps } =
 		input;
 	if (

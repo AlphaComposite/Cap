@@ -184,7 +184,11 @@ export function revisionHlsErrorAction(input: {
 	maxRefreshAttempts: number;
 	policyDenied: boolean;
 	native?: boolean;
-}): { type: "refresh-grant" } | { type: "stop" } | { type: "fail-closed" } | { type: "ignore" } {
+}):
+	| { type: "refresh-grant" }
+	| { type: "stop" }
+	| { type: "fail-closed" }
+	| { type: "ignore" } {
 	if (input.policyDenied) return { type: "fail-closed" };
 	const status = input.status ?? 0;
 	if (status === 403 || status === 410) return { type: "stop" };
