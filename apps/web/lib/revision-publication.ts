@@ -1632,9 +1632,10 @@ export function startRevisionReadbackWorker(input: {
 			now: input.now?.(),
 		}).then(() => undefined);
 		readbackInFlight = run;
-		void run.finally(() => {
+		const clear = () => {
 			if (readbackInFlight === run) readbackInFlight = null;
-		});
+		};
+		void run.then(clear, clear);
 	};
 	tick();
 	readbackWorker = setInterval(tick, pollMs);

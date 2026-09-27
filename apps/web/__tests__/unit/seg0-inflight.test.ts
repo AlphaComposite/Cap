@@ -97,4 +97,21 @@ describe("seg0 duplicate", () => {
 		expect(network).not.toHaveBeenCalled();
 		vi.unstubAllGlobals();
 	});
+
+	it("does not emit unhandledRejection when an inflight prefetch rejects", async () => {
+		clearPrefetchedFragments();
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown) => {
+			rejections.push(reason);
+		};
+		process.on("unhandledRejection", onRejection);
+		try {
+			registerInflightFragment(url, Promise.reject(new Error("prefetch")));
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			expect(rejections).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onRejection);
+			clearPrefetchedFragments();
+		}
+	});
 });

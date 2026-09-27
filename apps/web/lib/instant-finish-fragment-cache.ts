@@ -65,9 +65,11 @@ export function registerInflightFragment(
 	});
 	inflight.set(key, tracked);
 	void tracked.catch(() => undefined);
-	void tracked.finally(() => {
-		if (inflight.get(key) === tracked) inflight.delete(key);
-	});
+	void tracked
+		.finally(() => {
+			if (inflight.get(key) === tracked) inflight.delete(key);
+		})
+		.catch(() => undefined);
 }
 
 export function readPrefetchedFragment(url: string): ArrayBuffer | null {
