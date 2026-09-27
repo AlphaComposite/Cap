@@ -118,4 +118,64 @@ describe("finish source relocation gate", () => {
 			}),
 		).rejects.toThrow(/no-op/);
 	});
+
+	it("keeps transcript objects and relocates result.mp4", async () => {
+		const body = Buffer.from("source-bytes");
+		const objects = new Map<string, Buffer>([
+			["owner/vid/source/original.mp4", body],
+			["owner/vid/result.mp4", body],
+			["owner/vid/transcription.vtt", Buffer.from("WEBVTT\n")],
+			["owner/vid/transcription.en.vtt", Buffer.from("WEBVTT\n")],
+			["owner/vid/transcription.edit.v3.json", Buffer.from("{}")],
+			["owner/vid/transcription.edit.v3.status.json", Buffer.from("{}")],
+		]);
+		const signed = new Map<string, string>();
+		const store: ObjectStore = {
+			async copy(oldKey, newKey) {
+				const found = objects.get(oldKey);
+				if (!found) throw new Error("missing");
+				objects.set(newKey, Buffer.from(found));
+			},
+			async sha256(key) {
+				const found = objects.get(key);
+				return found ? createHash("sha256").update(found).digest("hex") : null;
+			},
+			async deleteAllVersions(key) {
+				objects.delete(key);
+			},
+			async exists(key) {
+				return objects.has(key);
+			},
+			async presignGet(key) {
+				const url = `https://minio.local/${key}?get=1`;
+				signed.set(url, key);
+				return url;
+			},
+			async list(prefix) {
+				return [...objects.keys()].filter((key) => key.startsWith(prefix));
+			},
+			async listVersions(key) {
+				return objects.has(key) ? ["v1"] : [];
+			},
+			async request(url) {
+				const key = signed.get(url);
+				return key && objects.has(key) ? 200 : 404;
+			},
+		};
+		await relocateOwnerVideo({
+			ownerId: "owner",
+			videoId: "vid",
+			store,
+			journal: createMemoryJournal(),
+			sourceKey: "owner/vid/source/original.mp4",
+		});
+		expect(objects.has("owner/vid/result.mp4")).toBe(false);
+		expect(objects.has("owner/vid/source/original.mp4")).toBe(false);
+		expect(objects.has("owner/vid/transcription.vtt")).toBe(true);
+		expect(objects.has("owner/vid/transcription.en.vtt")).toBe(true);
+		expect(objects.has("owner/vid/transcription.edit.v3.json")).toBe(true);
+		expect(objects.has("owner/vid/transcription.edit.v3.status.json")).toBe(
+			true,
+		);
+	});
 });

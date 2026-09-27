@@ -74,6 +74,20 @@ export type ExposedKey = {
 };
 
 const PRIVATE_PREFIXES = ["private/source/", "private/rollback/"];
+const TRANSCRIPT_LANG_VTT = /\/transcription\.[a-z]{2}\.vtt$/;
+
+export function isRetainedTranscriptKey(key: string) {
+	return (
+		key.endsWith("/transcription.vtt") ||
+		TRANSCRIPT_LANG_VTT.test(key) ||
+		key.endsWith("/transcription.edit.v3.json") ||
+		key.endsWith("/transcription.edit.v3.status.json")
+	);
+}
+
+export function isFinishInventoryExempt(key: string, prefix: string) {
+	return isRetainedTranscriptKey(key) || key.startsWith(`${prefix}comments/`);
+}
 
 export function inventoryExposedKeys(input: {
 	ownerId: string;
@@ -92,6 +106,7 @@ export function inventoryExposedKeys(input: {
 		if (PRIVATE_PREFIXES.some((privatePrefix) => key.includes(privatePrefix))) {
 			return;
 		}
+		if (isRetainedTranscriptKey(key)) return;
 		const existing = keys.get(key);
 		if (existing === "original") return;
 		keys.set(key, kind);

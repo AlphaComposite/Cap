@@ -2175,4 +2175,95 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			await cleanup();
 		}
 	}, 30_000);
+
+	it("does not block Finish on a public transcript or comment media", async () => {
+		const invVideo = "wireainvx000001";
+		const liveKey = `private/source/${invVideo}/wireopaque`;
+		const cleanup = async () => {
+			await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+				invVideo,
+			]);
+			await pool.query("DELETE FROM edit_intent WHERE videoId = ?", [invVideo]);
+			await pool.query("DELETE FROM source_relocation WHERE videoId = ?", [
+				invVideo,
+			]);
+			await pool.query("DELETE FROM source_object WHERE videoId = ?", [
+				invVideo,
+			]);
+			await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+				invVideo,
+			]);
+			await pool.query("DELETE FROM videos WHERE id = ?", [invVideo]);
+			finishInventoryProbe.listPrefix = async () => [];
+		};
+		await cleanup();
+		try {
+			await database.insert(videos).values({
+				id: invVideo as never,
+				ownerId: ownerId as never,
+				orgId: "wireaorg0000001" as never,
+				source: { type: "webMP4" },
+				duration: 9,
+			});
+			await database.insert(sourceObject).values({
+				videoId: invVideo as never,
+				liveKey,
+				sha256: "b".repeat(64),
+				relocationState: "PURGED",
+				codec: "h264",
+				timebase: "1/15360",
+				frameMode: "vfr",
+				a1Digest: "c".repeat(64),
+				indexId: "index-inv",
+				warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+			});
+			await database.insert(sourceRelocation).values({
+				videoId: invVideo as never,
+				revisionId: "relocate",
+				oldKey: `${ownerId}/${invVideo}/source/original.mp4`,
+				newKey: liveKey,
+				sha256: "b".repeat(64),
+				state: "PURGED",
+				createdAt: new Date(),
+			});
+			const input = {
+				videoId: invVideo,
+				editSpec: spec(2),
+				baseGeneration: 0,
+				draftVersion: 1,
+				draftSession: "editor",
+				sourceDuration: 9,
+			};
+			finishInventoryProbe.listPrefix = async () => [
+				`${ownerId}/${invVideo}/transcription.edit.v3.json`,
+				`${ownerId}/${invVideo}/comments/x/media.mp4`,
+			];
+			const allocated = await database.transaction((tx) =>
+				allocateRevision(
+					tx as never,
+					input,
+					spec(2),
+					new Date(),
+					() => "wireainvxrev001",
+				),
+			);
+			expect(allocated.revisionId).toBe("wireainvxrev001");
+			finishInventoryProbe.listPrefix = async () => [
+				`${ownerId}/${invVideo}/result.mp4`,
+			];
+			await expect(
+				database.transaction((tx) =>
+					allocateRevision(
+						tx as never,
+						input,
+						spec(2),
+						new Date(),
+						() => "wireainvxrev002",
+					),
+				),
+			).rejects.toThrow(/Finish refused until source relocation is PURGED/);
+		} finally {
+			await cleanup();
+		}
+	}, 30_000);
 });
