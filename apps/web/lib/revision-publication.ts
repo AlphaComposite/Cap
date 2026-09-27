@@ -338,14 +338,12 @@ async function reuseVerifiedReady(
 				previousSpec: previous.previousSpec,
 			},
 			attested,
+			captionsVtt: row.metadataSnapshot.captionsVtt,
 		};
 	});
 	if (!found) return null;
 	const mediaDuration = found.attested.playlistDurationSeconds;
-	const captions = deriveRevisionCaptions({
-		transcript: input.transcript ?? null,
-		nextSpec: spec,
-	});
+	const captionsVtt = found.captionsVtt ?? "";
 	const chapters = deriveRevisionChapters({
 		storedChapters: input.chapters ?? [],
 		previousSpec: found.allocated.previousSpec,
@@ -360,7 +358,7 @@ async function reuseVerifiedReady(
 			found.allocated,
 			{
 				durationSeconds: mediaDuration,
-				captionsVtt: captions.vtt,
+				captionsVtt,
 				chaptersJson: chaptersDocument({
 					chapters,
 					// Origin wrote this at prepare, before the snap was known. Readback compares bytes.

@@ -35,6 +35,11 @@ vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
 }));
 
+import {
+	getEditTranscriptObjectKey,
+	serializeEditTranscript,
+} from "@/lib/edit-transcript";
+import { encryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
 import { snapsCoveringRanges } from "@/lib/revision-duration-check";
 import {
 	signOriginAttestation,
@@ -428,6 +433,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 
 	afterAll(async () => {
 		finishInventoryProbe.listPrefix = undefined;
+		finishInventoryProbe.getObject = undefined;
 		await origin.close();
 		await pool.end();
 	});
@@ -2262,6 +2268,126 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 					),
 				),
 			).rejects.toThrow(/Finish refused until source relocation is PURGED/);
+		} finally {
+			await cleanup();
+		}
+	}, 30_000);
+
+	it("publishes captions from the stored transcript, not the request body", async () => {
+		const capVideo = "wireacapv000001";
+		const liveKey = `private/source/${capVideo}/wireopaque`;
+		const kept = "keptword";
+		const cut = "cutword";
+		const transcriptKey = getEditTranscriptObjectKey(ownerId, capVideo);
+		const cleanup = async () => {
+			await pool.query("DELETE FROM outbox WHERE videoId = ?", [capVideo]);
+			await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+				capVideo,
+			]);
+			await pool.query("DELETE FROM edit_intent WHERE videoId = ?", [capVideo]);
+			await pool.query("DELETE FROM source_relocation WHERE videoId = ?", [
+				capVideo,
+			]);
+			await pool.query("DELETE FROM source_object WHERE videoId = ?", [
+				capVideo,
+			]);
+			await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+				capVideo,
+			]);
+			await pool.query("DELETE FROM videos WHERE id = ?", [capVideo]);
+			finishInventoryProbe.listPrefix = async () => [];
+			finishInventoryProbe.getObject = undefined;
+		};
+		await cleanup();
+		try {
+			await database.insert(videos).values({
+				id: capVideo as never,
+				ownerId: ownerId as never,
+				orgId: "wireaorg0000001" as never,
+				source: { type: "webMP4" },
+				duration: 9,
+			});
+			await database.insert(sourceObject).values({
+				videoId: capVideo as never,
+				liveKey,
+				sha256: "b".repeat(64),
+				relocationState: "PURGED",
+				codec: "h264",
+				timebase: "1/15360",
+				frameMode: "vfr",
+				a1Digest: "c".repeat(64),
+				indexId: "index-cap",
+				warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+			});
+			await database.insert(sourceRelocation).values({
+				videoId: capVideo as never,
+				revisionId: "relocate",
+				oldKey: `${ownerId}/${capVideo}/source/original.mp4`,
+				newKey: liveKey,
+				sha256: "b".repeat(64),
+				state: "PURGED",
+				createdAt: new Date(),
+			});
+			const stored = serializeEditTranscript({
+				version: 3,
+				speechModelUsed: "test",
+				durationMs: 9000,
+				languageCode: "en",
+				words: [
+					{
+						id: "kept",
+						text: kept,
+						startMs: 1000,
+						endMs: 1400,
+						confidence: 1,
+						speaker: null,
+						channel: null,
+					},
+					{
+						id: "cut",
+						text: cut,
+						startMs: 7000,
+						endMs: 7400,
+						confidence: 1,
+						speaker: null,
+						channel: null,
+					},
+				],
+			});
+			const ciphertext = encryptEditTranscriptObject(stored, ownerId, capVideo);
+			finishInventoryProbe.getObject = async (key) =>
+				key === transcriptKey ? ciphertext : null;
+			const input = {
+				videoId: capVideo,
+				editSpec: spec(2),
+				baseGeneration: 0,
+				draftVersion: 1,
+				draftSession: "editor",
+			};
+			const prepared = await prepareInstantFinishRevision(database, input, {
+				origin: origin.client(),
+			});
+			const published = await publishInstantFinishRevision(database, input, {
+				origin: origin.client(),
+			});
+			expect(published.revisionId).toBe(prepared.revisionId);
+			const captions =
+				origin.prepared.get(published.revisionId)?.captionsVtt ?? "";
+			expect(captions).toContain("-->");
+			expect(captions).toContain(kept);
+			expect(captions).not.toContain(cut);
+			const [row] = await database
+				.select({ snapshot: editRevision.metadataSnapshot })
+				.from(editRevision)
+				.where(eq(editRevision.revisionId, published.revisionId));
+			expect(row?.snapshot?.captionsVtt).toBe(captions);
+			const [jobs] = await pool.query(
+				"SELECT payload FROM outbox WHERE revisionId = ? AND job = 'readback'",
+				[published.revisionId],
+			);
+			const payload = (jobs as { payload: { captionsVtt?: string } }[])[0]
+				?.payload;
+			expect(payload?.captionsVtt).toBe(captions);
 		} finally {
 			await cleanup();
 		}
