@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -737,24 +736,14 @@ class EncodeSlot:
         self.done = threading.Event()
         self.reason = ""
         self.finished = False
-        self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._logged = False
-
-    def attach(self, proc: subprocess.Popen) -> None:
-        with self._lock:
-            self._proc = proc
-            if self.cancelled.is_set():
-                _kill_process_group(proc)
 
     def cancel(self, reason: str) -> None:
         with self._lock:
             if not self.reason:
                 self.reason = reason
-            proc = self._proc
             self.cancelled.set()
-        if proc is not None:
-            _kill_process_group(proc)
         self._log_terminated()
 
     def finish(self) -> None:
@@ -807,49 +796,10 @@ def reset_revision_encodes() -> None:
     bind_encode_slot(None)
 
 
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        proc.terminate()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def spawn_encode_process(args: list[str], env: dict[str, str]) -> subprocess.Popen:
-    return subprocess.Popen(
-        args,
-        env=env,
-        start_new_session=True,
-        cwd=str(Path(__file__).resolve().parent),
-    )
-
-
-_ENCODE_WORKER = """
-import json, os, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-os.environ["ORIGIN_ENCODE_CHILD"] = "1"
-import lib_origin
-lib_origin.Origin(
-    Path(sys.argv[3]),
-    Path(sys.argv[4]),
-    Path(sys.argv[2]),
-    json.loads(sys.argv[5]),
-    sys.argv[6],
-).ensure(int(sys.argv[7]))
-"""
+def _raise_if_encode_cancelled() -> None:
+    slot = current_encode_slot()
+    if slot is not None and slot.cancelled.is_set():
+        raise EncodeCancelled(slot.reason or "cancelled")
 
 
 def reset_process_state() -> None:
@@ -864,15 +814,18 @@ def reset_process_state() -> None:
 
 
 def _decode_kept(mezz: Path, keyframes: list[dict], frames: tuple[FrameRec, ...]):
+    _raise_if_encode_cancelled()
     container, stream, lock = _decoder(mezz)
     wanted = {frame.src_pts for frame in frames}
     copied = {}
     with lock:
         for run in _source_runs(frames):
+            _raise_if_encode_cancelled()
             anchor = _keyframe_at_or_before(keyframes, run[0].index)
             container.seek(int(anchor["pts"]), stream=stream, backward=True, any_frame=False)
             end_pts = run[-1].src_pts
             for decoded in container.decode(stream):
+                _raise_if_encode_cancelled()
                 pts = decoded.pts
                 if pts is None or pts < anchor["pts"]:
                     continue
@@ -902,6 +855,7 @@ def apply_configured_vui(dest: Path) -> None:
 
 def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
     import av
+    _raise_if_encode_cancelled()
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     out = av.open(
         str(dest),
@@ -912,6 +866,7 @@ def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
             "movflags": "+frag_keyframe+empty_moov+default_base_moof+cmaf",
         },
     )
+    aborted = False
     try:
         stream = out.add_stream("libx264", rate=30)
         stream.width = profile.width
@@ -920,6 +875,7 @@ def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
         stream.time_base = Fraction(1, profile.timescale)
         stream.options = jit_options()
         for index, frame in enumerate(frames_yuv):
+            _raise_if_encode_cancelled()
             frame.pts = index * (profile.timescale // 30)
             frame.time_base = Fraction(1, profile.timescale)
             if index == 0:
@@ -928,10 +884,16 @@ def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
                 frame.pict_type = av.video.frame.PictureType.NONE
             for packet in stream.encode(frame):
                 out.mux(packet)
+        _raise_if_encode_cancelled()
         for packet in stream.encode(None):
             out.mux(packet)
+    except EncodeCancelled:
+        aborted = True
+        raise
     finally:
         out.close()
+        if aborted and dest.exists() and not dest.is_symlink():
+            dest.unlink()
     private(dest)
     apply_configured_vui(dest)
 
@@ -1136,65 +1098,23 @@ class Origin:
         elif avcc != self._init_avcc or injected != self._init_bytes:
             raise RuntimeError(f"segment {index} init does not match the bound init")
 
-    def _produce_cancellable(self, index: int, slot: EncodeSlot) -> tuple[bytes, float]:
-        if slot.cancelled.is_set():
-            raise EncodeCancelled(slot.reason or "cancelled")
-        started = time.perf_counter()
-        env = os.environ.copy()
-        env["ORIGIN_ENCODE_CHILD"] = "1"
-        proc = spawn_encode_process(
-            [
-                sys.executable,
-                "-c",
-                _ENCODE_WORKER,
-                str(Path(__file__).resolve().parent),
-                str(self.cache_root),
-                str(self.mezz),
-                str(self.audio_source),
-                json.dumps(self.ranges),
-                self.source_sha256,
-                str(index),
-            ],
-            env,
-        )
-        slot.attach(proc)
-        try:
-            while proc.poll() is None:
-                if slot.cancelled.is_set():
-                    _kill_process_group(proc)
-                    raise EncodeCancelled(slot.reason or "cancelled")
-                try:
-                    proc.wait(timeout=0.05)
-                except subprocess.TimeoutExpired:
-                    continue
-            if slot.cancelled.is_set():
-                _kill_process_group(proc)
-                raise EncodeCancelled(slot.reason or "cancelled")
-            if proc.returncode != 0:
-                raise RuntimeError(f"seg0 encode exited {proc.returncode}")
-            body = self._read_bound(self.segment_path(index), "seg", index)
-            self._segment_bytes[index] = body
-            self._served_body = body
-            if self.init_path.is_file():
-                init = self._read_bound(self.init_path, "init", None)
-                self._init_bytes = init
-                self._init_avcc = avcc_bytes(init)
-            elapsed = time.perf_counter() - started
-            self._last_produce = {
-                "phases": {},
-                "produce_ms": round(elapsed * 1000.0, 3),
-            }
-            return body, elapsed
-        finally:
-            if proc.poll() is None and slot.cancelled.is_set():
-                _kill_process_group(proc)
+    def _discard_cancelled_produce(self, index: int, *, drop_init: bool) -> None:
+        self._segment_bytes.pop(index, None)
+        self._served_body = b""
+        seg = self.segment_path(index)
+        if seg.exists() or sidecar_path(seg).exists():
+            self._unlink_bound(seg)
+        if not drop_init:
+            return
+        self._init_bytes = None
+        self._init_avcc = None
+        if self.init_path.exists() or sidecar_path(self.init_path).exists():
+            self._unlink_bound(self.init_path)
 
     def produce(self, index: int) -> tuple[bytes, float]:
         if index < 0 or index >= len(self.segments):
             raise IndexError(index)
-        slot = current_encode_slot()
-        if slot is not None and os.environ.get("ORIGIN_ENCODE_CHILD") != "1":
-            return self._produce_cancellable(index, slot)
+        _raise_if_encode_cancelled()
         segment = self.segments[index]
         require_kept(segment.frames, self.ranges, self.profile.timescale)
         j0, j1 = self.audio_grid[index]
@@ -1237,7 +1157,9 @@ class Origin:
             if tmp.exists():
                 tmp.unlink()
         if "error" in audio_box:
+            _raise_if_encode_cancelled()
             raise audio_box["error"]
+        _raise_if_encode_cancelled()
         media = lib_audio.mux_audio(
             media,
             audio_box["frames"],
@@ -1248,9 +1170,16 @@ class Origin:
             video_tb=self.profile.timescale,
             leading=leading,
         )
-        self._bind_init(index, init, avcc)
-        body = styp() + media
-        self._write_bound(self.segment_path(index), body, "seg", index)
+        init_existed = self.init_path.exists() or sidecar_path(self.init_path).exists()
+        try:
+            self._bind_init(index, init, avcc)
+            body = styp() + media
+            _raise_if_encode_cancelled()
+            self._write_bound(self.segment_path(index), body, "seg", index)
+            _raise_if_encode_cancelled()
+        except EncodeCancelled:
+            self._discard_cancelled_produce(index, drop_init=not init_existed)
+            raise
         self._segment_bytes[index] = body
         elapsed = time.perf_counter() - started
         self._last_produce = {
