@@ -18,11 +18,16 @@ import { and, asc, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import {
+	classifyOriginAttestation,
 	type OriginAttestation,
-	parseVerifiedOriginAttestation,
+	type RangeSnap,
 } from "@/lib/revision-media-token";
 import { finishMetadataSnapshot } from "@/lib/revision-metadata-snapshot";
 import { PUBLISH_JOINED_PREPARE } from "@/lib/revision-prepare-abort";
+import {
+	PLAYLIST_ORIGIN_SLACK_SECONDS,
+	snappedDurationError,
+} from "@/lib/revision-duration-check";
 import {
 	assertServableEncoderProfile,
 	chaptersDocument,
@@ -135,13 +140,22 @@ function newRevisionId(intentId: string): string {
 	return revisionId;
 }
 
+function attestationRejectMessage(reason: "mac" | "version" | "shape"): string {
+	if (reason === "version") return "unsupported attestation version";
+	return "Origin attestation MAC was missing or forged";
+}
+
 type PreparedMedia = {
 	durationSeconds: number;
 	captionsVtt: string;
 	chaptersJson: string;
 	chapters: { title: string; start: number }[];
 	attestedDurationSeconds: number;
-	keepRangeCount: number;
+	keepRanges: { start: number; end: number }[];
+	timescale: number;
+	maxHoldTicks: number;
+	durationTicks: number;
+	rangeSnaps: RangeSnap[];
 	initSha256: string;
 	seg0Sha256: string;
 	attestationMac: string;
@@ -250,14 +264,32 @@ async function reuseVerifiedReady(
 		) {
 			return null;
 		}
-		const attested = parseVerifiedOriginAttestation(
+		const classified = classifyOriginAttestation(
 			row.metadataSnapshot.attestationMac,
 			row.metadataSnapshot.attestationBody,
 		);
-		if (!attested || attested.intentId !== intentId) {
+		if (!classified.ok || classified.attestation.intentId !== intentId) {
 			throw new RevisionPublicationError(
 				500,
-				"Stored prepare attestation MAC was missing or forged",
+				classified.ok
+					? "Stored prepare attestation MAC was missing or forged"
+					: attestationRejectMessage(classified.reason),
+				publication.generation,
+				row.revisionId,
+			);
+		}
+		const attested = classified.attestation;
+		const snapError = snappedDurationError({
+			keepRanges: spec.keepRanges,
+			timescale: attested.timescale,
+			maxHoldTicks: attested.maxHoldTicks,
+			durationTicks: attested.durationTicks,
+			rangeSnaps: attested.rangeSnaps,
+		});
+		if (snapError) {
+			throw new RevisionPublicationError(
+				500,
+				snapError,
 				publication.generation,
 				row.revisionId,
 			);
@@ -295,7 +327,8 @@ async function reuseVerifiedReady(
 		};
 	});
 	if (!found) return null;
-	const durationSeconds = getEditSpecOutputDuration(spec);
+	const specDuration = getEditSpecOutputDuration(spec);
+	const mediaDuration = found.attested.playlistDurationSeconds;
 	const captions = deriveRevisionCaptions({
 		transcript: input.transcript ?? null,
 		nextSpec: spec,
@@ -313,18 +346,24 @@ async function reuseVerifiedReady(
 			spec,
 			found.allocated,
 			{
-				durationSeconds,
+				durationSeconds: mediaDuration,
 				captionsVtt: captions.vtt,
 				chaptersJson: chaptersDocument({
 					chapters,
-					durationSeconds,
+					durationSeconds: mediaDuration,
 					sourceId: found.allocated.sourceId,
 				}),
 				chapters,
-				attestedDurationSeconds: found.attested.playlistDurationSeconds,
-				keepRangeCount: spec.keepRanges.length,
+				attestedDurationSeconds: mediaDuration,
+				keepRanges: spec.keepRanges,
+				timescale: found.attested.timescale,
+				maxHoldTicks: found.attested.maxHoldTicks,
+				durationTicks: found.attested.durationTicks,
+				rangeSnaps: found.attested.rangeSnaps,
 				initSha256: found.attested.initSha256,
 				seg0Sha256: found.attested.seg0Sha256,
+				attestationMac: "",
+				attestationBody: "",
 			},
 			now(),
 		);
@@ -942,11 +981,6 @@ async function produceAndVerify(
 		previousSpec: allocated.previousSpec,
 		nextSpec: spec,
 	});
-	const chaptersJson = chaptersDocument({
-		chapters,
-		durationSeconds,
-		sourceId: allocated.sourceId,
-	});
 	const thumbnailPolicy =
 		spec.keepRanges[0]?.start === 0 ? "source-zero" : "seg0-first-frame";
 	const prepared = await origin.prepareRevision({
@@ -959,22 +993,35 @@ async function produceAndVerify(
 		keepRanges: spec.keepRanges,
 		editSpec: spec,
 		captionsVtt: captions.vtt,
-		chaptersJson,
+		chaptersJson: chaptersDocument({
+			chapters,
+			durationSeconds,
+			sourceId: allocated.sourceId,
+		}),
 		thumbnailPolicy,
 	});
 	const attested = assertSignedPrepareAttestation(
 		prepared,
 		allocated,
-		durationSeconds,
-		spec.keepRanges.length,
+		spec.keepRanges,
 	);
+	const mediaDuration = attested.playlistDurationSeconds;
+	const chaptersJson = chaptersDocument({
+		chapters,
+		durationSeconds: mediaDuration,
+		sourceId: allocated.sourceId,
+	});
 	return {
-		durationSeconds,
+		durationSeconds: mediaDuration,
 		captionsVtt: captions.vtt,
 		chaptersJson,
 		chapters,
-		attestedDurationSeconds: attested.playlistDurationSeconds,
-		keepRangeCount: spec.keepRanges.length,
+		attestedDurationSeconds: mediaDuration,
+		keepRanges: spec.keepRanges,
+		timescale: attested.timescale,
+		maxHoldTicks: attested.maxHoldTicks,
+		durationTicks: attested.durationTicks,
+		rangeSnaps: attested.rangeSnaps,
 		initSha256: attested.initSha256,
 		seg0Sha256: attested.seg0Sha256,
 		attestationMac: prepared.attestationMac,
@@ -986,9 +1033,14 @@ async function readPlaylist(
 	origin: OriginClient,
 	id: string,
 	allocated: Allocated,
-	durationSeconds: number,
-	attestedDurationSeconds: number,
-	keepRangeCount = 1,
+	check: {
+		attestedDurationSeconds: number;
+		keepRanges: { start: number; end: number }[];
+		timescale: number;
+		maxHoldTicks: number;
+		durationTicks: number;
+		rangeSnaps: RangeSnap[];
+	},
 ) {
 	const playlist = await origin.fetchArtifact({
 		videoId: id,
@@ -1014,22 +1066,28 @@ async function readPlaylist(
 		);
 	}
 	const duration = playlistDurationSeconds(text);
-	if (Math.abs(duration - attestedDurationSeconds) > 0.05) {
+	if (
+		Math.abs(duration - check.attestedDurationSeconds) >
+		PLAYLIST_ORIGIN_SLACK_SECONDS
+	) {
 		throw new RevisionPublicationError(
 			500,
-			`playlist duration ${duration} != origin ${attestedDurationSeconds}`,
+			`playlist duration ${duration} != origin ${check.attestedDurationSeconds}`,
 			allocated.generation,
 			allocated.revisionId,
 		);
 	}
-	// Each keep range keeps frames whose PTS falls inside it, so the media
-	// duration can differ from the continuous spec by almost one frame per cut.
-	// 1/24s is the largest common frame; 0.05s still covers a single cut.
-	const snapAllowance = Math.max(0.05, keepRangeCount / 24);
-	if (Math.abs(duration - durationSeconds) > snapAllowance) {
+	const snapError = snappedDurationError({
+		keepRanges: check.keepRanges,
+		timescale: check.timescale,
+		maxHoldTicks: check.maxHoldTicks,
+		durationTicks: check.durationTicks,
+		rangeSnaps: check.rangeSnaps,
+	});
+	if (snapError) {
 		throw new RevisionPublicationError(
 			500,
-			`playlist duration ${duration} != spec ${durationSeconds}`,
+			snapError,
 			allocated.generation,
 			allocated.revisionId,
 		);
@@ -1065,16 +1123,7 @@ async function flipCurrent(
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
 	allocated: Allocated,
-	prepared: {
-		durationSeconds: number;
-		captionsVtt: string;
-		chaptersJson: string;
-		chapters: { title: string; start: number }[];
-		attestedDurationSeconds: number;
-		keepRangeCount: number;
-		initSha256: string;
-		seg0Sha256: string;
-	},
+	prepared: PreparedMedia,
 	stamp: Date,
 ) {
 	const [publication] = await tx
@@ -1246,7 +1295,11 @@ async function flipCurrent(
 							previousGeneration,
 							durationSeconds: prepared.durationSeconds,
 							attestedDurationSeconds: prepared.attestedDurationSeconds,
-							keepRangeCount: prepared.keepRangeCount,
+							keepRanges: prepared.keepRanges,
+							timescale: prepared.timescale,
+							maxHoldTicks: prepared.maxHoldTicks,
+							durationTicks: prepared.durationTicks,
+							rangeSnaps: prepared.rangeSnaps,
 							initSha256: prepared.initSha256,
 							seg0Sha256: prepared.seg0Sha256,
 							captionsVtt: prepared.captionsVtt,
@@ -1410,7 +1463,11 @@ type ReadbackPayload = {
 	previousGeneration: number | null;
 	durationSeconds: number;
 	attestedDurationSeconds: number;
-	keepRangeCount: number;
+	keepRanges: { start: number; end: number }[];
+	timescale: number;
+	maxHoldTicks: number;
+	durationTicks: number;
+	rangeSnaps: RangeSnap[];
 	initSha256: string;
 	seg0Sha256: string;
 	captionsVtt: string;
@@ -1494,29 +1551,26 @@ export function stopRevisionReadbackWorker() {
 function assertSignedPrepareAttestation(
 	prepared: RevisionPrepareResult,
 	allocated: Allocated,
-	durationSeconds: number,
-	keepRangeCount: number,
+	keepRanges: { start: number; end: number }[],
 ): OriginAttestation {
-	const attested = parseVerifiedOriginAttestation(
+	const classified = classifyOriginAttestation(
 		prepared.attestationMac,
 		prepared.attestationBody,
 	);
-	if (
-		!attested ||
-		attested.seg0DecodedFrames < 1 ||
-		attested.playlistHasEndList !== true ||
-		attested.intentId !== allocated.intentId ||
-		attested.decodedFrames < 1
-	) {
+	if (!classified.ok || classified.attestation.intentId !== allocated.intentId) {
 		throw new RevisionPublicationError(
 			500,
-			"Origin attestation MAC was missing or forged",
+			classified.ok
+				? "Origin attestation MAC was missing or forged"
+				: attestationRejectMessage(classified.reason),
 			allocated.generation,
 			allocated.revisionId,
 		);
 	}
+	const attested = classified.attestation;
 	if (
-		Math.abs(attested.playlistDurationSeconds - attested.durationSeconds) > 0.05
+		Math.abs(attested.playlistDurationSeconds - attested.durationSeconds) >
+		PLAYLIST_ORIGIN_SLACK_SECONDS
 	) {
 		throw new RevisionPublicationError(
 			500,
@@ -1525,13 +1579,17 @@ function assertSignedPrepareAttestation(
 			allocated.revisionId,
 		);
 	}
-	const snapAllowance = Math.max(0.05, keepRangeCount / 24);
-	if (
-		Math.abs(attested.playlistDurationSeconds - durationSeconds) > snapAllowance
-	) {
+	const snapError = snappedDurationError({
+		keepRanges,
+		timescale: attested.timescale,
+		maxHoldTicks: attested.maxHoldTicks,
+		durationTicks: attested.durationTicks,
+		rangeSnaps: attested.rangeSnaps,
+	});
+	if (snapError) {
 		throw new RevisionPublicationError(
 			500,
-			`attested duration ${attested.playlistDurationSeconds} != spec ${durationSeconds}`,
+			snapError,
 			allocated.generation,
 			allocated.revisionId,
 		);
@@ -1547,7 +1605,11 @@ function isReadbackPayload(value: unknown): value is ReadbackPayload {
 		typeof record.revisionId === "string" &&
 		typeof record.durationSeconds === "number" &&
 		typeof record.attestedDurationSeconds === "number" &&
-		typeof record.keepRangeCount === "number" &&
+		Array.isArray(record.keepRanges) &&
+		Number.isSafeInteger(record.timescale) &&
+		Number.isSafeInteger(record.maxHoldTicks) &&
+		Number.isSafeInteger(record.durationTicks) &&
+		Array.isArray(record.rangeSnaps) &&
 		typeof record.initSha256 === "string" &&
 		typeof record.seg0Sha256 === "string" &&
 		typeof record.captionsVtt === "string" &&
@@ -1618,21 +1680,25 @@ async function verifyRevisionArtifacts(
 			"Fetched media does not match the decode attestation",
 		);
 	}
+	const playlistCheck = {
+		attestedDurationSeconds: payload.attestedDurationSeconds,
+		keepRanges: payload.keepRanges,
+		timescale: payload.timescale,
+		maxHoldTicks: payload.maxHoldTicks,
+		durationTicks: payload.durationTicks,
+		rangeSnaps: payload.rangeSnaps,
+	};
 	const firstPlaylist = await readPlaylist(
 		origin,
 		payload.videoId,
 		allocated,
-		payload.durationSeconds,
-		payload.attestedDurationSeconds,
-		payload.keepRangeCount,
+		playlistCheck,
 	);
 	const secondPlaylist = await readPlaylist(
 		origin,
 		payload.videoId,
 		allocated,
-		payload.durationSeconds,
-		payload.attestedDurationSeconds,
-		payload.keepRangeCount,
+		playlistCheck,
 	);
 	if (firstPlaylist !== secondPlaylist) {
 		throw new RevisionPublicationError(500, "Playlist duration is not stable");

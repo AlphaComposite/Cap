@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+	hlsResumePosition,
 	replayRevisionHlsEvents,
 	revisionHlsErrorAction,
 } from "@/lib/revision-playback";
@@ -13,7 +14,7 @@ const root = path.resolve(
 );
 
 describe("F12 grant refresh on origin 401", () => {
-	it.each([401, 403, 410, 500, 503])(
+	it.each([401, 500, 503])(
 		"refreshes a revision playlist on hls status %s",
 		(status) => {
 			expect(
@@ -29,7 +30,30 @@ describe("F12 grant refresh on origin 401", () => {
 		},
 	);
 
-	it("reloads the newly signed playlist and fails closed after bounded retries", () => {
+	it("stops on privacy revocation and resumes a grant refresh from the current time", () => {
+		expect(
+			revisionHlsErrorAction({
+				status: 403,
+				fatal: false,
+				refreshAttempts: 0,
+				maxRefreshAttempts: 2,
+				policyDenied: false,
+			}),
+		).toEqual({ type: "stop" });
+		expect(
+			revisionHlsErrorAction({
+				status: 410,
+				fatal: false,
+				refreshAttempts: 0,
+				maxRefreshAttempts: 2,
+				policyDenied: false,
+			}),
+		).toEqual({ type: "stop" });
+		expect(hlsResumePosition(62.4)).toBe(62.4);
+		expect(hlsResumePosition(0)).toBe(-1);
+	});
+
+	it("fails closed after bounded retries or a denied policy", () => {
 		expect(
 			revisionHlsErrorAction({
 				status: 401,

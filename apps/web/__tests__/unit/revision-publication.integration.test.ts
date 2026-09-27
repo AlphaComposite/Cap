@@ -35,6 +35,7 @@ vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
 }));
 
+import { snapsCoveringRanges } from "@/lib/revision-duration-check";
 import {
 	signOriginAttestation,
 	verifyInternalServiceRequest,
@@ -200,7 +201,7 @@ class FakeOrigin {
 				const body = JSON.parse(raw.toString("utf8")) as RevisionPrepareBody;
 				const init = Buffer.from(`0000ftypisom${body.revisionId}`);
 				const seg0 = Buffer.from(`0000moofmdat${body.revisionId}`);
-				const playlist = `#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${body.durationSeconds.toFixed(3)},\nseg/0.m4s\n#EXT-X-ENDLIST\n`;
+				const playlist = `#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${snapsCoveringRanges(body.keepRanges, 1000).durationSeconds.toFixed(3)},\nseg/0.m4s\n#EXT-X-ENDLIST\n`;
 				const note = Buffer.from(
 					`duration_seconds=${body.durationSeconds.toFixed(3)}`,
 				);
@@ -223,7 +224,9 @@ class FakeOrigin {
 					playlist,
 					thumb,
 				});
+				const snap = snapsCoveringRanges(body.keepRanges, 1000);
 				const payload = {
+					attestationVersion: 2,
 					ready: true,
 					intentId: body.intentId,
 					decoded: true,
@@ -232,8 +235,12 @@ class FakeOrigin {
 					playlistHasEndList: true,
 					initSha256: sha256Hex(init),
 					seg0Sha256: sha256Hex(seg0),
-					playlistDurationSeconds: body.durationSeconds,
-					durationSeconds: body.durationSeconds,
+					playlistDurationSeconds: snap.durationSeconds,
+					durationSeconds: snap.durationSeconds,
+					durationTicks: snap.durationTicks,
+					timescale: snap.timescale,
+					maxHoldTicks: snap.maxHoldTicks,
+					rangeSnaps: snap.rangeSnaps,
 				};
 				const attestationBody = `${JSON.stringify(payload)}\n`;
 				res
