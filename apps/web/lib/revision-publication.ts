@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { db } from "@cap/database";
 import {
 	comments,
@@ -13,9 +14,15 @@ import {
 	videos,
 } from "@cap/database/schema";
 import type { VideoEditSpec, VideoEditSpecV2 } from "@cap/database/types";
+import { serverEnv } from "@cap/env";
 import type { Video } from "@cap/web-domain";
 import { and, asc, eq, lt, sql } from "drizzle-orm";
-import type { EditTranscript } from "@/lib/edit-transcript";
+import {
+	type EditTranscript,
+	getEditTranscriptObjectKey,
+	parseEditTranscript,
+} from "@/lib/edit-transcript";
+import { decryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
 import { runtimeObjectStore } from "@/lib/instant-finish-source-relocate";
 import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
@@ -440,6 +447,7 @@ export async function prepareInstantFinishRevision(
 	try {
 		await transition(app, allocated.revisionId, "PREPARING", now());
 		const prepared = await produceAndVerify(
+			app,
 			input,
 			spec,
 			allocated,
@@ -559,6 +567,7 @@ export async function publishInstantFinishRevision(
 		if (deps.onAllocated) await deps.onAllocated(allocated);
 		await transition(app, allocated.revisionId, "PREPARING", now());
 		const prepared = await produceAndVerify(
+			app,
 			input,
 			spec,
 			allocated,
@@ -1024,6 +1033,7 @@ export const revisionLockProbe: {
 
 export const finishInventoryProbe: {
 	listPrefix?: (prefix: string) => Promise<string[]>;
+	getObject?: (key: string) => Promise<string | null>;
 } = {};
 
 export async function transition(
@@ -1099,7 +1109,83 @@ export async function transition(
 	});
 }
 
+const TRANSCRIPT_DURATION_TOLERANCE_MS = 250;
+
+async function readTranscriptObject(key: string): Promise<string | null> {
+	if (finishInventoryProbe.getObject) {
+		try {
+			return await finishInventoryProbe.getObject(key);
+		} catch {
+			return null;
+		}
+	}
+	try {
+		const env = serverEnv();
+		if (!env.CAP_AWS_BUCKET) return null;
+		const client = new S3Client({
+			region: env.CAP_AWS_REGION,
+			endpoint: env.S3_INTERNAL_ENDPOINT,
+			forcePathStyle: env.S3_PATH_STYLE,
+			credentials: {
+				accessKeyId: env.CAP_AWS_ACCESS_KEY ?? "",
+				secretAccessKey: env.CAP_AWS_SECRET_KEY ?? "",
+			},
+		});
+		const response = await client.send(
+			new GetObjectCommand({ Bucket: env.CAP_AWS_BUCKET, Key: key }),
+		);
+		return (await response.Body?.transformToString()) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+async function loadStoredEditTranscript(
+	app: Database,
+	id: string,
+	spec: VideoEditSpecV2,
+): Promise<EditTranscript | null> {
+	const [video] = await app
+		.select({ ownerId: videos.ownerId })
+		.from(videos)
+		.where(eq(videos.id, videoId(id)));
+	if (!video?.ownerId) return null;
+	const key = getEditTranscriptObjectKey(video.ownerId, id);
+	let raw = await readTranscriptObject(key);
+	if (!raw) {
+		const rows = await app
+			.select({
+				newKey: sourceRelocation.newKey,
+				state: sourceRelocation.state,
+			})
+			.from(sourceRelocation)
+			.where(
+				and(
+					eq(sourceRelocation.videoId, videoId(id)),
+					eq(sourceRelocation.oldKey, key),
+				),
+			);
+		const moved = (["PURGED", "DELETED", "POINTER", "COPIED"] as const)
+			.map((state) => rows.find((row) => row.state === state))
+			.find((row) => row?.newKey && row.newKey !== key);
+		if (moved?.newKey) raw = await readTranscriptObject(moved.newKey);
+	}
+	if (!raw) return null;
+	const decrypted = decryptEditTranscriptObject(raw, video.ownerId, id);
+	const transcript = decrypted ? parseEditTranscript(decrypted) : null;
+	if (!transcript) return null;
+	const expected = Math.round(spec.sourceDuration * 1000);
+	if (
+		Math.abs(transcript.durationMs - expected) >
+		TRANSCRIPT_DURATION_TOLERANCE_MS
+	) {
+		return null;
+	}
+	return transcript;
+}
+
 async function produceAndVerify(
+	app: Database,
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
 	allocated: Allocated,
@@ -1107,7 +1193,7 @@ async function produceAndVerify(
 ) {
 	const durationSeconds = getEditSpecOutputDuration(spec);
 	const captions = deriveRevisionCaptions({
-		transcript: input.transcript ?? null,
+		transcript: await loadStoredEditTranscript(app, input.videoId, spec),
 		nextSpec: spec,
 	});
 	const chapters = deriveRevisionChapters({
