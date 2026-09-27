@@ -174,6 +174,7 @@ export function HLSVideoPlayer({
 	posterSrc = null,
 }: Props) {
 	const hlsInstance = useRef<Hls | null>(null);
+	const resumeAtRef = useRef(-1);
 	const [currentCue, setCurrentCue] = useState<string>("");
 	const [controlsVisible, setControlsVisible] = useState(false);
 	const [toggleCaptions, setToggleCaptions] = useState(true);
@@ -409,11 +410,14 @@ export function HLSVideoPlayer({
 		setHlsInitFailed(false);
 
 		if (Hls.isSupported()) {
+			const startAt = resumeAtRef.current;
+			resumeAtRef.current = -1;
 			const hls = new Hls({
 				enableWorker: true,
 				lowLatencyMode: false,
 				backBufferLength: 90,
 				startFragPrefetch: true,
+				startPosition: startAt > 0 ? startAt : -1,
 				loader: createPrefetchLoader(Hls.DefaultConfig.loader),
 				...(isLiveSegments
 					? {
@@ -433,10 +437,14 @@ export function HLSVideoPlayer({
 
 			hls.loadSource(playbackSrc);
 			hls.attachMedia(video);
-			if (autoplay) {
+			if (autoplay || startAt > 0) {
 				video.muted = true;
 				hls.on(Hls.Events.MANIFEST_PARSED, () => {
-					void video.play().catch(() => undefined);
+					if (startAt > 0) {
+						video.currentTime = startAt;
+						hls.startLoad(startAt);
+					}
+					if (autoplay) void video.play().catch(() => undefined);
 				});
 			}
 			if (isLiveSegments) {
@@ -505,11 +513,13 @@ export function HLSVideoPlayer({
 						const startPosition = grantResumeStartPosition(
 							playbackResumeTime(lastPositive, video.currentTime),
 						);
+						resumeAtRef.current = startPosition;
 						hls.stopLoad();
 						void refreshRevisionSourceRef
 							.current()
 							.then((result) => {
 								if (result.plan === "fail-closed") {
+									resumeAtRef.current = -1;
 									policyDenied = true;
 									setHlsInitFailed(true);
 									video.pause();
@@ -517,22 +527,13 @@ export function HLSVideoPlayer({
 									return;
 								}
 								if (result.plan === "refresh-page") {
+									resumeAtRef.current = -1;
 									video.pause();
 									hls.stopLoad();
 									setHlsInitFailed(true);
 									return;
 								}
-								if (result.url) {
-									hls.once(Hls.Events.MANIFEST_PARSED, () => {
-										hls.config.startPosition = startPosition;
-										if (startPosition > 0) {
-											video.currentTime = startPosition;
-											hls.startLoad(startPosition);
-										}
-									});
-									hls.config.startPosition = startPosition;
-									hls.loadSource(result.url);
-								}
+								if (!result.url) resumeAtRef.current = -1;
 							})
 							.finally(() => {
 								grantCycle = settleGrantRefreshCycle(grantCycle, false);
@@ -632,8 +633,20 @@ export function HLSVideoPlayer({
 				}
 			};
 		} else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+			const startAt = resumeAtRef.current;
+			resumeAtRef.current = -1;
 			video.src = playbackSrc;
 			video.load();
+			if (startAt > 0) {
+				video.addEventListener(
+					"loadedmetadata",
+					() => {
+						video.currentTime = startAt;
+						void video.play().catch(() => undefined);
+					},
+					{ once: true },
+				);
+			}
 			if (!revisionRef.current) return;
 			let nativeCycle: GrantRefreshCycle = { inFlight: false, attempts: 0 };
 			let nativePolicyDenied = false;
@@ -673,6 +686,7 @@ export function HLSVideoPlayer({
 				const startPosition = grantResumeStartPosition(
 					playbackResumeTime(lastPositive, video.currentTime),
 				);
+				resumeAtRef.current = startPosition;
 				video.pause();
 				video.autoplay = false;
 				void refreshRevisionSourceRef
@@ -688,27 +702,9 @@ export function HLSVideoPlayer({
 							return;
 						}
 						if (result.url) {
-							const onReady = () => {
-								if (
-									startPosition > 0 &&
-									Math.abs(video.currentTime - startPosition) > 0.25
-								) {
-									video.addEventListener(
-										"seeked",
-										() => {
-											void video.play().catch(() => undefined);
-										},
-										{ once: true },
-									);
-									video.currentTime = startPosition;
-									return;
-								}
-								void video.play().catch(() => undefined);
-							};
-							video.addEventListener("loadedmetadata", onReady, { once: true });
-							video.src = result.url;
-							video.load();
+							return;
 						}
+						resumeAtRef.current = -1;
 					})
 					.finally(() => {
 						nativeCycle = settleGrantRefreshCycle(nativeCycle, false);
