@@ -50,10 +50,17 @@ export async function register() {
 		const { startRevisionReadbackWorker } = await import(
 			"@/lib/revision-publication"
 		);
+		const { reconcileOriginReadPolicy } = await import(
+			"@/lib/instant-finish-source-relocate"
+		);
+		const database = db();
 		startRevisionReadbackWorker({
-			database: db(),
+			database,
 			origin: httpOriginClient(),
 			pollMs: 1500,
+			onTick: async () => {
+				await reconcileOriginReadPolicy(database);
+			},
 		});
 	}
 }
