@@ -10,6 +10,7 @@ import {
 	ownerOriginalObjectKey,
 	privateSourceHeaders,
 } from "@/lib/private-source-read";
+import { isAbortLike } from "@/lib/revision-request-error";
 import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
 
@@ -48,17 +49,24 @@ async function readOriginal(request: NextRequest) {
 		if (head.ETag) headers.set("ETag", head.ETag);
 		return new Response(null, { status: 200, headers });
 	}
-	const upstream = await bucket
-		.getObjectResponse(key, request.headers.get("range"), {
-			signal: request.signal,
-		})
-		.pipe(runPromise);
-	const headers = privateSourceHeaders(upstream.headers);
-	headers.set("Accept-Ranges", "bytes");
-	return new Response(upstream.body, {
-		status: upstream.status,
-		headers,
-	});
+	try {
+		const upstream = await bucket
+			.getObjectResponse(key, request.headers.get("range"), {
+				signal: request.signal,
+			})
+			.pipe(runPromise);
+		const headers = privateSourceHeaders(upstream.headers);
+		headers.set("Accept-Ranges", "bytes");
+		return new Response(upstream.body, {
+			status: upstream.status,
+			headers,
+		});
+	} catch (error) {
+		if (request.signal.aborted || isAbortLike(error)) {
+			return new NextResponse(null, { status: 499 });
+		}
+		throw error;
+	}
 }
 
 export const GET = readOriginal;
