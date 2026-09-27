@@ -132,7 +132,10 @@ function recordedInput(
 	};
 }
 
-export async function prepareOwnerRevision(input: PublishVideoRevisionInput) {
+export async function prepareOwnerRevision(
+	input: PublishVideoRevisionInput,
+	options?: { signal?: AbortSignal },
+) {
 	const { video } = await loadOwnerVideo(input.videoId);
 	if (!isInstantFinishEnabledForOwner(video.ownerId)) {
 		throw new RevisionPublicationError(
@@ -149,7 +152,7 @@ export async function prepareOwnerRevision(input: PublishVideoRevisionInput) {
 	return prepareInstantFinishRevision(
 		db(),
 		recordedInput(input, recorded, video),
-		{ origin: httpOriginClient() },
+		{ origin: httpOriginClient(options?.signal) },
 	);
 }
 

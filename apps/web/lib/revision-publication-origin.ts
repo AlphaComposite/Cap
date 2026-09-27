@@ -112,21 +112,23 @@ async function signedFetch(
 	path: string,
 	method: "GET" | "HEAD" | "POST",
 	body = "",
+	signal?: AbortSignal,
 ) {
 	return originFetch(`${originBaseUrl()}${path}`, {
 		method,
 		headers: signedHeaders(method, path, body),
 		body: method === "POST" ? body : undefined,
 		dispatcher: originDispatcher,
+		signal,
 	});
 }
 
-export function httpOriginClient(): OriginClient {
+export function httpOriginClient(signal?: AbortSignal): OriginClient {
 	return {
 		async prepareRevision(body) {
 			const path = `/internal/revisions/${body.revisionId}/prepare`;
 			const encoded = JSON.stringify(body);
-			const response = await signedFetch(path, "POST", encoded);
+			const response = await signedFetch(path, "POST", encoded, signal);
 			if (!response.ok) {
 				throw new Error(`Revision prepare failed with HTTP ${response.status}`);
 			}

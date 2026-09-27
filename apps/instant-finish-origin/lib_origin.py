@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -721,12 +722,143 @@ def warm_status(source_id: str, now: float | None = None) -> str:
     return "warm"
 
 
+class EncodeCancelled(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class EncodeSlot:
+    def __init__(self, video_id: str, spec_key: str, revision_id: str) -> None:
+        self.video_id = video_id
+        self.spec_key = spec_key
+        self.revision_id = revision_id
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
+        self.reason = ""
+        self.finished = False
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._logged = False
+
+    def attach(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._proc = proc
+            if self.cancelled.is_set():
+                _kill_process_group(proc)
+
+    def cancel(self, reason: str) -> None:
+        with self._lock:
+            if not self.reason:
+                self.reason = reason
+            proc = self._proc
+            self.cancelled.set()
+        if proc is not None:
+            _kill_process_group(proc)
+        self._log_terminated()
+
+    def finish(self) -> None:
+        self.finished = True
+        self.done.set()
+
+    def _log_terminated(self) -> None:
+        with self._lock:
+            if self._logged:
+                return
+            self._logged = True
+        sys.stderr.write(
+            f"revision-prepare-terminated revision={self.revision_id} reason={self.reason or 'cancelled'}\n"
+        )
+        sys.stderr.flush()
+
+
+_ENCODE_LOCK = threading.Lock()
+_ACTIVE_ENCODES: dict[str, EncodeSlot] = {}
+_ENCODE_TLS = threading.local()
+
+
+def begin_revision_encode(video_id: str, spec_key: str, revision_id: str) -> tuple[EncodeSlot, bool]:
+    with _ENCODE_LOCK:
+        current = _ACTIVE_ENCODES.get(video_id)
+        if current is not None and not current.finished and current.spec_key == spec_key:
+            return current, True
+        if current is not None and not current.finished and current.spec_key != spec_key:
+            current.cancel("superseded")
+        slot = EncodeSlot(video_id, spec_key, revision_id)
+        _ACTIVE_ENCODES[video_id] = slot
+        return slot, False
+
+
+def bind_encode_slot(slot: EncodeSlot | None) -> None:
+    _ENCODE_TLS.slot = slot
+
+
+def current_encode_slot() -> EncodeSlot | None:
+    return getattr(_ENCODE_TLS, "slot", None)
+
+
+def reset_revision_encodes() -> None:
+    with _ENCODE_LOCK:
+        slots = list(_ACTIVE_ENCODES.values())
+        _ACTIVE_ENCODES.clear()
+    for slot in slots:
+        if not slot.finished:
+            slot.cancel("reset")
+    bind_encode_slot(None)
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def spawn_encode_process(args: list[str], env: dict[str, str]) -> subprocess.Popen:
+    return subprocess.Popen(
+        args,
+        env=env,
+        start_new_session=True,
+        cwd=str(Path(__file__).resolve().parent),
+    )
+
+
+_ENCODE_WORKER = """
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+os.environ["ORIGIN_ENCODE_CHILD"] = "1"
+import lib_origin
+lib_origin.Origin(
+    Path(sys.argv[3]),
+    Path(sys.argv[4]),
+    Path(sys.argv[2]),
+    json.loads(sys.argv[5]),
+    sys.argv[6],
+).ensure(int(sys.argv[7]))
+"""
+
+
 def reset_process_state() -> None:
     close_source()
     lib_audio.reset_aac_pool()
     lib_audio.clear_sha_cache()
     lib_audio.clear_presentation_cache()
     clear_mezz_index_cache()
+    reset_revision_encodes()
     with _WARM_LOCK:
         _WARM.clear()
 
@@ -908,6 +1040,7 @@ class Origin:
         self.timeline = lib_audio.plan_timeline(ranges, self.ticks, self.durs, self.profile.timescale)
         self.audio_grid = lib_audio.assign_grid(self.segments, self.timeline)
         self.playlist = playlist_text(self.segments, self.profile.timescale).encode()
+        self.cache_root = Path(cache)
         self.cache = cache / "ns" / self.mezz_sha256 / self.audio_sha256 / self.rev / self.encoder_hash
         self.cache.mkdir(mode=0o700, parents=True, exist_ok=True)
         private(self.cache)
@@ -1003,9 +1136,65 @@ class Origin:
         elif avcc != self._init_avcc or injected != self._init_bytes:
             raise RuntimeError(f"segment {index} init does not match the bound init")
 
+    def _produce_cancellable(self, index: int, slot: EncodeSlot) -> tuple[bytes, float]:
+        if slot.cancelled.is_set():
+            raise EncodeCancelled(slot.reason or "cancelled")
+        started = time.perf_counter()
+        env = os.environ.copy()
+        env["ORIGIN_ENCODE_CHILD"] = "1"
+        proc = spawn_encode_process(
+            [
+                sys.executable,
+                "-c",
+                _ENCODE_WORKER,
+                str(Path(__file__).resolve().parent),
+                str(self.cache_root),
+                str(self.mezz),
+                str(self.audio_source),
+                json.dumps(self.ranges),
+                self.source_sha256,
+                str(index),
+            ],
+            env,
+        )
+        slot.attach(proc)
+        try:
+            while proc.poll() is None:
+                if slot.cancelled.is_set():
+                    _kill_process_group(proc)
+                    raise EncodeCancelled(slot.reason or "cancelled")
+                try:
+                    proc.wait(timeout=0.05)
+                except subprocess.TimeoutExpired:
+                    continue
+            if slot.cancelled.is_set():
+                _kill_process_group(proc)
+                raise EncodeCancelled(slot.reason or "cancelled")
+            if proc.returncode != 0:
+                raise RuntimeError(f"seg0 encode exited {proc.returncode}")
+            body = self._read_bound(self.segment_path(index), "seg", index)
+            self._segment_bytes[index] = body
+            self._served_body = body
+            if self.init_path.is_file():
+                init = self._read_bound(self.init_path, "init", None)
+                self._init_bytes = init
+                self._init_avcc = avcc_bytes(init)
+            elapsed = time.perf_counter() - started
+            self._last_produce = {
+                "phases": {},
+                "produce_ms": round(elapsed * 1000.0, 3),
+            }
+            return body, elapsed
+        finally:
+            if proc.poll() is None and slot.cancelled.is_set():
+                _kill_process_group(proc)
+
     def produce(self, index: int) -> tuple[bytes, float]:
         if index < 0 or index >= len(self.segments):
             raise IndexError(index)
+        slot = current_encode_slot()
+        if slot is not None and os.environ.get("ORIGIN_ENCODE_CHILD") != "1":
+            return self._produce_cancellable(index, slot)
         segment = self.segments[index]
         require_kept(segment.frames, self.ranges, self.profile.timescale)
         j0, j1 = self.audio_grid[index]
