@@ -47,6 +47,7 @@ import {
 	stashInstantFinishPlayback,
 } from "@/lib/instant-finish-playback-handoff";
 import { doneRoute, readOrCreateDraftSession } from "@/lib/revision-done";
+import { createPrepareOnce, prepareSpecKey } from "@/lib/revision-prepare-once";
 import { postRevisionRoute } from "@/lib/revision-publish-client";
 import {
 	acceptSettledPrepare,
@@ -54,7 +55,6 @@ import {
 	nextSettlePrepare,
 	SETTLE_PREPARE_DEBOUNCE_MS,
 	shouldJoinInflightPrepare,
-	shouldStartPrepareOnPointerDown,
 } from "@/lib/revision-settle-fence";
 import {
 	clearTimelineDraft,
@@ -83,6 +83,7 @@ import {
 	mapSourceTimeToOutputTime,
 	mapTimelineDisplayTimeToSourceTime,
 	mapTimelineSourceTimeToDisplayTime,
+	normalizeVideoEditSpec,
 	pushTimelineHistory,
 	redoTimelineHistory,
 	removeTimelineDisplaySplitPoint,
@@ -729,6 +730,7 @@ export function EditVideoClient({
 	const settleRequestRef = useRef(0);
 	const joinOnDoneRef = useRef(false);
 	const flushPrepareRef = useRef<(() => void) | null>(null);
+	const prepareOnceRef = useRef(createPrepareOnce());
 	const prepareTrackRef = useRef<{
 		spec: VideoEditSpec;
 		requestId: number;
@@ -1170,6 +1172,17 @@ export function EditVideoClient({
 
 	useEffect(() => {
 		if (!instantFinish?.enabled || isSaving) return;
+		const spec = editSpec;
+		const key = prepareSpecKey(normalizeVideoEditSpec(spec));
+		const once = prepareOnceRef.current;
+		once.forgetIfDifferent(key);
+		if (
+			once.sentKey() === key &&
+			prepareTrackRef.current &&
+			!prepareTrackRef.current.controller.signal.aborted
+		) {
+			return;
+		}
 		joinOnDoneRef.current = false;
 		const started = nextSettlePrepare(
 			settlePrepareRef.current,
@@ -1178,7 +1191,6 @@ export function EditVideoClient({
 		settleRequestRef.current = started.requestId;
 		settlePrepareRef.current = started.controller;
 		const requestId = started.requestId;
-		const spec = editSpec;
 		prepareTrackRef.current = {
 			spec,
 			requestId,
@@ -1226,25 +1238,29 @@ export function EditVideoClient({
 				})
 				.catch(() => undefined);
 		};
-		const timer = window.setTimeout(fire, SETTLE_PREPARE_DEBOUNCE_MS);
+		once.arm(key, SETTLE_PREPARE_DEBOUNCE_MS, fire);
 		flushPrepareRef.current = () => {
-			window.clearTimeout(timer);
-			fire();
+			once.flush(key, fire);
 		};
 		settleTimerRef.current = {
 			clear: () => {
-				window.clearTimeout(timer);
-				if (!joinOnDoneRef.current) started.controller.abort();
+				once.cancelTimer();
+				if (!joinOnDoneRef.current && once.sentKey() !== key) {
+					started.controller.abort();
+				}
 			},
 		};
 		return () => {
-			window.clearTimeout(timer);
+			once.cancelTimer();
 			flushPrepareRef.current = null;
-			if (!joinOnDoneRef.current) started.controller.abort();
-			settleRequestRef.current += 1;
+			if (!joinOnDoneRef.current && once.sentKey() !== key) {
+				started.controller.abort();
+			}
+			if (once.sentKey() !== key) settleRequestRef.current += 1;
 			if (
 				settlePrepareRef.current === started.controller &&
-				!joinOnDoneRef.current
+				!joinOnDoneRef.current &&
+				once.sentKey() !== key
 			) {
 				settlePrepareRef.current = null;
 			}
@@ -1254,73 +1270,71 @@ export function EditVideoClient({
 
 	const prepareOnPointerDown = useCallback(() => {
 		if (!instantFinishRef.current?.enabled || savingRef.current) return;
-		const track = prepareTrackRef.current;
-		const sameSpec = Boolean(
-			track && areEditSpecDocumentsEquivalent(track.spec, editSpec),
-		);
-		if (
-			!shouldStartPrepareOnPointerDown({
-				sameSpec,
-				ready: track?.ready === true,
-				sent: track?.sent === true,
-				aborted: track?.controller.signal.aborted === true,
-			})
-		) {
+		const key = prepareSpecKey(normalizeVideoEditSpec(editSpec));
+		const once = prepareOnceRef.current;
+		once.cancelTimer();
+		if (once.sentKey() === key) return;
+		const flush = flushPrepareRef.current;
+		if (flush) {
+			flush();
 			return;
 		}
-		if (sameSpec && track && !track.sent) {
-			flushPrepareRef.current?.();
-			return;
-		}
-		const started = nextSettlePrepare(
-			settlePrepareRef.current,
-			settleRequestRef.current,
-		);
-		settleRequestRef.current = started.requestId;
-		settlePrepareRef.current = started.controller;
-		prepareTrackRef.current = {
-			spec: editSpec,
-			requestId: started.requestId,
-			controller: started.controller,
-			sent: true,
-			ready: false,
-		};
-		const current = instantFinishRef.current;
-		if (!current?.enabled) return;
-		const draftStorage = getTimelineDraftStorage();
-		const draftSession = readOrCreateDraftSession(draftStorage, video.id);
-		void postRevisionRoute<{ revisionId: string; generation: number }>(
-			"/api/video/revision/prepare",
-			{
-				videoId: video.id,
-				editSpec,
-				expectedEditSpec: initialEditSpec,
-				baseGeneration: current.generation ?? 0,
-				draftVersion: (current.draftVersion ?? 0) + 1,
-				draftSession,
-			},
-			started.controller.signal,
-		)
-			.then((prepared) => {
-				if (
-					!acceptSettledPrepare(started.requestId, settleRequestRef.current)
-				) {
-					return;
-				}
-				if (savingRef.current) return;
-				if (prepareTrackRef.current?.requestId === started.requestId) {
-					prepareTrackRef.current.ready = true;
-				}
-				setInstantFinish((existing) =>
-					existing
-						? { ...existing, generation: prepared.generation }
-						: existing,
-				);
-			})
-			.catch(() => undefined);
+		once.flush(key, () => {
+			const started = nextSettlePrepare(
+				settlePrepareRef.current,
+				settleRequestRef.current,
+			);
+			settleRequestRef.current = started.requestId;
+			settlePrepareRef.current = started.controller;
+			prepareTrackRef.current = {
+				spec: editSpec,
+				requestId: started.requestId,
+				controller: started.controller,
+				sent: true,
+				ready: false,
+			};
+			const current = instantFinishRef.current;
+			if (!current?.enabled) return;
+			const draftStorage = getTimelineDraftStorage();
+			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
+			void postRevisionRoute<{ revisionId: string; generation: number }>(
+				"/api/video/revision/prepare",
+				{
+					videoId: video.id,
+					editSpec,
+					expectedEditSpec: initialEditSpec,
+					baseGeneration: current.generation ?? 0,
+					draftVersion: (current.draftVersion ?? 0) + 1,
+					draftSession,
+				},
+				started.controller.signal,
+			)
+				.then((prepared) => {
+					if (
+						!acceptSettledPrepare(started.requestId, settleRequestRef.current)
+					) {
+						return;
+					}
+					if (savingRef.current) return;
+					if (prepareTrackRef.current?.requestId === started.requestId) {
+						prepareTrackRef.current.ready = true;
+					}
+					setInstantFinish((existing) =>
+						existing
+							? { ...existing, generation: prepared.generation }
+							: existing,
+					);
+				})
+				.catch(() => undefined);
+		});
 	}, [editSpec, initialEditSpec, video.id]);
 
 	const handleDone = useCallback(async () => {
+		const key = prepareSpecKey(normalizeVideoEditSpec(editSpec));
+		if (prepareOnceRef.current.sentKey() !== key) {
+			flushPrepareRef.current?.();
+		}
+		prepareOnceRef.current.cancelTimer();
 		const track = prepareTrackRef.current;
 		const join = shouldJoinInflightPrepare({
 			inflightMatches: Boolean(

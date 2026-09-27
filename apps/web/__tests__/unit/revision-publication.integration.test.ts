@@ -40,7 +40,10 @@ import {
 	signOriginAttestation,
 	verifyInternalServiceRequest,
 } from "@/lib/revision-media-token";
-import { PUBLISH_JOINED_PREPARE } from "@/lib/revision-prepare-abort";
+import {
+	failUnjoinedInflightPrepare,
+	PUBLISH_JOINED_PREPARE,
+} from "@/lib/revision-prepare-abort";
 import {
 	claimArtifactLease,
 	claimRevisionReadback,
@@ -1378,4 +1381,117 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(unchanged?.latestDraftVersion).toBe(after?.latestDraftVersion);
 		expect(unchanged?.currentRevisionId).toBe(after?.currentRevisionId);
 	});
+
+	it("attaches a second prepare of the same spec instead of encoding again", async () => {
+		const specS = spec(3.3);
+		const [start] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const input = {
+			videoId: videoId as never,
+			editSpec: specS,
+			baseGeneration: start?.generation ?? 0,
+			draftVersion: (start?.latestDraftVersion ?? 0) + 1,
+			draftSession: start?.draftSession || "editor",
+		};
+		let releasePrepare: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releasePrepare = resolve;
+		});
+		const slow = origin.client();
+		const original = slow.prepareRevision.bind(slow);
+		let calls = 0;
+		slow.prepareRevision = async (body) => {
+			calls += 1;
+			await gate;
+			return original(body);
+		};
+		const first = prepareInstantFinishRevision(database, input, {
+			origin: slow,
+		});
+		await vi.waitFor(() => expect(calls).toBe(1));
+		const second = prepareInstantFinishRevision(database, input, {
+			origin: slow,
+		});
+		const attached = await Promise.race([
+			second.then(() => "attached" as const),
+			new Promise<"blocked">((resolve) => {
+				setTimeout(() => resolve("blocked"), 800);
+			}),
+		]);
+		expect(attached).toBe("attached");
+		expect(calls).toBe(1);
+		releasePrepare();
+		await first;
+		const published = await publishInstantFinishRevision(
+			database,
+			{ ...input, draftVersion: input.draftVersion + 1 },
+			{ origin: origin.client() },
+		);
+		expect(published.success).toBe(true);
+		expect(calls).toBe(1);
+	}, 60_000);
+
+	it("does not throw when an abort lands during a slow origin prepare", async () => {
+		const specS = spec(4.2);
+		const [start] = await database
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId as never));
+		const input = {
+			videoId: videoId as never,
+			editSpec: specS,
+			baseGeneration: start?.generation ?? 0,
+			draftVersion: (start?.latestDraftVersion ?? 0) + 1,
+			draftSession: start?.draftSession || "editor",
+		};
+		let releasePrepare: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releasePrepare = resolve;
+		});
+		const slow = origin.client();
+		const original = slow.prepareRevision.bind(slow);
+		slow.prepareRevision = async (body) => {
+			await gate;
+			return original(body);
+		};
+		const postsBefore = origin.preparePosts;
+		const preparing = prepareInstantFinishRevision(database, input, {
+			origin: slow,
+		});
+		let revisionId = "";
+		await vi.waitFor(
+			async () => {
+				const rows = await database
+					.select()
+					.from(editRevision)
+					.where(eq(editRevision.videoId, videoId as never));
+				const inflight = rows.find((row) => row.state === "PREPARING");
+				expect(inflight).toBeTruthy();
+				revisionId = inflight?.revisionId ?? "";
+			},
+			{ timeout: 5000 },
+		);
+		const decision = await failUnjoinedInflightPrepare({
+			videoId,
+			revisionId,
+		});
+		expect(decision.markedFailed).toBe(false);
+		releasePrepare();
+		const prepared = await preparing;
+		expect(prepared.success).toBe(true);
+		const [row] = await database
+			.select()
+			.from(editRevision)
+			.where(eq(editRevision.revisionId, prepared.revisionId));
+		expect(row?.state).not.toBe("FAILED");
+		const published = await publishInstantFinishRevision(
+			database,
+			{ ...input, draftVersion: input.draftVersion + 1 },
+			{ origin: origin.client() },
+		);
+		expect(published.success).toBe(true);
+		expect(origin.preparePosts).toBe(postsBefore + 1);
+	}, 60_000);
 });
