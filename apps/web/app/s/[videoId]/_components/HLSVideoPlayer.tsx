@@ -18,11 +18,14 @@ import { toast } from "sonner";
 import { retryVideoProcessing } from "@/actions/video/retry-processing";
 import { createPrefetchLoader } from "@/lib/instant-finish-fragment-cache";
 import {
-	hlsResumePosition,
+	beginGrantRefreshCycle,
+	type GrantRefreshCycle,
+	grantResumeStartPosition,
 	planGrantRefresh,
 	redactMediaGrant,
 	replacePlaylistGrant,
 	revisionHlsErrorAction,
+	settleGrantRefreshCycle,
 } from "@/lib/revision-playback";
 import { bindRevisionSeek, unbindRevisionSeek } from "@/lib/revision-seek";
 import { bindCaptionTrackCueText } from "./caption-tracks";
@@ -443,7 +446,7 @@ export function HLSVideoPlayer({
 			let mediaRetryCount = 0;
 			const maxNetworkRetries = isLiveSegments ? 30 : 6;
 			let hasTriedPlaylistReload = false;
-			let grantRefreshAttempts = 0;
+			let grantCycle: GrantRefreshCycle = { inFlight: false, attempts: 0 };
 			let policyDenied = false;
 			const maxGrantRefreshAttempts = 2;
 			let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -463,7 +466,7 @@ export function HLSVideoPlayer({
 						status,
 						fatal: data.fatal,
 						details: data.details,
-						refreshAttempts: grantRefreshAttempts,
+						refreshAttempts: grantCycle.attempts,
 						maxRefreshAttempts: maxGrantRefreshAttempts,
 						policyDenied,
 					});
@@ -475,29 +478,61 @@ export function HLSVideoPlayer({
 						hls.destroy();
 						return;
 					}
+					if (grantCycle.inFlight && action.type === "refresh-grant") {
+						return;
+					}
 					if (action.type === "refresh-grant") {
-						grantRefreshAttempts += 1;
-						const resumeAt = hlsResumePosition(video.currentTime);
+						const begun = beginGrantRefreshCycle(
+							grantCycle,
+							maxGrantRefreshAttempts,
+						);
+						if (begun.action === "coalesce") return;
+						if (begun.action === "fail-closed") {
+							policyDenied = true;
+							setHlsInitFailed(true);
+							video.pause();
+							hls.stopLoad();
+							hls.destroy();
+							return;
+						}
+						grantCycle = begun.cycle;
+						const startPosition = grantResumeStartPosition(video.currentTime);
 						hls.stopLoad();
-						void refreshRevisionSourceRef.current().then((result) => {
-							if (result.plan === "fail-closed") {
-								policyDenied = true;
-								setHlsInitFailed(true);
-								video.pause();
-								hls.destroy();
-								return;
-							}
-							if (result.plan === "refresh-page") {
-								video.pause();
-								hls.stopLoad();
-								setHlsInitFailed(true);
-								return;
-							}
-							if (result.url) {
-								hls.loadSource(result.url);
-								hls.startLoad(resumeAt);
-							}
-						});
+						void refreshRevisionSourceRef
+							.current()
+							.then((result) => {
+								if (result.plan === "fail-closed") {
+									policyDenied = true;
+									setHlsInitFailed(true);
+									video.pause();
+									hls.destroy();
+									return;
+								}
+								if (result.plan === "refresh-page") {
+									video.pause();
+									hls.stopLoad();
+									setHlsInitFailed(true);
+									return;
+								}
+								if (result.url) {
+									hls.once(Hls.Events.MANIFEST_PARSED, () => {
+										if (
+											startPosition > 0 &&
+											Math.abs(video.currentTime - startPosition) > 1
+										) {
+											video.currentTime = startPosition;
+										}
+									});
+									// checkAutostartLoad reads config.startPosition after loadSource.
+									// startLoad(pos) before levels exist is overwritten by -1.
+									hls.config.startPosition = startPosition;
+									hls.loadSource(result.url);
+									hls.startLoad(startPosition);
+								}
+							})
+							.finally(() => {
+								grantCycle = settleGrantRefreshCycle(grantCycle, false);
+							});
 						return;
 					}
 				}
@@ -576,7 +611,7 @@ export function HLSVideoPlayer({
 			});
 
 			hls.on(Hls.Events.FRAG_LOADED, () => {
-				grantRefreshAttempts = 0;
+				grantCycle = settleGrantRefreshCycle(grantCycle, true);
 			});
 
 			hls.on(Hls.Events.MANIFEST_LOADED, () => {
@@ -595,17 +630,20 @@ export function HLSVideoPlayer({
 			video.src = playbackSrc;
 			video.load();
 			if (!revisionRef.current) return;
-			let nativeRefreshAttempts = 0;
+			let nativeCycle: GrantRefreshCycle = { inFlight: false, attempts: 0 };
 			let nativePolicyDenied = false;
 			const onProgress = () => {
-				if (video.currentTime > 0) nativeRefreshAttempts = 0;
+				if (video.currentTime > 0) {
+					nativeCycle = settleGrantRefreshCycle(nativeCycle, true);
+				}
 			};
 			video.addEventListener("timeupdate", onProgress);
 			const onError = () => {
+				if (nativeCycle.inFlight) return;
 				const action = revisionHlsErrorAction({
 					native: true,
 					fatal: true,
-					refreshAttempts: nativeRefreshAttempts,
+					refreshAttempts: nativeCycle.attempts,
 					maxRefreshAttempts: 2,
 					policyDenied: nativePolicyDenied,
 				});
@@ -616,25 +654,56 @@ export function HLSVideoPlayer({
 					return;
 				}
 				if (action.type !== "refresh-grant") return;
-				nativeRefreshAttempts += 1;
-				const resumeAt = hlsResumePosition(video.currentTime);
-				void refreshRevisionSourceRef.current().then((result) => {
-					if (result.plan === "fail-closed" || result.plan === "refresh-page") {
-						nativePolicyDenied = true;
-						video.pause();
-						setHlsInitFailed(true);
-						return;
-					}
-					if (result.url) {
-						const onReady = () => {
-							video.currentTime = resumeAt > 0 ? resumeAt : 0;
-							void video.play().catch(() => undefined);
-						};
-						video.addEventListener("loadedmetadata", onReady, { once: true });
-						video.src = result.url;
-						video.load();
-					}
-				});
+				const begun = beginGrantRefreshCycle(nativeCycle, 2);
+				if (begun.action === "coalesce") return;
+				if (begun.action === "fail-closed") {
+					nativePolicyDenied = true;
+					video.pause();
+					setHlsInitFailed(true);
+					return;
+				}
+				nativeCycle = begun.cycle;
+				const startPosition = grantResumeStartPosition(video.currentTime);
+				video.pause();
+				video.autoplay = false;
+				void refreshRevisionSourceRef
+					.current()
+					.then((result) => {
+						if (
+							result.plan === "fail-closed" ||
+							result.plan === "refresh-page"
+						) {
+							nativePolicyDenied = true;
+							video.pause();
+							setHlsInitFailed(true);
+							return;
+						}
+						if (result.url) {
+							const onReady = () => {
+								if (
+									startPosition > 0 &&
+									Math.abs(video.currentTime - startPosition) > 0.25
+								) {
+									video.addEventListener(
+										"seeked",
+										() => {
+											void video.play().catch(() => undefined);
+										},
+										{ once: true },
+									);
+									video.currentTime = startPosition;
+									return;
+								}
+								void video.play().catch(() => undefined);
+							};
+							video.addEventListener("loadedmetadata", onReady, { once: true });
+							video.src = result.url;
+							video.load();
+						}
+					})
+					.finally(() => {
+						nativeCycle = settleGrantRefreshCycle(nativeCycle, false);
+					});
 			};
 			video.addEventListener("error", onError);
 			return () => {

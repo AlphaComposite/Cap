@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	classifyOriginAttestation,
 	parseVerifiedOriginAttestation,
 	signOriginAttestation,
 	verifyOriginAttestation,
@@ -59,5 +60,13 @@ describe("origin prepare attestation", () => {
 		).toBeNull();
 		expect(verifyOriginAttestation("forged", vector.body, env)).toBe(false);
 		expect(vector.mac).not.toContain(vector.serviceSecret);
+		const v1 = vector.body.replace(
+			'"attestationVersion": 2',
+			'"attestationVersion": 1',
+		);
+		expect(v1).not.toBe(vector.body);
+		expect(
+			classifyOriginAttestation(signOriginAttestation(v1, env), v1, env),
+		).toEqual({ ok: false, reason: "version" });
 	});
 });
