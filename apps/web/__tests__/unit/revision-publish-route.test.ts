@@ -277,4 +277,54 @@ describe("revision prepare route", () => {
 			videoId: "video-1",
 		});
 	});
+
+	it("aborts the origin call when an unjoined prepare is aborted", async () => {
+		const controller = new AbortController();
+		let seen: AbortSignal | undefined;
+		prepareOwnerRevision.mockImplementation((_input, options) => {
+			seen = options?.signal;
+			controller.abort();
+			return new Promise(() => {});
+		});
+		failUnjoinedInflightPrepare.mockResolvedValue({
+			markedFailed: true,
+			joined: false,
+		});
+		const { POST } = await import("@/app/api/video/revision/prepare/route");
+		const response = await POST(
+			request("http://127.0.0.1:32120/api/video/revision/prepare", {
+				...sameOrigin,
+				signal: controller.signal,
+			}),
+		);
+		expect(response.status).toBe(499);
+		expect(seen?.aborted).toBe(true);
+	});
+
+	it("does not abort the origin call when a publish has joined", async () => {
+		const controller = new AbortController();
+		let seen: AbortSignal | undefined;
+		prepareOwnerRevision.mockImplementation(async (_input, options) => {
+			seen = options?.signal;
+			controller.abort();
+			return {
+				success: true,
+				revisionId: "rev-joined",
+				generation: 6,
+			};
+		});
+		failUnjoinedInflightPrepare.mockResolvedValue({
+			markedFailed: false,
+			joined: true,
+		});
+		const { POST } = await import("@/app/api/video/revision/prepare/route");
+		const response = await POST(
+			request("http://127.0.0.1:32120/api/video/revision/prepare", {
+				...sameOrigin,
+				signal: controller.signal,
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(seen?.aborted).toBe(false);
+	});
 });

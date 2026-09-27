@@ -246,26 +246,52 @@ class OriginApp:
             return self._json(409, {"error": "intent_mismatch"})
         sys.stderr.write(f"revision-prepare-start revision={revision_id}\n")
         sys.stderr.flush()
+        spec_key = f"{source_id}:{lib_origin.canonical_spec(ranges).hex()}"
+        slot, joined = lib_origin.begin_revision_encode(video_id, spec_key, revision_id)
+        lib_origin.bind_encode_slot(slot)
+        conn = headers.get("_conn")
+        if not joined and conn is not None:
+            threading.Thread(
+                target=_watch_prepare_connection,
+                args=(conn, slot),
+                name="revision-prepare-watch",
+                daemon=True,
+            ).start()
         try:
-            origin = self._origin_for(video_id, source_id, ranges)
-            self._persist_ranges(revision_id, ranges)
-            _write_namespace(self.cache, revision_id, origin.rev)
-            init = origin.ensure_init()
-            seg0 = origin.ensure(0)
-            decoded = _decode_check(init, seg0)
-            duration = lib_origin.duration_ticks(origin.segments) / origin.profile.timescale
-            captions, chapters = self._write_side_artifacts(revision_id, origin, body, duration)
-        except lib_origin.MezzanineRequired:
-            return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
-        except Exception as exc:
-            sys.stderr.write(f"revision-prepare-failed {type(exc).__name__}: {exc}\n")
-            return self._text(500, b"unavailable")
-        if decoded < 1 or b"#EXT-X-ENDLIST" not in origin.playlist:
-            sys.stderr.write(f"revision-prepare-failed undecoded decoded={decoded}\n")
-            return self._text(500, b"unavailable")
-        intent_id = str(requested_intent) if requested_intent else origin.rev
-        snaps = lib_origin.range_snaps(origin.ticks, origin.durs, ranges, origin.profile.timescale)
-        return self._attested({
+            if joined:
+                if not slot.done.wait(limits.FFMPEG_TIMEOUT_S):
+                    return self._text(500, b"unavailable")
+                if slot.cancelled.is_set():
+                    return self._text(499, b"superseded")
+                lib_origin.bind_encode_slot(None)
+            try:
+                origin = self._origin_for(video_id, source_id, ranges)
+                self._persist_ranges(revision_id, ranges)
+                _write_namespace(self.cache, revision_id, origin.rev)
+                init = origin.ensure_init()
+                seg0 = origin.ensure(0)
+                if slot.cancelled.is_set():
+                    raise lib_origin.EncodeCancelled(slot.reason or "cancelled")
+                decoded = _decode_check(init, seg0)
+                duration = lib_origin.duration_ticks(origin.segments) / origin.profile.timescale
+                captions, chapters = self._write_side_artifacts(revision_id, origin, body, duration)
+            except lib_origin.EncodeCancelled:
+                return self._text(499, b"superseded")
+            except lib_origin.MezzanineRequired:
+                return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
+            except Exception as exc:
+                sys.stderr.write(f"revision-prepare-failed {type(exc).__name__}: {exc}\n")
+                return self._text(500, b"unavailable")
+            if slot.cancelled.is_set():
+                return self._text(499, b"superseded")
+            if decoded < 1 or b"#EXT-X-ENDLIST" not in origin.playlist:
+                sys.stderr.write(f"revision-prepare-failed undecoded decoded={decoded}\n")
+                return self._text(500, b"unavailable")
+            sys.stderr.write(f"revision-prepare-complete revision={revision_id}\n")
+            sys.stderr.flush()
+            intent_id = str(requested_intent) if requested_intent else origin.rev
+            snaps = lib_origin.range_snaps(origin.ticks, origin.durs, ranges, origin.profile.timescale)
+            return self._attested({
             "attestationVersion": lib_origin.ATTESTATION_VERSION,
             "captionsSha256": hashlib.sha256(captions).hexdigest(),
             "chaptersSha256": hashlib.sha256(chapters).hexdigest(),
@@ -289,6 +315,10 @@ class OriginApp:
             "segmentPlanVersion": lib_origin.SEGMENT_PLAN_VERSION,
             "thumbnailSha256": "pending",
         })
+        finally:
+            lib_origin.bind_encode_slot(None)
+            if not joined:
+                slot.finish()
 
     def _media(self, method: str, match: re.Match, query: dict, headers) -> tuple[int, bytes, str, dict[str, str]]:
         video_id = match.group("video")
@@ -948,6 +978,29 @@ def _thumbnail(origin: lib_origin.Origin, dest: Path, duration_seconds: float) -
     private(dest)
 
 
+def _watch_prepare_connection(conn, slot: lib_origin.EncodeSlot) -> None:
+    import select
+
+    while not slot.done.wait(0.05):
+        try:
+            readable, _, _ = select.select([conn], [], [], 0)
+        except (OSError, ValueError):
+            slot.cancel("disconnect")
+            return
+        if not readable:
+            continue
+        try:
+            peeked = conn.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        except BlockingIOError:
+            continue
+        except OSError:
+            slot.cancel("disconnect")
+            return
+        if peeked == b"":
+            slot.cancel("disconnect")
+            return
+
+
 def _reject_overload(request) -> None:
     body = b"overloaded\n"
     raw = (
@@ -1045,6 +1098,7 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             body = self.rfile.read(length) if length else b""
             headers = {key: value for key, value in self.headers.items()}
             headers["_body"] = body
+            headers["_conn"] = self.connection
             self._dispatch("POST", headers)
 
         def _dispatch(self, method: str, headers=None) -> None:

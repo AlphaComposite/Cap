@@ -38,7 +38,8 @@ export async function POST(request: NextRequest) {
 			{ status: 400 },
 		);
 	}
-	const prepared = prepareOwnerRevision(input);
+	const originAbort = new AbortController();
+	const prepared = prepareOwnerRevision(input, { signal: originAbort.signal });
 	const aborted = new Promise<"aborted">((resolve) => {
 		if (request.signal.aborted) {
 			resolve("aborted");
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
 			const decision = await failUnjoinedInflightPrepare({
 				videoId: input.videoId,
 			});
+			if (!decision.joined) originAbort.abort();
 			if (decision.markedFailed) {
 				return NextResponse.json({ error: "Prepare aborted" }, { status: 499 });
 			}
@@ -87,6 +89,7 @@ export async function POST(request: NextRequest) {
 			const decision = await failUnjoinedInflightPrepare({
 				videoId: input.videoId,
 			});
+			if (!decision.joined) originAbort.abort();
 			if (decision.markedFailed) {
 				return NextResponse.json({ error: "Prepare aborted" }, { status: 499 });
 			}
