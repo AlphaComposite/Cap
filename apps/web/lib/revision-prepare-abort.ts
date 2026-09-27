@@ -5,12 +5,23 @@ import { and, eq, sql } from "drizzle-orm";
 
 export const PUBLISH_JOINED_PREPARE = "publish-joined";
 
-const ABORT_JOIN_GRACE_MS = 500;
+const runningOriginPrepares = new Set<string>();
 
-type InflightRow = {
+type InflightState = {
 	state: string;
 	error: string | null;
 };
+
+export function trackOriginPrepare(revisionId: string): () => void {
+	runningOriginPrepares.add(revisionId);
+	return () => {
+		runningOriginPrepares.delete(revisionId);
+	};
+}
+
+export function originPrepareIsRunning(revisionId: string): boolean {
+	return runningOriginPrepares.has(revisionId);
+}
 
 function affectedRows(result: unknown): number {
 	if (Array.isArray(result)) {
@@ -23,7 +34,7 @@ function affectedRows(result: unknown): number {
 	return 0;
 }
 
-export function abortedPrepareShouldFail(row: InflightRow): boolean {
+export function abortedPrepareShouldFail(row: InflightState): boolean {
 	if (row.error === PUBLISH_JOINED_PREPARE) return false;
 	return row.state === "COMMITTED_INTENT" || row.state === "PREPARING";
 }
@@ -38,6 +49,7 @@ async function inflightRows(input: { videoId: string; revisionId?: string }) {
 		: eq(editRevision.videoId, videoId(input.videoId));
 	return db()
 		.select({
+			revisionId: editRevision.revisionId,
 			state: editRevision.state,
 			error: editRevision.error,
 		})
@@ -54,14 +66,12 @@ export async function failUnjoinedInflightPrepare(input: {
 	videoId: string;
 	revisionId?: string;
 }): Promise<{ markedFailed: boolean; joined: boolean }> {
-	const deadline = Date.now() + ABORT_JOIN_GRACE_MS;
-	for (;;) {
-		const rows = await inflightRows(input);
-		if (rows.some((row) => row.error === PUBLISH_JOINED_PREPARE)) {
-			return { markedFailed: false, joined: true };
-		}
-		if (Date.now() >= deadline) break;
-		await new Promise((resolve) => setTimeout(resolve, 25));
+	const rows = await inflightRows(input);
+	if (rows.some((row) => row.error === PUBLISH_JOINED_PREPARE)) {
+		return { markedFailed: false, joined: true };
+	}
+	if (rows.some((row) => originPrepareIsRunning(row.revisionId))) {
+		return { markedFailed: false, joined: false };
 	}
 	const revision = input.revisionId
 		? eq(editRevision.revisionId, input.revisionId)

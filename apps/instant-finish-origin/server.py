@@ -244,6 +244,8 @@ class OriginApp:
         requested_intent = body.get("intentId")
         if requested_intent and row.intent_id not in {requested_intent, "pendinghash"} and row.intent_id != requested_intent:
             return self._json(409, {"error": "intent_mismatch"})
+        sys.stderr.write(f"revision-prepare-start revision={revision_id}\n")
+        sys.stderr.flush()
         try:
             origin = self._origin_for(video_id, source_id, ranges)
             self._persist_ranges(revision_id, ranges)

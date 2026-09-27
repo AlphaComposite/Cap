@@ -27,7 +27,10 @@ import {
 	type RangeSnap,
 } from "@/lib/revision-media-token";
 import { finishMetadataSnapshot } from "@/lib/revision-metadata-snapshot";
-import { PUBLISH_JOINED_PREPARE } from "@/lib/revision-prepare-abort";
+import {
+	PUBLISH_JOINED_PREPARE,
+	trackOriginPrepare,
+} from "@/lib/revision-prepare-abort";
 import {
 	assertServableEncoderProfile,
 	chaptersDocument,
@@ -422,13 +425,14 @@ export async function prepareInstantFinishRevision(
 			mintRevisionId,
 		),
 	);
-	if (allocated.idempotent) {
+	if (allocated.idempotent || allocated.join) {
 		return {
 			success: true,
 			revisionId: allocated.revisionId,
 			generation: allocated.generation,
 		};
 	}
+	const stopTracking = trackOriginPrepare(allocated.revisionId);
 	try {
 		await transition(app, allocated.revisionId, "PREPARING", now());
 		const prepared = await produceAndVerify(
@@ -438,7 +442,20 @@ export async function prepareInstantFinishRevision(
 			deps.origin,
 		);
 		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
-		await transition(app, allocated.revisionId, "READY", now());
+		const ready = await transition(
+			app,
+			allocated.revisionId,
+			"READY",
+			now(),
+			"PREPARING",
+		);
+		if (!ready) {
+			return {
+				success: true,
+				revisionId: allocated.revisionId,
+				generation: allocated.generation,
+			};
+		}
 		return {
 			success: true,
 			revisionId: allocated.revisionId,
@@ -453,6 +470,8 @@ export async function prepareInstantFinishRevision(
 			allocated.generation,
 			allocated.revisionId,
 		);
+	} finally {
+		stopTracking();
 	}
 }
 
@@ -531,6 +550,7 @@ export async function publishInstantFinishRevision(
 			generation: allocated.generation,
 		};
 	}
+	const stopTracking = trackOriginPrepare(allocated.revisionId);
 	try {
 		if (deps.onAllocated) await deps.onAllocated(allocated);
 		await transition(app, allocated.revisionId, "PREPARING", now());
@@ -541,7 +561,21 @@ export async function publishInstantFinishRevision(
 			deps.origin,
 		);
 		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
-		await transition(app, allocated.revisionId, "READY", now());
+		const ready = await transition(
+			app,
+			allocated.revisionId,
+			"READY",
+			now(),
+			"PREPARING",
+		);
+		if (!ready) {
+			throw new RevisionPublicationError(
+				499,
+				"Prepare aborted",
+				allocated.generation,
+				allocated.revisionId,
+			);
+		}
 		await transition(app, allocated.revisionId, "PUBLISHING", now());
 		await app.transaction(async (tx) => {
 			await flipCurrent(tx, input, spec, allocated, prepared, now());
@@ -560,6 +594,8 @@ export async function publishInstantFinishRevision(
 			allocated.generation,
 			allocated.revisionId,
 		);
+	} finally {
+		stopTracking();
 	}
 }
 
@@ -693,6 +729,38 @@ async function allocateRevision(
 			sourceId,
 			previousSpec: previous.previousSpec,
 		};
+	}
+	const [sameIntent] = await tx
+		.select()
+		.from(editRevision)
+		.where(
+			and(
+				eq(editRevision.videoId, videoId(input.videoId)),
+				eq(editRevision.intentId, intentId),
+				sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
+			),
+		);
+	if (sameIntent) {
+		const marked = await tx
+			.update(editRevision)
+			.set({ error: PUBLISH_JOINED_PREPARE, updatedAt: stamp })
+			.where(
+				and(
+					eq(editRevision.revisionId, sameIntent.revisionId),
+					sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
+				),
+			);
+		if (affectedRows(marked) === 1) {
+			return {
+				idempotent: false,
+				join: true,
+				revisionId: sameIntent.revisionId,
+				generation: sameIntent.generation,
+				intentId,
+				sourceId,
+				previousSpec: previous.previousSpec,
+			};
+		}
 	}
 	const nextGeneration = publication.generation + 1;
 	const updated = await tx
@@ -915,8 +983,9 @@ async function transition(
 	revisionId: string,
 	next: string,
 	stamp: Date,
-) {
-	await database.transaction(async (tx) => {
+	expected?: string,
+): Promise<boolean> {
+	return database.transaction(async (tx) => {
 		const revision = await readRevision(tx, revisionId);
 		if (!revision) {
 			throw new RevisionPublicationError(500, `Unknown revision ${revisionId}`);
@@ -929,6 +998,7 @@ async function transition(
 		if (!publication) {
 			throw new RevisionPublicationError(500, "Publication row disappeared");
 		}
+		if (expected && revision.state !== expected) return false;
 		const legal = LEGAL[revision.state] ?? [];
 		if (!legal.includes(next)) {
 			throw new RevisionPublicationError(
@@ -958,10 +1028,19 @@ async function transition(
 				revisionId,
 			);
 		}
-		await tx
+		const updated = await tx
 			.update(editRevision)
 			.set({ state: next, updatedAt: stamp })
-			.where(eq(editRevision.revisionId, revisionId));
+			.where(
+				expected
+					? and(
+							eq(editRevision.revisionId, revisionId),
+							eq(editRevision.state, expected),
+						)
+					: eq(editRevision.revisionId, revisionId),
+			);
+		if (expected && affectedRows(updated) !== 1) return false;
+		return true;
 	});
 }
 
