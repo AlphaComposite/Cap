@@ -16,6 +16,10 @@ import type { VideoEditSpec, VideoEditSpecV2 } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
 import { and, asc, eq, lt, sql } from "drizzle-orm";
 import type { EditTranscript } from "@/lib/edit-transcript";
+import {
+	PLAYLIST_ORIGIN_SLACK_SECONDS,
+	snappedDurationError,
+} from "@/lib/revision-duration-check";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import {
 	classifyOriginAttestation,
@@ -24,10 +28,6 @@ import {
 } from "@/lib/revision-media-token";
 import { finishMetadataSnapshot } from "@/lib/revision-metadata-snapshot";
 import { PUBLISH_JOINED_PREPARE } from "@/lib/revision-prepare-abort";
-import {
-	PLAYLIST_ORIGIN_SLACK_SECONDS,
-	snappedDurationError,
-} from "@/lib/revision-duration-check";
 import {
 	assertServableEncoderProfile,
 	chaptersDocument,
@@ -327,7 +327,6 @@ async function reuseVerifiedReady(
 		};
 	});
 	if (!found) return null;
-	const specDuration = getEditSpecOutputDuration(spec);
 	const mediaDuration = found.attested.playlistDurationSeconds;
 	const captions = deriveRevisionCaptions({
 		transcript: input.transcript ?? null,
@@ -1557,7 +1556,10 @@ function assertSignedPrepareAttestation(
 		prepared.attestationMac,
 		prepared.attestationBody,
 	);
-	if (!classified.ok || classified.attestation.intentId !== allocated.intentId) {
+	if (
+		!classified.ok ||
+		classified.attestation.intentId !== allocated.intentId
+	) {
 		throw new RevisionPublicationError(
 			500,
 			classified.ok

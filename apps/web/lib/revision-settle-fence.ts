@@ -13,7 +13,8 @@ export function beginDoneFence(
 	controller: AbortController | null,
 	options?: { join?: boolean },
 ): { requestId: number; controller: AbortController | null; joined: boolean } {
-	const join = options?.join === true && controller != null && !controller.signal.aborted;
+	const join =
+		options?.join === true && controller != null && !controller.signal.aborted;
 	if (!join) controller?.abort();
 	return {
 		requestId: requestId + 1,
