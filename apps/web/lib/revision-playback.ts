@@ -176,6 +176,43 @@ export function hlsResumePosition(currentTime: number): number {
 	return currentTime;
 }
 
+export function grantResumeStartPosition(currentTime: number): number {
+	const resumeAt = hlsResumePosition(currentTime);
+	return resumeAt > 0 ? resumeAt : -1;
+}
+
+export type GrantRefreshCycle = {
+	inFlight: boolean;
+	attempts: number;
+};
+
+export function beginGrantRefreshCycle(
+	cycle: GrantRefreshCycle,
+	maxAttempts: number,
+): {
+	cycle: GrantRefreshCycle;
+	action: "refresh" | "coalesce" | "fail-closed";
+} {
+	if (cycle.inFlight) return { cycle, action: "coalesce" };
+	if (cycle.attempts >= maxAttempts) {
+		return { cycle, action: "fail-closed" };
+	}
+	return {
+		cycle: { inFlight: true, attempts: cycle.attempts + 1 },
+		action: "refresh",
+	};
+}
+
+export function settleGrantRefreshCycle(
+	cycle: GrantRefreshCycle,
+	fragmentLoaded: boolean,
+): GrantRefreshCycle {
+	return {
+		inFlight: false,
+		attempts: fragmentLoaded ? 0 : cycle.attempts,
+	};
+}
+
 export function revisionHlsErrorAction(input: {
 	status?: number;
 	fatal?: boolean;

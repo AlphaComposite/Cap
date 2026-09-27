@@ -3,9 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+	beginGrantRefreshCycle,
+	grantResumeStartPosition,
 	hlsResumePosition,
 	replayRevisionHlsEvents,
 	revisionHlsErrorAction,
+	settleGrantRefreshCycle,
 } from "@/lib/revision-playback";
 
 const root = path.resolve(
@@ -30,7 +33,25 @@ describe("F12 grant refresh on origin 401", () => {
 		},
 	);
 
-	it("stops on privacy revocation and resumes a grant refresh from the current time", () => {
+	it("resumes a grant refresh from the current time and coalesces a burst", () => {
+		expect(grantResumeStartPosition(62.4)).toBe(62.4);
+		expect(grantResumeStartPosition(0)).toBe(-1);
+		expect(hlsResumePosition(62.4)).toBe(62.4);
+		let cycle = { inFlight: false, attempts: 0 };
+		const first = beginGrantRefreshCycle(cycle, 2);
+		expect(first.action).toBe("refresh");
+		cycle = first.cycle;
+		expect(beginGrantRefreshCycle(cycle, 2).action).toBe("coalesce");
+		cycle = settleGrantRefreshCycle(cycle, true);
+		expect(cycle).toEqual({ inFlight: false, attempts: 0 });
+		cycle = beginGrantRefreshCycle(cycle, 2).cycle;
+		cycle = settleGrantRefreshCycle(cycle, false);
+		cycle = beginGrantRefreshCycle(cycle, 2).cycle;
+		cycle = settleGrantRefreshCycle(cycle, false);
+		expect(beginGrantRefreshCycle(cycle, 2).action).toBe("fail-closed");
+	});
+
+	it("stops on privacy revocation", () => {
 		expect(
 			revisionHlsErrorAction({
 				status: 403,
