@@ -1653,6 +1653,7 @@ export function startRevisionReadbackWorker(input: {
 	origin: OriginClient;
 	pollMs?: number;
 	now?: () => Date;
+	onTick?: () => Promise<void>;
 }): { stop: () => void } {
 	if (readbackWorker) return { stop: stopRevisionReadbackWorker };
 	const pollMs = Math.min(input.pollMs ?? READBACK_POLL_MS, 2_000);
@@ -1661,7 +1662,9 @@ export function startRevisionReadbackWorker(input: {
 		const run = sweepRevisionReadbacks(input.database, {
 			origin: input.origin,
 			now: input.now?.(),
-		}).then(() => undefined);
+		}).then(async () => {
+			await input.onTick?.();
+		});
 		readbackInFlight = run;
 		const clear = () => {
 			if (readbackInFlight === run) readbackInFlight = null;

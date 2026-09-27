@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
 import { db } from "@cap/database";
 import {
@@ -195,21 +196,58 @@ export async function relocateFlaggedSource(input: {
 }
 
 export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
-	const rootUser = process.env.MINIO_ROOT_USER;
-	const rootPassword = process.env.MINIO_ROOT_PASSWORD;
-	if (!rootUser || !rootPassword) return;
-	const env = serverEnv();
-	const endpoint = env.S3_INTERNAL_ENDPOINT;
-	if (!endpoint) {
-		throw new RevisionPublicationError(
-			409,
-			"Origin read policy was not updated for the relocated key",
-		);
-	}
 	const rows = await app
 		.select({ liveKey: sourceObject.liveKey })
 		.from(sourceObject);
 	const keys = [...new Set([liveKey, ...rows.map((row) => row.liveKey)])];
+	await publishRecordedKeys(keys);
+}
+
+let publishedKeyHash: string | null = null;
+let missingCredentialHash: string | null = null;
+
+export async function reconcileOriginReadPolicy(
+	app: Database,
+): Promise<boolean> {
+	const rows = await app
+		.select({ liveKey: sourceObject.liveKey })
+		.from(sourceObject);
+	const keys = [...new Set(rows.map((row) => row.liveKey))].sort();
+	const hash = createHash("sha256").update(keys.join("\n")).digest("hex");
+	if (hash === publishedKeyHash) return true;
+	try {
+		const published = await publishRecordedKeys(keys);
+		if (published) {
+			publishedKeyHash = hash;
+			missingCredentialHash = null;
+		} else if (
+			!process.env.MINIO_ROOT_USER ||
+			!process.env.MINIO_ROOT_PASSWORD
+		) {
+			if (missingCredentialHash !== hash) {
+				console.error(
+					"origin read policy was not published: missing root credentials",
+				);
+				missingCredentialHash = hash;
+			}
+		}
+		return published;
+	} catch {
+		console.error("origin read policy was not published");
+		return false;
+	}
+}
+
+async function publishRecordedKeys(keys: string[]): Promise<boolean> {
+	const rootUser = process.env.MINIO_ROOT_USER;
+	const rootPassword = process.env.MINIO_ROOT_PASSWORD;
+	if (!rootUser || !rootPassword) return false;
+	const env = serverEnv();
+	const endpoint = env.S3_INTERNAL_ENDPOINT;
+	if (!endpoint) {
+		console.error("origin read policy was not published: missing endpoint");
+		return false;
+	}
 	await publishOriginObjectPolicy({
 		bucket: env.CAP_AWS_BUCKET,
 		endpoint,
@@ -218,6 +256,7 @@ export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
 		rootPassword,
 		policyName: process.env.ORIGIN_S3_POLICY ?? "instant-finish-origin-read",
 	});
+	return true;
 }
 
 async function publishOriginObjectPolicy(input: {
@@ -278,21 +317,10 @@ async function publishOriginObjectPolicy(input: {
 			"/policy/policy.json",
 		]);
 		if (created !== 0) {
-			await run(["admin", "policy", "rm", "local", input.policyName]);
-			const replaced = await run([
-				"admin",
-				"policy",
-				"create",
-				"local",
-				input.policyName,
-				"/policy/policy.json",
-			]);
-			if (replaced !== 0) {
-				throw new RevisionPublicationError(
-					409,
-					"Origin read policy was not updated for the relocated key",
-				);
-			}
+			throw new RevisionPublicationError(
+				409,
+				"Origin read policy was not updated for the relocated key",
+			);
 		}
 		const accessKey = process.env.ORIGIN_S3_ACCESS_KEY;
 		if (accessKey) {

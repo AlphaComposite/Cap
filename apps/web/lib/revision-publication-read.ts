@@ -9,10 +9,7 @@ import {
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
-import {
-	refreshOriginReadPolicy,
-	relocateFlaggedSource,
-} from "@/lib/instant-finish-source-relocate";
+import { relocateFlaggedSource } from "@/lib/instant-finish-source-relocate";
 import { ownerOriginalPath } from "@/lib/revision-media-grant";
 import { pageMetadataForRevision } from "@/lib/revision-metadata-snapshot";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
@@ -307,7 +304,6 @@ export async function openInstantFinishEditor(
 		sourceKey,
 		database: app,
 	});
-	await refreshOriginReadPolicy(app, relocated.liveKey);
 	const warm =
 		actionRefresh && alreadyPurged
 			? warmSourceFromRow(existingBeforePrepare ?? null, now)
