@@ -10,11 +10,16 @@ vi.mock("@cap/env", () => ({
 vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
 }));
+
 import {
 	EDIT_TRANSCRIPT_VERSION,
 	type EditTranscript,
 } from "@/lib/edit-transcript";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import {
+	startRevisionReadbackWorker,
+	stopRevisionReadbackWorker,
+} from "@/lib/revision-publication";
 import {
 	deriveRevisionCaptions,
 	deriveRevisionChapters,
@@ -198,5 +203,37 @@ describe("instant finish publication helpers", () => {
 		expect(sourceId).toContain("source/original.mp4");
 		expect(sourceId).not.toContain("result.mp4");
 		expect(createHash("sha256").update("x").digest("hex")).toHaveLength(64);
+	});
+
+	it("does not emit unhandledRejection when the readback sweep rejects", async () => {
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown) => {
+			rejections.push(reason);
+		};
+		process.on("unhandledRejection", onRejection);
+		stopRevisionReadbackWorker();
+		try {
+			startRevisionReadbackWorker({
+				database: {
+					transaction: async () => {
+						throw new Error("db");
+					},
+				},
+				origin: {
+					prepareRevision: async () => {
+						throw new Error("unused");
+					},
+					fetchArtifact: async () => {
+						throw new Error("unused");
+					},
+				},
+				pollMs: 2_000,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			expect(rejections).toEqual([]);
+		} finally {
+			stopRevisionReadbackWorker();
+			process.off("unhandledRejection", onRejection);
+		}
 	});
 });
