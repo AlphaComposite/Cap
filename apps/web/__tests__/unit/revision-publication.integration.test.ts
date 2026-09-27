@@ -1930,4 +1930,135 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			await pool.query("DELETE FROM videos WHERE id = ?", [lockVideo]);
 		}
 	}, 30_000);
+
+	it("reverts current when readback attempts are exhausted", async () => {
+		const exhaustedVideo = "wireaexh0000001";
+		const previousId = "wireaexhprev001";
+		const currentId = "wireaexhcurr001";
+		const movedId = "wireaexhmoved001";
+		const cleanup = async () => {
+			await pool.query("DELETE FROM outbox WHERE videoId = ?", [
+				exhaustedVideo,
+			]);
+			await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+				exhaustedVideo,
+			]);
+			await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+				exhaustedVideo,
+			]);
+			await pool.query("DELETE FROM videos WHERE id = ?", [exhaustedVideo]);
+		};
+		const past = Date.now() - 60_000;
+		const payload = (revisionId: string) => ({
+			videoId: exhaustedVideo,
+			revisionId,
+			previousRevisionId: previousId,
+			previousGeneration: 1,
+			durationSeconds: 2,
+			attestedDurationSeconds: 2,
+			keepRanges: [{ start: 0, end: 2 }],
+			timescale: 15360,
+			maxHoldTicks: 0,
+			durationTicks: 30720,
+			rangeSnaps: [],
+			initSha256: "a".repeat(64),
+			seg0Sha256: "b".repeat(64),
+			captionsVtt: "",
+			chaptersJson: "{}",
+			attempts: 5,
+			leaseUntilMs: past,
+			leaseUntil: new Date(past).toISOString(),
+		});
+		await cleanup();
+		try {
+			await database.insert(videos).values({
+				id: exhaustedVideo as never,
+				ownerId: ownerId as never,
+				orgId: "wireaorg0000001" as never,
+				source: { type: "webMP4" },
+				duration: 9,
+			});
+			await database.insert(editRevision).values([
+				{
+					revisionId: previousId,
+					videoId: exhaustedVideo as never,
+					intentId: "e".repeat(64),
+					sourceId: "source-exh",
+					generation: 1,
+					state: "SUPERSEDED",
+					attempt: 1,
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				},
+				{
+					revisionId: currentId,
+					videoId: exhaustedVideo as never,
+					intentId: "f".repeat(64),
+					sourceId: "source-exh",
+					generation: 2,
+					state: "CURRENT",
+					attempt: 1,
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				},
+			]);
+			await database.insert(videoPublication).values({
+				videoId: exhaustedVideo as never,
+				generation: 2,
+				currentRevisionId: currentId,
+				currentGeneration: 2,
+				latestDraftVersion: 1,
+				draftSession: "editor",
+			});
+			await database.insert(revisionOutbox).values({
+				videoId: exhaustedVideo as never,
+				revisionId: currentId,
+				job: "readback",
+				payload: payload(currentId),
+				createdAt: new Date(),
+			});
+			await sweepRevisionReadbacks(database, {
+				origin: origin.client(),
+				revisionId: currentId,
+			});
+			const [reverted] = await database
+				.select()
+				.from(videoPublication)
+				.where(eq(videoPublication.videoId, exhaustedVideo as never));
+			expect(reverted?.currentRevisionId).toBe(previousId);
+			const [gone] = await pool.query(
+				"SELECT id FROM outbox WHERE videoId = ?",
+				[exhaustedVideo],
+			);
+			expect(gone).toHaveLength(0);
+
+			await database
+				.update(videoPublication)
+				.set({ currentRevisionId: movedId, currentGeneration: 3 })
+				.where(eq(videoPublication.videoId, exhaustedVideo as never));
+			await database.insert(revisionOutbox).values({
+				videoId: exhaustedVideo as never,
+				revisionId: currentId,
+				job: "readback",
+				payload: payload(currentId),
+				createdAt: new Date(),
+			});
+			await sweepRevisionReadbacks(database, {
+				origin: origin.client(),
+				revisionId: currentId,
+			});
+			const [fenced] = await database
+				.select()
+				.from(videoPublication)
+				.where(eq(videoPublication.videoId, exhaustedVideo as never));
+			expect(fenced?.currentRevisionId).toBe(movedId);
+			const [fencedRows] = await pool.query(
+				"SELECT id FROM outbox WHERE videoId = ?",
+				[exhaustedVideo],
+			);
+			expect(fencedRows).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	}, 30_000);
 });

@@ -1967,7 +1967,7 @@ async function claimDueReadback(
 	stamp: Date,
 	input: { revisionId?: string; workerId: string },
 ): Promise<ClaimedReadback | null> {
-	return database.transaction(async (tx) => {
+	const claimed = await database.transaction(async (tx) => {
 		const nowMs = stamp.getTime();
 		const rows = await tx
 			.select()
@@ -2007,8 +2007,28 @@ async function claimDueReadback(
 				revisionId: raw.revisionId,
 				reason: "readback attempts exhausted",
 			});
-			await tx.delete(revisionOutbox).where(eq(revisionOutbox.id, due.id));
-			return null;
+			const leaseToken = randomBytes(16).toString("hex");
+			const leaseUntilMs = stamp.getTime() + READBACK_LEASE_MS;
+			await tx
+				.update(revisionOutbox)
+				.set({
+					payload: {
+						...due.payload,
+						attempts,
+						workerId: input.workerId,
+						leaseToken,
+						leaseUntilMs,
+						leaseUntil: new Date(leaseUntilMs).toISOString(),
+					},
+				})
+				.where(eq(revisionOutbox.id, due.id));
+			return {
+				id: due.id,
+				payload: raw,
+				attempts,
+				leaseToken,
+				exhausted: true as const,
+			};
 		}
 		const leaseToken = randomBytes(16).toString("hex");
 		const leaseUntilMs = stamp.getTime() + READBACK_LEASE_MS;
@@ -2027,6 +2047,27 @@ async function claimDueReadback(
 			.where(eq(revisionOutbox.id, due.id));
 		return { id: due.id, payload: due.payload, attempts, leaseToken };
 	});
+	if (!claimed || !("exhausted" in claimed)) return claimed;
+	if (!(await readbackLeaseHeld(database, claimed.id, claimed.leaseToken))) {
+		return null;
+	}
+	await revertCurrentAfterReadback(
+		database,
+		claimed.payload,
+		"readback attempts exhausted",
+		stamp,
+	);
+	if (await readbackLeaseHeld(database, claimed.id, claimed.leaseToken)) {
+		await database
+			.delete(revisionOutbox)
+			.where(
+				and(
+					eq(revisionOutbox.id, claimed.id),
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseToken')) = ${claimed.leaseToken}`,
+				),
+			);
+	}
+	return null;
 }
 
 async function readbackLeaseHeld(
