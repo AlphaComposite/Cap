@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+	AbortMultipartUploadCommand,
+	CompleteMultipartUploadCommand,
+	CopyObjectCommand,
+	CreateMultipartUploadCommand,
 	DeleteObjectCommand,
 	GetObjectCommand,
 	HeadObjectCommand,
 	ListObjectsV2Command,
 	ListObjectVersionsCommand,
 	PutBucketVersioningCommand,
-	PutObjectCommand,
 	S3Client,
+	UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createConnection } from "mysql2/promise";
@@ -22,6 +26,22 @@ import {
 	relocateOwnerVideo as relocateOwnerVideoShared,
 } from "../lib/source-relocation";
 
+const COPY_OBJECT_LIMIT = 5 * 1024 * 1024 * 1024;
+const MIN_PART_BYTES = 5 * 1024 * 1024;
+const MAX_COPY_PARTS = 10_000;
+
+function encodedCopySource(bucket: string, key: string): string {
+	return `${encodeURIComponent(bucket)}/${key
+		.split("/")
+		.map((part) => encodeURIComponent(part))
+		.join("/")}`;
+}
+
+function multipartPartSize(size: number): number {
+	if (Math.ceil(size / MIN_PART_BYTES) <= MAX_COPY_PARTS) return MIN_PART_BYTES;
+	return Math.ceil(size / MAX_COPY_PARTS);
+}
+
 export function createS3Store(
 	client: S3Client,
 	bucket: string,
@@ -30,23 +50,86 @@ export function createS3Store(
 } {
 	return {
 		async copy(oldKey, newKey) {
-			const got = await client.send(
-				new GetObjectCommand({ Bucket: bucket, Key: oldKey }),
+			const head = await client.send(
+				new HeadObjectCommand({ Bucket: bucket, Key: oldKey }),
 			);
-			const bytes = await got.Body?.transformToByteArray();
-			if (!bytes) throw new Error("copy source missing");
-			await client.send(
-				new PutObjectCommand({ Bucket: bucket, Key: newKey, Body: bytes }),
+			if (head.ContentLength === undefined) {
+				throw new Error("copy source size unknown");
+			}
+			const size = head.ContentLength;
+			const copySource = encodedCopySource(bucket, oldKey);
+			if (size <= COPY_OBJECT_LIMIT) {
+				await client.send(
+					new CopyObjectCommand({
+						Bucket: bucket,
+						Key: newKey,
+						CopySource: copySource,
+					}),
+				);
+				return;
+			}
+			const created = await client.send(
+				new CreateMultipartUploadCommand({ Bucket: bucket, Key: newKey }),
 			);
+			const uploadId = created.UploadId;
+			if (!uploadId) throw new Error("multipart copy missing upload id");
+			try {
+				const partSize = multipartPartSize(size);
+				const parts: { ETag: string | undefined; PartNumber: number }[] = [];
+				let start = 0;
+				let partNumber = 1;
+				while (start < size) {
+					const end = Math.min(start + partSize, size) - 1;
+					const copied = await client.send(
+						new UploadPartCopyCommand({
+							Bucket: bucket,
+							Key: newKey,
+							UploadId: uploadId,
+							PartNumber: partNumber,
+							CopySource: copySource,
+							CopySourceRange: `bytes=${start}-${end}`,
+						}),
+					);
+					parts.push({
+						ETag: copied.CopyPartResult?.ETag,
+						PartNumber: partNumber,
+					});
+					start = end + 1;
+					partNumber += 1;
+				}
+				await client.send(
+					new CompleteMultipartUploadCommand({
+						Bucket: bucket,
+						Key: newKey,
+						UploadId: uploadId,
+						MultipartUpload: { Parts: parts },
+					}),
+				);
+			} catch (error) {
+				await client
+					.send(
+						new AbortMultipartUploadCommand({
+							Bucket: bucket,
+							Key: newKey,
+							UploadId: uploadId,
+						}),
+					)
+					.catch(() => undefined);
+				throw error;
+			}
 		},
 		async sha256(key) {
 			try {
 				const got = await client.send(
 					new GetObjectCommand({ Bucket: bucket, Key: key }),
 				);
-				const bytes = await got.Body?.transformToByteArray();
-				if (!bytes) return null;
-				return createHash("sha256").update(bytes).digest("hex");
+				const body = got.Body;
+				if (!body) return null;
+				const hash = createHash("sha256");
+				for await (const chunk of body as AsyncIterable<Uint8Array>) {
+					hash.update(chunk);
+				}
+				return hash.digest("hex");
 			} catch {
 				return null;
 			}
