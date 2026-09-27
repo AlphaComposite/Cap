@@ -67,8 +67,8 @@ import {
 	thumbnailSha256,
 } from "@/lib/revision-thumbnail";
 import {
+	assertFinishInventoryClear,
 	assertFinishSourceKey,
-	isFinishInventoryExempt,
 } from "@/lib/source-relocation";
 
 export type { InstantFinishPublicationDto as RevisionPublicationDto } from "@/lib/revision-publication-read";
@@ -941,20 +941,7 @@ async function readReadySource(
 	const listed = finishInventoryProbe.listPrefix
 		? await finishInventoryProbe.listPrefix(prefix)
 		: await runtimeObjectStore().list?.(prefix);
-	if (
-		!listed ||
-		listed.some(
-			(key) =>
-				!key.includes("private/source/") &&
-				!key.includes("private/rollback/") &&
-				!isFinishInventoryExempt(key, prefix),
-		)
-	) {
-		throw new RevisionPublicationError(
-			409,
-			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
-		);
-	}
+	assertFinishInventoryClear(listed, prefix);
 	return {
 		key: row.liveKey,
 		sha256: row.sha256,
