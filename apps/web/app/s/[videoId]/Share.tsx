@@ -597,9 +597,9 @@ export const Share = ({
 		() => ({
 			...data,
 			createdAt: effectiveDate,
-			transcriptionStatus: playback ? null : transcriptionStatus,
+			transcriptionStatus,
 		}),
-		[data, effectiveDate, playback, transcriptionStatus],
+		[data, effectiveDate, transcriptionStatus],
 	);
 
 	const reduceMotion = useReducedMotion() ?? false;
