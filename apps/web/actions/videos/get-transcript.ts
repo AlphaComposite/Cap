@@ -2,10 +2,10 @@
 
 import { db } from "@cap/database";
 import { getCurrentUser } from "@cap/database/auth/session";
-import { videos } from "@cap/database/schema";
+import { editRevision, videoPublication, videos } from "@cap/database/schema";
 import { provideOptionalAuth, Storage, VideosPolicy } from "@cap/web-backend";
 import { Policy, type Video } from "@cap/web-domain";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect, Exit, Option } from "effect";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import * as EffectRuntime from "@/lib/server";
@@ -57,9 +57,31 @@ export async function getTranscript(
 	}
 
 	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+		const [row] = await db()
+			.select({ snapshot: editRevision.metadataSnapshot })
+			.from(videoPublication)
+			.innerJoin(
+				editRevision,
+				eq(editRevision.revisionId, videoPublication.currentRevisionId),
+			)
+			.where(
+				and(
+					eq(videoPublication.videoId, videoId),
+					eq(editRevision.state, "CURRENT"),
+				),
+			)
+			.limit(1);
+		const content = row?.snapshot?.captionsVtt;
+		if (typeof content !== "string") {
+			return {
+				success: false,
+				message: "Transcript is not available for this revision",
+			};
+		}
 		return {
-			success: false,
-			message: "Transcript is not available for this revision",
+			success: true,
+			content,
+			message: "Transcript retrieved successfully",
 		};
 	}
 
