@@ -1,5 +1,5 @@
 import { db } from "@cap/database";
-import { editRevision } from "@cap/database/schema";
+import { editRevision, videos } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -43,10 +43,10 @@ function videoId(value: string): Video.VideoId {
 	return value as Video.VideoId;
 }
 
-async function inflightRows(input: { videoId: string; revisionId?: string }) {
+async function inflightRows(input: { videoId?: string; revisionId?: string }) {
 	const revision = input.revisionId
 		? eq(editRevision.revisionId, input.revisionId)
-		: eq(editRevision.videoId, videoId(input.videoId));
+		: eq(editRevision.videoId, videoId(input.videoId ?? ""));
 	return db()
 		.select({
 			revisionId: editRevision.revisionId,
@@ -62,8 +62,21 @@ async function inflightRows(input: { videoId: string; revisionId?: string }) {
 		);
 }
 
+async function parentVideoId(input: {
+	videoId?: string;
+	revisionId?: string;
+}): Promise<string | null> {
+	if (input.videoId) return input.videoId;
+	if (!input.revisionId) return null;
+	const [row] = await db()
+		.select({ videoId: editRevision.videoId })
+		.from(editRevision)
+		.where(eq(editRevision.revisionId, input.revisionId));
+	return row?.videoId ?? null;
+}
+
 export async function failUnjoinedInflightPrepare(input: {
-	videoId: string;
+	videoId?: string;
 	revisionId?: string;
 }): Promise<{ markedFailed: boolean; joined: boolean }> {
 	const rows = await inflightRows(input);
@@ -75,20 +88,32 @@ export async function failUnjoinedInflightPrepare(input: {
 	}
 	const revision = input.revisionId
 		? eq(editRevision.revisionId, input.revisionId)
-		: eq(editRevision.videoId, videoId(input.videoId));
-	const updated = await db()
-		.update(editRevision)
-		.set({
-			state: "FAILED",
-			error: "client aborted",
-			updatedAt: new Date(),
-		})
-		.where(
-			and(
-				revision,
-				sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
-				sql`(${editRevision.error} is null or ${editRevision.error} <> ${PUBLISH_JOINED_PREPARE})`,
-			),
-		);
+		: eq(editRevision.videoId, videoId(input.videoId ?? ""));
+	const parentId = await parentVideoId(input);
+	const updated = await db().transaction(async (tx) => {
+		if (parentId) {
+			// videos before edit_revision. The FAILED update takes an FK shared
+			// lock on videos; taking the revision row first deadlocks with allocateRevision.
+			await tx
+				.select({ id: videos.id })
+				.from(videos)
+				.where(eq(videos.id, videoId(parentId)))
+				.for("update");
+		}
+		return tx
+			.update(editRevision)
+			.set({
+				state: "FAILED",
+				error: "client aborted",
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					revision,
+					sql`${editRevision.state} in ('COMMITTED_INTENT','PREPARING')`,
+					sql`(${editRevision.error} is null or ${editRevision.error} <> ${PUBLISH_JOINED_PREPARE})`,
+				),
+			);
+	});
 	return { markedFailed: affectedRows(updated) > 0, joined: false };
 }
