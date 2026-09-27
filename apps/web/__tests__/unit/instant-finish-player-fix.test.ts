@@ -6,6 +6,7 @@ import {
 	beginGrantRefreshCycle,
 	grantResumeStartPosition,
 	hlsResumePosition,
+	playbackResumeTime,
 	replayRevisionHlsEvents,
 	revisionHlsErrorAction,
 	settleGrantRefreshCycle,
@@ -36,6 +37,8 @@ describe("F12 grant refresh on origin 401", () => {
 	it("resumes a grant refresh from the current time and coalesces a burst", () => {
 		expect(grantResumeStartPosition(62.4)).toBe(62.4);
 		expect(grantResumeStartPosition(0)).toBe(-1);
+		expect(playbackResumeTime(78.2, 0)).toBe(78.2);
+		expect(playbackResumeTime(78.2, 78.4)).toBe(78.4);
 		expect(hlsResumePosition(62.4)).toBe(62.4);
 		let cycle = { inFlight: false, attempts: 0 };
 		const first = beginGrantRefreshCycle(cycle, 2);

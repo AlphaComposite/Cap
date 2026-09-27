@@ -22,6 +22,7 @@ import {
 	type GrantRefreshCycle,
 	grantResumeStartPosition,
 	planGrantRefresh,
+	playbackResumeTime,
 	redactMediaGrant,
 	replacePlaylistGrant,
 	revisionHlsErrorAction,
@@ -447,6 +448,11 @@ export function HLSVideoPlayer({
 			const maxNetworkRetries = isLiveSegments ? 30 : 6;
 			let hasTriedPlaylistReload = false;
 			let grantCycle: GrantRefreshCycle = { inFlight: false, attempts: 0 };
+			let lastPositive = 0;
+			const rememberTime = () => {
+				if (video.currentTime > 0.5) lastPositive = video.currentTime;
+			};
+			video.addEventListener("timeupdate", rememberTime);
 			let policyDenied = false;
 			const maxGrantRefreshAttempts = 2;
 			let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -496,7 +502,9 @@ export function HLSVideoPlayer({
 							return;
 						}
 						grantCycle = begun.cycle;
-						const startPosition = grantResumeStartPosition(video.currentTime);
+						const startPosition = grantResumeStartPosition(
+							playbackResumeTime(lastPositive, video.currentTime),
+						);
 						hls.stopLoad();
 						void refreshRevisionSourceRef
 							.current()
@@ -516,18 +524,14 @@ export function HLSVideoPlayer({
 								}
 								if (result.url) {
 									hls.once(Hls.Events.MANIFEST_PARSED, () => {
-										if (
-											startPosition > 0 &&
-											Math.abs(video.currentTime - startPosition) > 1
-										) {
+										hls.config.startPosition = startPosition;
+										if (startPosition > 0) {
 											video.currentTime = startPosition;
+											hls.startLoad(startPosition);
 										}
 									});
-									// checkAutostartLoad reads config.startPosition after loadSource.
-									// startLoad(pos) before levels exist is overwritten by -1.
 									hls.config.startPosition = startPosition;
 									hls.loadSource(result.url);
-									hls.startLoad(startPosition);
 								}
 							})
 							.finally(() => {
@@ -620,6 +624,7 @@ export function HLSVideoPlayer({
 			});
 
 			return () => {
+				video.removeEventListener("timeupdate", rememberTime);
 				if (retryTimer) clearTimeout(retryTimer);
 				if (hlsInstance.current) {
 					hlsInstance.current.destroy();
@@ -632,7 +637,9 @@ export function HLSVideoPlayer({
 			if (!revisionRef.current) return;
 			let nativeCycle: GrantRefreshCycle = { inFlight: false, attempts: 0 };
 			let nativePolicyDenied = false;
+			let lastPositive = 0;
 			const onProgress = () => {
+				if (video.currentTime > 0.5) lastPositive = video.currentTime;
 				if (video.currentTime > 0) {
 					nativeCycle = settleGrantRefreshCycle(nativeCycle, true);
 				}
@@ -663,7 +670,9 @@ export function HLSVideoPlayer({
 					return;
 				}
 				nativeCycle = begun.cycle;
-				const startPosition = grantResumeStartPosition(video.currentTime);
+				const startPosition = grantResumeStartPosition(
+					playbackResumeTime(lastPositive, video.currentTime),
+				);
 				video.pause();
 				video.autoplay = false;
 				void refreshRevisionSourceRef
