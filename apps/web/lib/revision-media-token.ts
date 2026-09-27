@@ -348,15 +348,28 @@ export function verifyInternalServiceRequest(
 
 const SHA256_HEX = /^[a-f0-9]{64}$/i;
 
+export const ATTESTATION_VERSION = 2;
+
+export type RangeSnap = {
+	firstPts: number;
+	lastPts: number;
+	lastDur: number;
+};
+
 export type OriginAttestation = {
+	attestationVersion: 2;
 	decodedFrames: number;
 	durationSeconds: number;
+	durationTicks: number;
 	initSha256: string;
 	intentId: string;
+	maxHoldTicks: number;
 	playlistDurationSeconds: number;
 	playlistHasEndList: true;
+	rangeSnaps: RangeSnap[];
 	seg0DecodedFrames: number;
 	seg0Sha256: string;
+	timescale: number;
 };
 
 export function signOriginAttestation(
@@ -388,6 +401,57 @@ function attestationHash(value: unknown): value is string {
 	return typeof value === "string" && SHA256_HEX.test(value);
 }
 
+function readRangeSnaps(value: unknown): RangeSnap[] | null {
+	if (!Array.isArray(value) || value.length === 0) return null;
+	const snaps: RangeSnap[] = [];
+	for (const item of value) {
+		if (typeof item !== "object" || item === null) return null;
+		const row = item as Record<string, unknown>;
+		if (
+			!Number.isSafeInteger(row.firstPts) ||
+			!Number.isSafeInteger(row.lastPts) ||
+			!Number.isSafeInteger(row.lastDur) ||
+			(row.firstPts as number) < 0 ||
+			(row.lastPts as number) < (row.firstPts as number) ||
+			(row.lastDur as number) <= 0
+		) {
+			return null;
+		}
+		snaps.push({
+			firstPts: row.firstPts as number,
+			lastPts: row.lastPts as number,
+			lastDur: row.lastDur as number,
+		});
+	}
+	return snaps;
+}
+
+export type AttestationRejectReason = "mac" | "version" | "shape";
+
+export function classifyOriginAttestation(
+	mac: string,
+	body: string,
+	env: NodeJS.ProcessEnv = process.env,
+):
+	| { ok: true; attestation: OriginAttestation }
+	| { ok: false; reason: AttestationRejectReason } {
+	if (!verifyOriginAttestation(mac, body, env)) {
+		return { ok: false, reason: "mac" };
+	}
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = JSON.parse(body) as Record<string, unknown>;
+	} catch {
+		return { ok: false, reason: "shape" };
+	}
+	if (parsed.attestationVersion !== ATTESTATION_VERSION) {
+		return { ok: false, reason: "version" };
+	}
+	const attestation = parseVerifiedOriginAttestation(mac, body, env);
+	if (!attestation) return { ok: false, reason: "shape" };
+	return { ok: true, attestation };
+}
+
 export function parseVerifiedOriginAttestation(
 	mac: string,
 	body: string,
@@ -400,7 +464,12 @@ export function parseVerifiedOriginAttestation(
 		const seg0DecodedFrames = parsed.seg0DecodedFrames;
 		const durationSeconds = parsed.durationSeconds;
 		const playlistDurationSeconds = parsed.playlistDurationSeconds;
+		const durationTicks = parsed.durationTicks;
+		const timescale = parsed.timescale;
+		const maxHoldTicks = parsed.maxHoldTicks;
+		const rangeSnaps = readRangeSnaps(parsed.rangeSnaps);
 		if (
+			parsed.attestationVersion !== ATTESTATION_VERSION ||
 			parsed.playlistHasEndList !== true ||
 			typeof parsed.intentId !== "string" ||
 			parsed.intentId.length === 0 ||
@@ -412,6 +481,13 @@ export function parseVerifiedOriginAttestation(
 			!Number.isFinite(durationSeconds) ||
 			typeof playlistDurationSeconds !== "number" ||
 			!Number.isFinite(playlistDurationSeconds) ||
+			!Number.isSafeInteger(durationTicks) ||
+			(durationTicks as number) <= 0 ||
+			!Number.isSafeInteger(timescale) ||
+			(timescale as number) <= 0 ||
+			!Number.isSafeInteger(maxHoldTicks) ||
+			(maxHoldTicks as number) <= 0 ||
+			!rangeSnaps ||
 			!attestationHash(parsed.initSha256) ||
 			!attestationHash(parsed.seg0Sha256) ||
 			(parsed.thumbnailSha256 !== undefined &&
@@ -421,14 +497,19 @@ export function parseVerifiedOriginAttestation(
 			return null;
 		}
 		return {
+			attestationVersion: ATTESTATION_VERSION,
 			decodedFrames: decodedFrames as number,
 			durationSeconds,
+			durationTicks: durationTicks as number,
 			initSha256: parsed.initSha256,
 			intentId: parsed.intentId,
+			maxHoldTicks: maxHoldTicks as number,
 			playlistDurationSeconds,
 			playlistHasEndList: true,
+			rangeSnaps,
 			seg0DecodedFrames: seg0DecodedFrames as number,
 			seg0Sha256: parsed.seg0Sha256,
+			timescale: timescale as number,
 		};
 	} catch {
 		return null;

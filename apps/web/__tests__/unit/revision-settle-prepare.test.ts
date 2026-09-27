@@ -4,15 +4,72 @@ import {
 	acceptSettledPrepare,
 	beginDoneFence,
 	nextSettlePrepare,
+	SETTLE_PREPARE_DEBOUNCE_MS,
+	shouldJoinInflightPrepare,
+	shouldStartPrepareOnPointerDown,
 } from "@/lib/revision-settle-fence";
 
 describe("settle prepare fence", () => {
-	it("aborts the in-flight prepare when Done starts and drops its generation", () => {
+	it("aborts a mismatched prepare at Done and joins a matching one", () => {
 		const started = nextSettlePrepare(null, 0);
-		const done = beginDoneFence(started.requestId, started.controller);
+		const mismatched = beginDoneFence(started.requestId, started.controller);
 		expect(started.controller.signal.aborted).toBe(true);
-		expect(acceptSettledPrepare(started.requestId, done.requestId)).toBe(false);
-		expect(acceptSettledPrepare(done.requestId, done.requestId)).toBe(true);
+		expect(mismatched.joined).toBe(false);
+		expect(acceptSettledPrepare(started.requestId, mismatched.requestId)).toBe(
+			false,
+		);
+		const matching = nextSettlePrepare(null, 0);
+		const joined = beginDoneFence(matching.requestId, matching.controller, {
+			join: true,
+		});
+		expect(matching.controller.signal.aborted).toBe(false);
+		expect(joined.joined).toBe(true);
+		expect(joined.controller).toBe(matching.controller);
+		expect(acceptSettledPrepare(matching.requestId, joined.requestId)).toBe(
+			false,
+		);
+	});
+
+	it("starts prepare on pointerdown only when none is ready or in flight", () => {
+		expect(SETTLE_PREPARE_DEBOUNCE_MS).toBe(150);
+		expect(
+			shouldJoinInflightPrepare({
+				inflightMatches: true,
+				sent: true,
+				aborted: false,
+			}),
+		).toBe(true);
+		expect(
+			shouldJoinInflightPrepare({
+				inflightMatches: false,
+				sent: true,
+				aborted: false,
+			}),
+		).toBe(false);
+		expect(
+			shouldStartPrepareOnPointerDown({
+				sameSpec: true,
+				ready: true,
+				sent: true,
+				aborted: false,
+			}),
+		).toBe(false);
+		expect(
+			shouldStartPrepareOnPointerDown({
+				sameSpec: true,
+				ready: false,
+				sent: true,
+				aborted: false,
+			}),
+		).toBe(false);
+		expect(
+			shouldStartPrepareOnPointerDown({
+				sameSpec: false,
+				ready: false,
+				sent: false,
+				aborted: false,
+			}),
+		).toBe(true);
 	});
 
 	it("does not let an older settle overwrite a newer one", () => {

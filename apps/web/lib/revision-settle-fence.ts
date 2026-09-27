@@ -1,3 +1,5 @@
+export const SETTLE_PREPARE_DEBOUNCE_MS = 150;
+
 export function nextSettlePrepare(
 	previous: AbortController | null,
 	requestId: number,
@@ -9,9 +11,15 @@ export function nextSettlePrepare(
 export function beginDoneFence(
 	requestId: number,
 	controller: AbortController | null,
-): { requestId: number; controller: null } {
-	controller?.abort();
-	return { requestId: requestId + 1, controller: null };
+	options?: { join?: boolean },
+): { requestId: number; controller: AbortController | null; joined: boolean } {
+	const join = options?.join === true && controller != null && !controller.signal.aborted;
+	if (!join) controller?.abort();
+	return {
+		requestId: requestId + 1,
+		controller: join ? controller : null,
+		joined: join,
+	};
 }
 
 export function acceptSettledPrepare(
@@ -19,4 +27,23 @@ export function acceptSettledPrepare(
 	currentRequestId: number,
 ): boolean {
 	return responseRequestId === currentRequestId;
+}
+
+export function shouldJoinInflightPrepare(input: {
+	inflightMatches: boolean;
+	aborted: boolean;
+	sent: boolean;
+}): boolean {
+	return input.inflightMatches && input.sent && !input.aborted;
+}
+
+export function shouldStartPrepareOnPointerDown(input: {
+	sameSpec: boolean;
+	ready: boolean;
+	sent: boolean;
+	aborted: boolean;
+}): boolean {
+	if (input.sameSpec && input.ready) return false;
+	if (input.sameSpec && input.sent && !input.aborted) return false;
+	return true;
 }

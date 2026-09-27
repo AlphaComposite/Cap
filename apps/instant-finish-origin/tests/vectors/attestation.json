@@ -4,6 +4,6 @@
 	"algorithm": "HMAC-SHA256",
 	"encoding": "base64url-nopad",
 	"serviceSecret": "service-token-service-token-svc01",
-	"body": "{\"captionsSha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"chaptersSha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"decodedFrames\": 4, \"durationSeconds\": 1.5, \"initSha256\": \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\", \"intentId\": \"intent-vector-01\", \"playlistHasEndList\": true, \"playlistSha256\": \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\", \"seg0Sha256\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\", \"segmentCount\": 2, \"thumbnailSha256\": \"pending\"}\n",
-	"mac": "zmZTYWeR39siWuFcUATp_qSGv70YMhkBplM3KoOL_Dk"
+	"body": "{\"attestationVersion\": 2, \"captionsSha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"chaptersSha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"decodedFrames\": 4, \"durationSeconds\": 1.5, \"durationTicks\": 23040, \"initSha256\": \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\", \"intentId\": \"intent-vector-01\", \"maxHoldTicks\": 512, \"playlistDurationSeconds\": 1.5, \"playlistHasEndList\": true, \"playlistSha256\": \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\", \"rangeSnaps\": [{\"firstPts\": 0, \"lastDur\": 512, \"lastPts\": 22528}], \"seg0DecodedFrames\": 4, \"seg0Sha256\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\", \"segmentCount\": 2, \"thumbnailSha256\": \"pending\", \"timescale\": 15360}\n",
+	"mac": "jKBOF-hk72zRbHtgSMiqPn4UQ7h6ehIIxkVh3lEquGo"
 }

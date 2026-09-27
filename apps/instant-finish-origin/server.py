@@ -262,7 +262,9 @@ class OriginApp:
             sys.stderr.write(f"revision-prepare-failed undecoded decoded={decoded}\n")
             return self._text(500, b"unavailable")
         intent_id = str(requested_intent) if requested_intent else origin.rev
+        snaps = lib_origin.range_snaps(origin.ticks, origin.durs, ranges, origin.profile.timescale)
         return self._attested({
+            "attestationVersion": lib_origin.ATTESTATION_VERSION,
             "captionsSha256": hashlib.sha256(captions).hexdigest(),
             "chaptersSha256": hashlib.sha256(chapters).hexdigest(),
             "decoded": True,
@@ -270,6 +272,9 @@ class OriginApp:
             "durationSeconds": duration,
             "durationTicks": lib_origin.duration_ticks(origin.segments),
             "encoderHash": origin.encoder_hash,
+            "maxHoldTicks": lib_origin.max_hold_ticks(origin.durs),
+            "rangeSnaps": snaps,
+            "timescale": origin.profile.timescale,
             "initSha256": hashlib.sha256(init).hexdigest(),
             "intentId": intent_id,
             "playlistDurationSeconds": duration,

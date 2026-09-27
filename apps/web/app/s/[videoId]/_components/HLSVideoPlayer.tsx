@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { retryVideoProcessing } from "@/actions/video/retry-processing";
 import { createPrefetchLoader } from "@/lib/instant-finish-fragment-cache";
 import {
+	hlsResumePosition,
 	planGrantRefresh,
 	redactMediaGrant,
 	replacePlaylistGrant,
@@ -466,29 +467,35 @@ export function HLSVideoPlayer({
 						maxRefreshAttempts: maxGrantRefreshAttempts,
 						policyDenied,
 					});
-					if (action.type === "fail-closed") {
-						policyDenied = true;
+					if (action.type === "fail-closed" || action.type === "stop") {
+						policyDenied = action.type === "fail-closed" || status === 403;
 						setHlsInitFailed(true);
+						video.pause();
 						hls.stopLoad();
 						hls.destroy();
 						return;
 					}
 					if (action.type === "refresh-grant") {
 						grantRefreshAttempts += 1;
+						const resumeAt = hlsResumePosition(video.currentTime);
+						hls.stopLoad();
 						void refreshRevisionSourceRef.current().then((result) => {
 							if (result.plan === "fail-closed") {
 								policyDenied = true;
 								setHlsInitFailed(true);
+								video.pause();
 								hls.destroy();
 								return;
 							}
 							if (result.plan === "refresh-page") {
-								router.refresh();
+								video.pause();
+								hls.stopLoad();
+								setHlsInitFailed(true);
 								return;
 							}
 							if (result.url) {
 								hls.loadSource(result.url);
-								hls.startLoad();
+								hls.startLoad(resumeAt);
 							}
 						});
 						return;
@@ -568,6 +575,10 @@ export function HLSVideoPlayer({
 				}
 			});
 
+			hls.on(Hls.Events.FRAG_LOADED, () => {
+				grantRefreshAttempts = 0;
+			});
+
 			hls.on(Hls.Events.MANIFEST_LOADED, () => {
 				networkRetryCount = 0;
 				hasTriedPlaylistReload = false;
@@ -586,6 +597,10 @@ export function HLSVideoPlayer({
 			if (!revisionRef.current) return;
 			let nativeRefreshAttempts = 0;
 			let nativePolicyDenied = false;
+			const onProgress = () => {
+				if (video.currentTime > 0) nativeRefreshAttempts = 0;
+			};
+			video.addEventListener("timeupdate", onProgress);
 			const onError = () => {
 				const action = revisionHlsErrorAction({
 					native: true,
@@ -594,31 +609,38 @@ export function HLSVideoPlayer({
 					maxRefreshAttempts: 2,
 					policyDenied: nativePolicyDenied,
 				});
-				if (action.type === "fail-closed") {
+				if (action.type === "fail-closed" || action.type === "stop") {
 					nativePolicyDenied = true;
+					video.pause();
 					setHlsInitFailed(true);
 					return;
 				}
 				if (action.type !== "refresh-grant") return;
 				nativeRefreshAttempts += 1;
+				const resumeAt = hlsResumePosition(video.currentTime);
 				void refreshRevisionSourceRef.current().then((result) => {
-					if (result.plan === "fail-closed") {
+					if (result.plan === "fail-closed" || result.plan === "refresh-page") {
 						nativePolicyDenied = true;
+						video.pause();
 						setHlsInitFailed(true);
 						return;
 					}
-					if (result.plan === "refresh-page") {
-						router.refresh();
-						return;
-					}
 					if (result.url) {
+						const onReady = () => {
+							video.currentTime = resumeAt > 0 ? resumeAt : 0;
+							void video.play().catch(() => undefined);
+						};
+						video.addEventListener("loadedmetadata", onReady, { once: true });
 						video.src = result.url;
 						video.load();
 					}
 				});
 			};
 			video.addEventListener("error", onError);
-			return () => video.removeEventListener("error", onError);
+			return () => {
+				video.removeEventListener("error", onError);
+				video.removeEventListener("timeupdate", onProgress);
+			};
 		} else {
 			console.error("HLSVideoPlayer: HLS is not supported in this browser");
 			setHlsInitFailed(true);

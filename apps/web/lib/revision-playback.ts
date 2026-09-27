@@ -171,6 +171,11 @@ export type GrantRefreshPlan =
 	| "hold"
 	| "fail-closed";
 
+export function hlsResumePosition(currentTime: number): number {
+	if (!Number.isFinite(currentTime) || currentTime <= 0) return -1;
+	return currentTime;
+}
+
 export function revisionHlsErrorAction(input: {
 	status?: number;
 	fatal?: boolean;
@@ -179,18 +184,14 @@ export function revisionHlsErrorAction(input: {
 	maxRefreshAttempts: number;
 	policyDenied: boolean;
 	native?: boolean;
-}): { type: "refresh-grant" } | { type: "fail-closed" } | { type: "ignore" } {
-	if (input.policyDenied || input.refreshAttempts >= input.maxRefreshAttempts) {
+}): { type: "refresh-grant" } | { type: "stop" } | { type: "fail-closed" } | { type: "ignore" } {
+	if (input.policyDenied) return { type: "fail-closed" };
+	const status = input.status ?? 0;
+	if (status === 403 || status === 410) return { type: "stop" };
+	if (input.refreshAttempts >= input.maxRefreshAttempts) {
 		return { type: "fail-closed" };
 	}
-	const status = input.status ?? 0;
-	if (
-		input.native === true ||
-		status === 401 ||
-		status === 403 ||
-		status === 410 ||
-		status >= 500
-	) {
+	if (input.native === true || status === 401 || status >= 500) {
 		return { type: "refresh-grant" };
 	}
 	return { type: "ignore" };

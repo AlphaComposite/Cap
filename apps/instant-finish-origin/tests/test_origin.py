@@ -92,6 +92,34 @@ class PlanTests(unittest.TestCase):
         for frame in frames:
             self.assertIsNotNone(lib_origin.range_index_for(frame.src_pts, ranges, 15360))
 
+    def test_scout_hold_snaps_exclude_the_next_frame(self) -> None:
+        table_path = Path("/path/to/scratch/cap-fzp-8-wire/capperf-origin-media/z9/mezz.frames.json")
+        if not table_path.is_file():
+            self.skipTest("z9 frame table is not on this host")
+        table = json.loads(table_path.read_text())
+        ticks, durs, tb = table["pts_tick"], table["dur_tick"], 15360
+        expected = {
+            5.641: 88704,
+            5.657: 88704,
+            5.674: 88704,
+            6.122: 95872,
+            8.37: 129664,
+            11.022: 170624,
+            11.039: 170624,
+            11.055: 170624,
+        }
+        self.assertEqual(lib_origin.max_hold_ticks(durs), 3200)
+        for end, duration in expected.items():
+            ranges = [{"start": 0.0, "end": end}]
+            segments = lib_origin.plan_segments(ranges, ticks, durs, tb, None)
+            self.assertEqual(lib_origin.duration_ticks(segments), duration)
+            snap = lib_origin.range_snaps(ticks, durs, ranges, tb)[0]
+            self.assertLess(snap["lastPts"] / tb, end)
+            self.assertLessEqual(end, (snap["lastPts"] + snap["lastDur"]) / tb)
+            lib_origin.require_kept(tuple(frame for segment in segments for frame in segment.frames), ranges, tb)
+        extra = [{"start": 0.0, "end": 5.776}]
+        self.assertEqual(lib_origin.duration_ticks(lib_origin.plan_segments(extra, ticks, durs, tb, None)), 90752)
+
     def test_removed_frame_refused(self) -> None:
         ranges = [{"start": 0.0, "end": 0.1}]
         frame = lib_origin.FrameRec(0, 15360, 512, 0, 0)

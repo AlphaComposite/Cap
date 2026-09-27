@@ -33,7 +33,10 @@ describe("origin prepare attestation", () => {
 		const parsed = JSON.parse(vector.body) as Record<string, unknown>;
 		const recanonical = `{${Object.keys(parsed)
 			.sort()
-			.map((key) => `${JSON.stringify(key)}: ${JSON.stringify(parsed[key])}`)
+			.map(
+				(key) =>
+					`${JSON.stringify(key)}: ${JSON.stringify(parsed[key]).replaceAll(",", ", ").replaceAll(":", ": ")}`,
+			)
 			.join(", ")}}\n`;
 		expect(recanonical).toBe(vector.body);
 		expect(signOriginAttestation(vector.body, env)).toBe(vector.mac);
@@ -42,15 +45,12 @@ describe("origin prepare attestation", () => {
 			verifyOriginAttestation(vector.mac, `${JSON.stringify(parsed)}\n`, env),
 		).toBe(false);
 		expect(
-			parseVerifiedOriginAttestation(vector.mac, vector.body, env),
+			parseVerifiedOriginAttestation(vector.mac, vector.body, env)?.intentId,
+		).toBe("intent-vector-01");
+		const old = `${vector.body.trimEnd().slice(0, -1)},"attestationVersion":1}\n`;
+		expect(
+			parseVerifiedOriginAttestation(signOriginAttestation(old, env), old, env),
 		).toBeNull();
-		const fenced = `${vector.body.trimEnd().slice(0, -1)},"playlistDurationSeconds":1.5,"seg0DecodedFrames":4}\n`;
-		const fencedMac = signOriginAttestation(fenced, env);
-		const attested = parseVerifiedOriginAttestation(fencedMac, fenced, env);
-		expect(attested?.intentId).toBe("intent-vector-01");
-		expect(attested?.decodedFrames).toBe(4);
-		expect(attested?.seg0DecodedFrames).toBe(4);
-		expect(attested?.playlistHasEndList).toBe(true);
 		expect(verifyOriginAttestation(vector.mac, vector.body.trim(), env)).toBe(
 			false,
 		);

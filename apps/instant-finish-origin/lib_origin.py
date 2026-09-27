@@ -20,6 +20,7 @@ from storage import atomic_write, private, sha256_file
 
 JIT_X264 = "scenecut=0:open-gop=0:b-adapt=0:repeat-headers=1"
 SEGMENT_PLAN_VERSION = 2
+ATTESTATION_VERSION = 2
 AUDIO_ALIGN_VERSION = 6
 MAPPING_VERSION = 1
 # Gated placeholder. rewrite_fragment stamps real durations afterwards.
@@ -224,6 +225,30 @@ def kept_frame_ids(ticks: list[int], ranges: list[dict], tb: int) -> list[list[i
     for item in ranges:
         grouped.append(np.flatnonzero((pts >= float(item["start"])) & (pts < float(item["end"]))).tolist())
     return grouped
+
+
+def max_hold_ticks(durs: list[int]) -> int:
+    if not durs:
+        raise RuntimeError("frame table is empty")
+    return max(int(dur) for dur in durs)
+
+
+def range_snaps(ticks: list[int], durs: list[int], ranges: list[dict], tb: int) -> list[dict]:
+    grouped = kept_frame_ids(ticks, ranges, tb)
+    snaps = []
+    for index, ids in enumerate(grouped):
+        if not ids:
+            raise RuntimeError(f"keep range {index} contains no frames")
+        first = ids[0]
+        last = ids[-1]
+        snaps.append(
+            {
+                "firstPts": int(ticks[first]),
+                "lastPts": int(ticks[last]),
+                "lastDur": int(durs[last]),
+            }
+        )
+    return snaps
 
 
 def _prefix_to_keyframe(frames: tuple[FrameRec, ...], keyframes: list[dict] | None, tb: int) -> tuple[FrameRec, ...]:
