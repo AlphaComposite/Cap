@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 
 export type RelocationKind = "original" | "rollback";
 
@@ -73,20 +74,35 @@ export type ExposedKey = {
 	kind: RelocationKind;
 };
 
-const PRIVATE_PREFIXES = ["private/source/", "private/rollback/"];
-const TRANSCRIPT_LANG_VTT = /\/transcription\.[a-z]{2}\.vtt$/;
+const TRANSCRIPT_LANG_REST = /^transcription\.[a-z]{2}\.vtt$/;
 
-export function isRetainedTranscriptKey(key: string) {
+export function isRetainedTranscriptKey(key: string, prefix: string) {
+	if (!key.startsWith(prefix)) return false;
+	const rest = key.slice(prefix.length);
 	return (
-		key.endsWith("/transcription.vtt") ||
-		TRANSCRIPT_LANG_VTT.test(key) ||
-		key.endsWith("/transcription.edit.v3.json") ||
-		key.endsWith("/transcription.edit.v3.status.json")
+		rest === "transcription.vtt" ||
+		TRANSCRIPT_LANG_REST.test(rest) ||
+		rest === "transcription.edit.v3.json" ||
+		rest === "transcription.edit.v3.status.json"
 	);
 }
 
 export function isFinishInventoryExempt(key: string, prefix: string) {
-	return isRetainedTranscriptKey(key) || key.startsWith(`${prefix}comments/`);
+	return (
+		isRetainedTranscriptKey(key, prefix) || key.startsWith(`${prefix}comments/`)
+	);
+}
+
+export function assertFinishInventoryClear(
+	listed: readonly string[] | null | undefined,
+	prefix: string,
+) {
+	if (!listed || listed.some((key) => !isFinishInventoryExempt(key, prefix))) {
+		throw new RevisionPublicationError(
+			409,
+			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+		);
+	}
 }
 
 export function inventoryExposedKeys(input: {
@@ -103,10 +119,8 @@ export function inventoryExposedKeys(input: {
 	const keys = new Map<string, RelocationKind>();
 	const add = (key: string | null | undefined, kind: RelocationKind) => {
 		if (!key || !key.startsWith(prefix)) return;
-		if (PRIVATE_PREFIXES.some((privatePrefix) => key.includes(privatePrefix))) {
-			return;
-		}
-		if (isRetainedTranscriptKey(key)) return;
+		if (key.startsWith("private/")) return;
+		if (isRetainedTranscriptKey(key, prefix)) return;
 		const existing = keys.get(key);
 		if (existing === "original") return;
 		keys.set(key, kind);

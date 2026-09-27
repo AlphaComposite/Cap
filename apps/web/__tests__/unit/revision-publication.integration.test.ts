@@ -2241,8 +2241,11 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				sourceDuration: 9,
 			};
 			finishInventoryProbe.listPrefix = async () => [
+				`${ownerId}/${invVideo}/transcription.vtt`,
+				`${ownerId}/${invVideo}/transcription.en.vtt`,
 				`${ownerId}/${invVideo}/transcription.edit.v3.json`,
-				`${ownerId}/${invVideo}/comments/x/media.mp4`,
+				`${ownerId}/${invVideo}/transcription.edit.v3.status.json`,
+				`${ownerId}/${invVideo}/comments/c1/media.mp4`,
 			];
 			const allocated = await database.transaction((tx) =>
 				allocateRevision(
@@ -2254,6 +2257,23 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				),
 			);
 			expect(allocated.revisionId).toBe("wireainvxrev001");
+			finishInventoryProbe.listPrefix = async () => [
+				`${ownerId}/${invVideo}/segments/transcription.vtt`,
+				`${ownerId}/${invVideo}/x/transcription.edit.v3.json`,
+				`${ownerId}/${invVideo}/x/private/source/y`,
+				`${ownerId}/${invVideo}/x/private/rollback/y`,
+			];
+			await expect(
+				database.transaction((tx) =>
+					allocateRevision(
+						tx as never,
+						input,
+						spec(2),
+						new Date(),
+						() => "wireainvxrev003",
+					),
+				),
+			).rejects.toThrow(/Finish refused until source relocation is PURGED/);
 			finishInventoryProbe.listPrefix = async () => [
 				`${ownerId}/${invVideo}/result.mp4`,
 			];
