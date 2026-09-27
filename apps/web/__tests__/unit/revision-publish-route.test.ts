@@ -142,6 +142,43 @@ describe("revision publish route", () => {
 			error: "generation 1 != 2",
 		});
 	});
+
+	it("returns 499 Prepare aborted for an aborted sibling prepare and logs the cause", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		publishOwnerRevision.mockRejectedValue(
+			Object.assign(new Error("storage"), {
+				cause: new DOMException("The operation was aborted.", "AbortError"),
+			}),
+		);
+		const { POST } = await import("@/app/api/video/revision/publish/route");
+		const response = await POST(
+			request("http://127.0.0.1:32120/api/video/revision/publish", sameOrigin),
+		);
+		expect(response.status).toBe(499);
+		await expect(response.json()).resolves.toEqual({
+			error: "Prepare aborted",
+		});
+		expect(errorSpy).toHaveBeenCalled();
+		const logged = errorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+		expect(logged).toContain("AbortError");
+		expect(logged).not.toMatch(/MYSQL_PWD|AWS_SECRET|password/i);
+		errorSpy.mockRestore();
+	});
+
+	it("still returns 500 and a toast body for a real publish error", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		publishOwnerRevision.mockRejectedValue(new Error("database unavailable"));
+		const { POST } = await import("@/app/api/video/revision/publish/route");
+		const response = await POST(
+			request("http://127.0.0.1:32120/api/video/revision/publish", sameOrigin),
+		);
+		expect(response.status).toBe(500);
+		await expect(response.json()).resolves.toEqual({
+			error: "Revision request failed",
+		});
+		expect(errorSpy).toHaveBeenCalled();
+		errorSpy.mockRestore();
+	});
 });
 
 describe("revision prepare route", () => {

@@ -4,6 +4,10 @@ import {
 	parseRevisionRouteBody,
 	publishOwnerRevision,
 } from "@/lib/revision-publish";
+import {
+	isAbortLike,
+	summarizeRevisionError,
+} from "@/lib/revision-request-error";
 import { revisionRouteDenial } from "@/lib/revision-route-guard";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +18,10 @@ function revisionRouteError(error: unknown) {
 			{ error: error.message },
 			{ status: error.status },
 		);
+	}
+	console.error("[revision/publish]", summarizeRevisionError(error));
+	if (isAbortLike(error)) {
+		return NextResponse.json({ error: "Prepare aborted" }, { status: 499 });
 	}
 	return NextResponse.json(
 		{ error: "Revision request failed" },
