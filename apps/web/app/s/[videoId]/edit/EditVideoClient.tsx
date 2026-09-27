@@ -41,6 +41,7 @@ import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
 } from "@/actions/videos/save-edits";
+import { restoredEditorSpec } from "@/lib/editor-baseline";
 import { isEditorShortcutTarget } from "@/lib/editor-keyboard";
 import {
 	prefetchInstantFinishPlaylist,
@@ -1487,6 +1488,19 @@ export function EditVideoClient({
 			setShowRestoreConfirm(false);
 			return;
 		}
+		if (instantFinish?.enabled) {
+			// Instant finish: restore = uncut timeline in the editor; Done
+			// publishes it as a normal revision (no legacy renderer).
+			setDraftState(null);
+			dragDraftRef.current = null;
+			const uncut = createTimelineStateFromEditSpec(
+				restoredEditorSpec(initialEditSpec.sourceDuration),
+			);
+			commitState(uncut);
+			setPlayhead(uncut.trimStart);
+			setShowRestoreConfirm(false);
+			return;
+		}
 
 		setIsRestoring(true);
 		try {
@@ -1502,7 +1516,10 @@ export function EditVideoClient({
 			setIsRestoring(false);
 		}
 	}, [
+		commitState,
 		hasExistingEdits,
+		initialEditSpec,
+		instantFinish?.enabled,
 		isRestoring,
 		isSaving,
 		resetTimeline,

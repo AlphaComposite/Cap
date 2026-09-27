@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { selectEditorBaselineSpec } from "@/lib/editor-baseline";
+import {
+	editorHasExistingEdits,
+	restoredEditorSpec,
+	selectEditorBaselineSpec,
+} from "@/lib/editor-baseline";
 import { previousEditionSpec } from "@/lib/revision-publication-metadata";
 import {
 	areEditSpecDocumentsEquivalent,
 	createIdentityEditSpec,
+	createTimelineStateFromEditSpec,
+	getEditSpecOutputDuration,
+	getTimelineEditSpec,
 } from "@/lib/video-edits";
 
 // cap-fzp.8.7.31: after the first instant-finish publish, video_edits (legacy rollback row)
@@ -65,5 +72,60 @@ describe("selectEditorBaselineSpec", () => {
 				sourceDuration: 65.659,
 			}),
 		).toEqual(legacy);
+	});
+});
+
+// cap-fzp.8.7.34: Restore must be available for instant-finish edits even
+// without a legacy video_edits row.
+describe("editorHasExistingEdits", () => {
+	it("is true for a published instant-finish edit with no legacy row", () => {
+		expect(
+			editorHasExistingEdits({
+				instantFinish: true,
+				hasLegacyRow: false,
+				baseline: published,
+			}),
+		).toBe(true);
+	});
+	it("is false for an uncut baseline", () => {
+		expect(
+			editorHasExistingEdits({
+				instantFinish: true,
+				hasLegacyRow: false,
+				baseline: createIdentityEditSpec(65.659),
+			}),
+		).toBe(false);
+	});
+	it("keeps legacy behavior when instant finish is off", () => {
+		expect(
+			editorHasExistingEdits({
+				instantFinish: false,
+				hasLegacyRow: false,
+				baseline: published,
+			}),
+		).toBe(false);
+		expect(
+			editorHasExistingEdits({
+				instantFinish: false,
+				hasLegacyRow: true,
+				baseline: published,
+			}),
+		).toBe(true);
+	});
+});
+
+// cap-fzp.8.7.34: Restore must stay uncut; the transcript sidebar must not
+// silently re-apply pause/filler auto-cuts after Restore.
+describe("restoredEditorSpec", () => {
+	it("is the full uncut video with auto-cuts off and marked initialized", () => {
+		const spec = getTimelineEditSpec(
+			createTimelineStateFromEditSpec(restoredEditorSpec(65.659)),
+		);
+		expect(getEditSpecOutputDuration(spec)).toBeCloseTo(65.659, 3);
+		expect(spec.autoCutsInitialized).toBe(true);
+		if (spec.version === 2) {
+			expect(spec.autoCuts?.silence.enabled ?? false).toBe(false);
+			expect(spec.autoCuts?.fillers.enabled ?? false).toBe(false);
+		}
 	});
 });

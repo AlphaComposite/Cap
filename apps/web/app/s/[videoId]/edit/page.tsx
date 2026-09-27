@@ -13,18 +13,17 @@ import { Video } from "@cap/web-domain";
 import { and, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
-import { selectEditorBaselineSpec } from "@/lib/editor-baseline";
+import {
+	editorHasExistingEdits,
+	selectEditorBaselineSpec,
+} from "@/lib/editor-baseline";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	openInstantFinishEditor,
 	selectEditorPlayback,
 } from "@/lib/revision-publication-read";
 import { isEditSourceKey } from "@/lib/video-edit-processing";
-import {
-	areEditSpecsEquivalent,
-	createIdentityEditSpec,
-	parseVideoEditSpec,
-} from "@/lib/video-edits";
+import { parseVideoEditSpec } from "@/lib/video-edits";
 import { EditUpgradeGate } from "./EditUpgradeGate";
 import { EditVideoClient } from "./EditVideoClient";
 import { EditRecovery } from "./edit-recovery";
@@ -159,12 +158,11 @@ export default async function EditVideoPage(props: {
 		playlistUrl: `/api/playlist?userId=${video.ownerId}&videoId=${video.id}&videoType=mp4`,
 	});
 
-	const hasExistingEdits = existingEdit
-		? !areEditSpecsEquivalent(
-				initialEditSpec,
-				createIdentityEditSpec(initialEditSpec.sourceDuration),
-			)
-		: false;
+	const hasExistingEdits = editorHasExistingEdits({
+		instantFinish: flagged,
+		hasLegacyRow: Boolean(existingEdit),
+		baseline: initialEditSpec,
+	});
 
 	return (
 		<EditVideoClient
