@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { db } from "@cap/database";
 import {
 	organizations,
+	sourceRelocation,
 	videoEdits,
 	videos,
 	videoUploads,
@@ -45,8 +46,11 @@ import {
 	isMediaServerConfigured,
 	probeVideoViaMediaServer,
 } from "@/lib/media-client";
+import { resolveLiveOriginal } from "@/lib/private-source-read";
 import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
 import { downloadConcatenatedSegments } from "@/lib/segments-audio-download";
+import type { RelocationState } from "@/lib/source-relocation";
+import { transcribeSourceCandidateKeys } from "@/lib/transcribe-source";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
 
@@ -489,6 +493,53 @@ async function requeueAfterEarlyDefer(
 	}
 }
 
+async function audioBufferFromSignedUrl(
+	videoUrl: string,
+	videoId: string,
+): Promise<Buffer | null> {
+	const useMediaServer = isMediaServerConfigured();
+	console.log(
+		`[transcribe] Audio detection: useMediaServer=${useMediaServer}, videoId=${videoId}`,
+	);
+	if (useMediaServer) {
+		let hasAudio: boolean;
+		try {
+			const probe = await probeVideoViaMediaServer(videoUrl);
+			console.log(
+				`[transcribe] Probe result for ${videoId}: audioCodec=${probe.audioCodec}, videoCodec=${probe.videoCodec}, duration=${probe.duration}, audioChannels=${probe.audioChannels}, sampleRate=${probe.sampleRate}`,
+			);
+			hasAudio = probe.audioCodec !== null;
+		} catch (probeError) {
+			console.error(
+				`[transcribe] Probe failed for ${videoId}, falling back to audio check:`,
+				probeError,
+			);
+			hasAudio = await checkHasAudioTrackViaMediaServer(videoUrl);
+			console.log(
+				`[transcribe] Fallback audio check result for ${videoId}: hasAudio=${hasAudio}`,
+			);
+		}
+		if (!hasAudio) {
+			console.log(
+				`[transcribe] No audio track detected for ${videoId} via media server`,
+			);
+			return null;
+		}
+		return extractAudioViaMediaServer(videoUrl);
+	}
+	const hasAudio = await checkHasAudioTrack(videoUrl);
+	console.log(
+		`[transcribe] Local ffmpeg audio check for ${videoId}: hasAudio=${hasAudio}`,
+	);
+	if (!hasAudio) return null;
+	const result = await extractAudioFromUrl(videoUrl);
+	try {
+		return await fs.readFile(result.filePath);
+	} finally {
+		await result.cleanup();
+	}
+}
+
 async function extractAudio(
 	videoId: string,
 	userId: string,
@@ -534,57 +585,23 @@ async function extractAudio(
 		throw error;
 	}
 
-	const useMediaServer = isMediaServerConfigured();
-	console.log(
-		`[transcribe] Audio detection: useMediaServer=${useMediaServer}, videoId=${videoId}`,
-	);
-
-	let hasAudio: boolean;
-	let audioBuffer: Buffer;
-
-	if (useMediaServer) {
+	let audioBuffer: Buffer | null;
+	try {
+		audioBuffer = await audioBufferFromSignedUrl(videoUrl, videoId);
+	} catch (error) {
 		try {
-			const probe = await probeVideoViaMediaServer(videoUrl);
-			console.log(
-				`[transcribe] Probe result for ${videoId}: audioCodec=${probe.audioCodec}, videoCodec=${probe.videoCodec}, duration=${probe.duration}, audioChannels=${probe.audioChannels}, sampleRate=${probe.sampleRate}`,
+			videoUrl = await resolveVideoSourceUrl(
+				videoId,
+				userId,
+				video,
+				sourceKeyOverride,
 			);
-			hasAudio = probe.audioCodec !== null;
-		} catch (probeError) {
-			console.error(
-				`[transcribe] Probe failed for ${videoId}, falling back to audio check:`,
-				probeError,
-			);
-			hasAudio = await checkHasAudioTrackViaMediaServer(videoUrl);
-			console.log(
-				`[transcribe] Fallback audio check result for ${videoId}: hasAudio=${hasAudio}`,
-			);
+		} catch {
+			throw error;
 		}
-
-		if (!hasAudio) {
-			console.log(
-				`[transcribe] No audio track detected for ${videoId} via media server`,
-			);
-			return null;
-		}
-
-		audioBuffer = await extractAudioViaMediaServer(videoUrl);
-	} else {
-		hasAudio = await checkHasAudioTrack(videoUrl);
-		console.log(
-			`[transcribe] Local ffmpeg audio check for ${videoId}: hasAudio=${hasAudio}`,
-		);
-		if (!hasAudio) {
-			return null;
-		}
-
-		const result = await extractAudioFromUrl(videoUrl);
-
-		try {
-			audioBuffer = await fs.readFile(result.filePath);
-		} finally {
-			await result.cleanup();
-		}
+		audioBuffer = await audioBufferFromSignedUrl(videoUrl, videoId);
 	}
+	if (!audioBuffer) return null;
 
 	console.log(
 		`[transcribe] Extracted audio for ${videoId}: ${audioBuffer.length} bytes`,
@@ -605,6 +622,62 @@ async function extractAudio(
 	return audioSignedUrl;
 }
 
+function relocationState(value: string): RelocationState | null {
+	switch (value) {
+		case "INTENT":
+		case "COPIED":
+		case "POINTER":
+		case "DELETED":
+		case "PURGED":
+		case "ABORTED":
+			return value;
+		default:
+			return null;
+	}
+}
+
+async function loadTranscribeSourceContext(videoId: string): Promise<{
+	liveKey: string | null;
+	relocations: Array<{
+		oldKey: string;
+		newKey: string;
+		state: RelocationState;
+	}>;
+}> {
+	const live = await resolveLiveOriginal(videoId);
+	try {
+		const rows = await db()
+			.select({
+				oldKey: sourceRelocation.oldKey,
+				newKey: sourceRelocation.newKey,
+				state: sourceRelocation.state,
+			})
+			.from(sourceRelocation)
+			.where(eq(sourceRelocation.videoId, videoId as Video.VideoId));
+		const relocations = rows.flatMap((row) => {
+			const state = relocationState(row.state);
+			if (!state) return [];
+			return [{ oldKey: row.oldKey, newKey: row.newKey, state }];
+		});
+		return { liveKey: live?.liveKey ?? null, relocations };
+	} catch (error) {
+		const record = error as {
+			errno?: number;
+			code?: string;
+			cause?: { errno?: number; code?: string };
+		};
+		if (
+			record.errno === 1146 ||
+			record.code === "ER_NO_SUCH_TABLE" ||
+			record.cause?.errno === 1146 ||
+			record.cause?.code === "ER_NO_SUCH_TABLE"
+		) {
+			return { liveKey: live?.liveKey ?? null, relocations: [] };
+		}
+		throw error;
+	}
+}
+
 async function resolveVideoSourceUrl(
 	videoId: string,
 	userId: string,
@@ -620,15 +693,15 @@ async function resolveVideoSourceUrl(
 		.from(videoUploads)
 		.where(eq(videoUploads.videoId, videoId as Video.VideoId))
 		.limit(1);
-
-	const candidateKeys = [
+	const located = await loadTranscribeSourceContext(videoId);
+	const candidateKeys = transcribeSourceCandidateKeys({
+		userId,
+		videoId,
 		sourceKeyOverride,
-		`${userId}/${videoId}/result.mp4`,
-		upload[0]?.rawFileKey,
-	].filter(
-		(value, index, values): value is string =>
-			Boolean(value) && values.indexOf(value) === index,
-	);
+		rawFileKey: upload[0]?.rawFileKey,
+		liveKey: located.liveKey,
+		relocations: located.relocations,
+	});
 
 	for (const key of candidateKeys) {
 		const url = await resolvedBucket
