@@ -13,6 +13,7 @@ import { Video } from "@cap/web-domain";
 import { and, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
+import { selectEditorBaselineSpec } from "@/lib/editor-baseline";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	openInstantFinishEditor,
@@ -107,35 +108,37 @@ export default async function EditVideoPage(props: {
 		.from(videoEdits)
 		.where(eq(videoEdits.videoId, videoId));
 	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
-	const [publishedIntent] =
-		flagged && !existingEdit
-			? await db()
-					.select({
-						canonicalSpec: editIntent.canonicalSpec,
-						metadataSnapshot: editRevision.metadataSnapshot,
-					})
-					.from(editIntent)
-					.innerJoin(
-						videoPublication,
-						and(
-							eq(videoPublication.videoId, editIntent.videoId),
-							eq(videoPublication.currentGeneration, editIntent.generation),
-						),
-					)
-					.innerJoin(
-						editRevision,
-						and(
-							eq(editRevision.revisionId, videoPublication.currentRevisionId),
-							eq(editRevision.generation, editIntent.generation),
-						),
-					)
-					.where(eq(editIntent.videoId, videoId))
-			: [];
-	const initialEditSpec = existingEdit
-		? parseVideoEditSpec(existingEdit.editSpec)
-		: publishedIntent
+	const [publishedIntent] = flagged
+		? await db()
+				.select({
+					canonicalSpec: editIntent.canonicalSpec,
+					metadataSnapshot: editRevision.metadataSnapshot,
+				})
+				.from(editIntent)
+				.innerJoin(
+					videoPublication,
+					and(
+						eq(videoPublication.videoId, editIntent.videoId),
+						eq(videoPublication.currentGeneration, editIntent.generation),
+					),
+				)
+				.innerJoin(
+					editRevision,
+					and(
+						eq(editRevision.revisionId, videoPublication.currentRevisionId),
+						eq(editRevision.generation, editIntent.generation),
+					),
+				)
+				.where(eq(editIntent.videoId, videoId))
+		: [];
+	const initialEditSpec = selectEditorBaselineSpec({
+		instantFinish: flagged,
+		publishedIntentSpec: publishedIntent
 			? parseVideoEditSpec(publishedIntent.canonicalSpec)
-			: createIdentityEditSpec(video.duration);
+			: null,
+		legacySpec: existingEdit ? parseVideoEditSpec(existingEdit.editSpec) : null,
+		sourceDuration: video.duration ?? 0,
+	});
 	const opened = flagged ? await openInstantFinishEditor(videoId) : null;
 	const originalDownload =
 		!flagged && existingEdit
