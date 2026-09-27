@@ -59,7 +59,10 @@ import {
 	thumbnailRetryDelayMs,
 	thumbnailSha256,
 } from "@/lib/revision-thumbnail";
-import { assertFinishSourceKey } from "@/lib/source-relocation";
+import {
+	assertFinishSourceKey,
+	isFinishInventoryExempt,
+} from "@/lib/source-relocation";
 
 export type { InstantFinishPublicationDto as RevisionPublicationDto } from "@/lib/revision-publication-read";
 export {
@@ -935,7 +938,9 @@ async function readReadySource(
 		!listed ||
 		listed.some(
 			(key) =>
-				!key.includes("private/source/") && !key.includes("private/rollback/"),
+				!key.includes("private/source/") &&
+				!key.includes("private/rollback/") &&
+				!isFinishInventoryExempt(key, prefix),
 		)
 	) {
 		throw new RevisionPublicationError(
