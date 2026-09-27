@@ -104,6 +104,7 @@ export function inventoryExposedKeys(input: {
 	add(input.thumbnailKey, "rollback");
 	add(input.previewKey, "rollback");
 	add(`${prefix}screenshot/screen-capture.jpg`, "rollback");
+	add(`${prefix}screenshot.jpg`, "rollback");
 	add(`${prefix}preview/animated-preview.gif`, "rollback");
 	for (const key of input.extraKeys ?? []) {
 		add(key, key?.includes("/source/") ? "original" : "rollback");

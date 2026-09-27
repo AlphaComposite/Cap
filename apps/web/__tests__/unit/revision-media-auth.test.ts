@@ -414,6 +414,7 @@ describe("source relocation", () => {
 		}).map((item) => item.key);
 		expect(keys).toContain("owner/video1/result.mp4");
 		expect(keys).toContain("owner/video1/raw-upload.mp4");
+		expect(keys).toContain("owner/video1/screenshot.jpg");
 		expect(keys).not.toContain("private/source/video1/already");
 	});
 });

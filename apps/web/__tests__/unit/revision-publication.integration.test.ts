@@ -49,6 +49,7 @@ import {
 	claimArtifactLease,
 	claimRevisionReadback,
 	completeRevisionReadback,
+	finishInventoryProbe,
 	flipCurrent,
 	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
@@ -67,6 +68,7 @@ import type {
 } from "@/lib/revision-publication-origin";
 import {
 	getInstantFinishPublicationDto,
+	openInstantFinishEditor,
 	resolveRollbackSourceKey,
 } from "@/lib/revision-publication-read";
 
@@ -341,6 +343,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			"wire-a-origin-service-secret-32b";
 		await origin.start();
 		process.env.CAP_INSTANT_FINISH_ORIGIN_URL = origin.url;
+		finishInventoryProbe.listPrefix = async () => [];
 		pool = mysql.createPool(databaseUrl ?? "");
 		database = connect(pool);
 		await migrate(database, { migrationsFolder });
@@ -424,6 +427,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 	}, 180_000);
 
 	afterAll(async () => {
+		finishInventoryProbe.listPrefix = undefined;
 		await origin.close();
 		await pool.end();
 	});
@@ -756,6 +760,8 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			userIsPro: () => true,
 		}));
 		vi.doMock("next/cache", () => ({ revalidatePath: () => undefined }));
+		const publication = await import("@/lib/revision-publication");
+		publication.finishInventoryProbe.listPrefix = async () => [];
 		const { POST } = await import("@/app/api/video/revision/publish/route");
 		const response = await POST(
 			new Request("http://127.0.0.1:30410/api/video/revision/publish", {
@@ -2057,6 +2063,114 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				[exhaustedVideo],
 			);
 			expect(fencedRows).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	}, 30_000);
+
+	it("relocates on editor open after purge and refuses Finish while a public key remains", async () => {
+		const openVideo = "wireaopen000001";
+		const liveKey = `private/source/${openVideo}/wireopaque`;
+		const cleanup = async () => {
+			await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+				openVideo,
+			]);
+			await pool.query("DELETE FROM edit_intent WHERE videoId = ?", [
+				openVideo,
+			]);
+			await pool.query("DELETE FROM source_relocation WHERE videoId = ?", [
+				openVideo,
+			]);
+			await pool.query("DELETE FROM source_object WHERE videoId = ?", [
+				openVideo,
+			]);
+			await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+				openVideo,
+			]);
+			await pool.query("DELETE FROM videos WHERE id = ?", [openVideo]);
+			finishInventoryProbe.listPrefix = async () => [];
+		};
+		await cleanup();
+		try {
+			await database.insert(videos).values({
+				id: openVideo as never,
+				ownerId: ownerId as never,
+				orgId: "wireaorg0000001" as never,
+				source: { type: "webMP4" },
+				duration: 9,
+			});
+			await database.insert(videoPublication).values({
+				videoId: openVideo as never,
+				generation: 1,
+				latestDraftVersion: 1,
+				draftSession: "editor",
+			});
+			await database.insert(sourceObject).values({
+				videoId: openVideo as never,
+				liveKey,
+				sha256: "b".repeat(64),
+				relocationState: "PURGED",
+				codec: "h264",
+				timebase: "1/15360",
+				frameMode: "vfr",
+				a1Digest: "c".repeat(64),
+				indexId: "index-open",
+				warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+			});
+			await database.insert(sourceRelocation).values({
+				videoId: openVideo as never,
+				revisionId: "relocate",
+				oldKey: `${ownerId}/${openVideo}/source/original.mp4`,
+				newKey: liveKey,
+				sha256: "b".repeat(64),
+				state: "PURGED",
+				createdAt: new Date(),
+			});
+			const relocate = vi.fn(async () => ({
+				liveKey,
+				sha256: "b".repeat(64),
+			}));
+			await openInstantFinishEditor(openVideo, database, {
+				actionRefresh: true,
+				relocate,
+			});
+			expect(relocate).toHaveBeenCalled();
+
+			const exposed = [
+				`${ownerId}/${openVideo}/raw-upload.mp4`,
+				`${ownerId}/${openVideo}/segments/audio/segment_000.m4s`,
+			];
+			finishInventoryProbe.listPrefix = async () => exposed;
+			const input = {
+				videoId: openVideo,
+				editSpec: spec(2),
+				baseGeneration: 1,
+				draftVersion: 2,
+				draftSession: "editor",
+				sourceDuration: 9,
+			};
+			await expect(
+				database.transaction((tx) =>
+					allocateRevision(
+						tx as never,
+						input,
+						spec(2),
+						new Date(),
+						() => "wireaopenrev001",
+					),
+				),
+			).rejects.toThrow(/Finish refused until source relocation is PURGED/);
+			finishInventoryProbe.listPrefix = async () => [];
+			const allocated = await database.transaction((tx) =>
+				allocateRevision(
+					tx as never,
+					input,
+					spec(2),
+					new Date(),
+					() => "wireaopenrev002",
+				),
+			);
+			expect(allocated.revisionId).toBe("wireaopenrev002");
 		} finally {
 			await cleanup();
 		}

@@ -301,17 +301,12 @@ export async function openInstantFinishEditor(
 	const alreadyPurged =
 		existingBeforePrepare?.relocationState === "PURGED" &&
 		existingBeforePrepare.liveKey.startsWith("private/source/");
-	const relocated = alreadyPurged
-		? {
-				liveKey: existingBeforePrepare.liveKey,
-				sha256: existingBeforePrepare.sha256,
-			}
-		: await (options?.relocate ?? relocateFlaggedSource)({
-				videoId,
-				ownerId: video.ownerId,
-				sourceKey,
-				database: app,
-			});
+	const relocated = await (options?.relocate ?? relocateFlaggedSource)({
+		videoId,
+		ownerId: video.ownerId,
+		sourceKey,
+		database: app,
+	});
 	await refreshOriginReadPolicy(app, relocated.liveKey);
 	const warm =
 		actionRefresh && alreadyPurged
