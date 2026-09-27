@@ -45,12 +45,15 @@ import {
 	PUBLISH_JOINED_PREPARE,
 } from "@/lib/revision-prepare-abort";
 import {
+	allocateRevision,
 	claimArtifactLease,
 	claimRevisionReadback,
 	completeRevisionReadback,
 	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
+	revisionLockProbe,
 	sweepRevisionReadbacks,
+	transition,
 } from "@/lib/revision-publication";
 import {
 	RevisionPublicationError,
@@ -1494,4 +1497,193 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(published.success).toBe(true);
 		expect(origin.preparePosts).toBe(postsBefore + 1);
 	}, 60_000);
+
+	it("does not deadlock transition(PREPARING) against allocateRevision", async () => {
+		const lockVideo = "wirealock000001";
+		const revisionId = "wirealockrev001";
+		await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+			lockVideo,
+		]);
+		await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+			lockVideo,
+		]);
+		await pool.query("DELETE FROM videos WHERE id = ?", [lockVideo]);
+		await database.insert(videos).values({
+			id: lockVideo as never,
+			ownerId: ownerId as never,
+			orgId: "wireaorg0000001" as never,
+			source: { type: "webMP4" },
+			duration: 9,
+		});
+		await database.insert(videoPublication).values({
+			videoId: lockVideo as never,
+			generation: 1,
+			latestDraftVersion: 1,
+			draftSession: "editor",
+		});
+		await database.insert(editRevision).values({
+			revisionId,
+			videoId: lockVideo as never,
+			intentId: "e".repeat(64),
+			sourceId: "source-lock",
+			generation: 1,
+			state: "COMMITTED_INTENT",
+			attempt: 1,
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		});
+		await database.insert(sourceObject).values({
+			videoId: lockVideo as never,
+			liveKey: `private/source/${lockVideo}/wireopaque`,
+			sha256: "b".repeat(64),
+			relocationState: "PURGED",
+			codec: "h264",
+			timebase: "1/15360",
+			frameMode: "vfr",
+			a1Digest: "c".repeat(64),
+			indexId: "index-lock",
+			warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+		await database.insert(sourceRelocation).values({
+			videoId: lockVideo as never,
+			revisionId: "relocate",
+			oldKey: `${ownerId}/${lockVideo}/source/original.mp4`,
+			newKey: `private/source/${lockVideo}/wireopaque`,
+			sha256: "b".repeat(64),
+			state: "PURGED",
+			createdAt: new Date(),
+		});
+		let releaseHold = () => {};
+		const hold = new Promise<void>((resolve) => {
+			releaseHold = resolve;
+		});
+		let markLocked = () => {};
+		const locked = new Promise<void>((resolve) => {
+			markLocked = resolve;
+		});
+		revisionLockProbe.afterPublicationLock = async () => {
+			markLocked();
+			await hold;
+		};
+		const isDeadlock = (error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			const cause =
+				error instanceof Error && error.cause != null
+					? String(error.cause)
+					: "";
+			return /Deadlock|ER_LOCK_DEADLOCK|\b1213\b/.test(`${message} ${cause}`);
+		};
+		const parsed = new URL(databaseUrl ?? "");
+		const connect = () =>
+			mysql.createConnection({
+				host: parsed.hostname,
+				port: Number(parsed.port),
+				user: decodeURIComponent(parsed.username),
+				password: decodeURIComponent(parsed.password),
+				database: parsed.pathname.replace(/^\//, ""),
+			});
+		const connA = await connect();
+		const connB = await connect();
+		const dbA = drizzle(connA);
+		const dbB = drizzle(connB);
+		let transitioning: Promise<boolean> = Promise.resolve(false);
+		let allocating: Promise<unknown> = Promise.resolve();
+		let allocError: unknown;
+		let enteredB = false;
+		try {
+			transitioning = transition(
+				dbA as never,
+				revisionId,
+				"PREPARING",
+				new Date(),
+			);
+			await locked;
+			allocating = dbB
+				.transaction(async (tx) => {
+					enteredB = true;
+					return allocateRevision(
+						tx as never,
+						{
+							videoId: lockVideo,
+							editSpec: spec(2),
+							baseGeneration: 1,
+							draftVersion: 2,
+							draftSession: "editor",
+							sourceDuration: 9,
+						},
+						spec(2),
+						new Date(),
+						() => "wirealockrev002",
+					);
+				})
+				.catch((reason) => {
+					allocError = reason;
+					throw reason;
+				});
+			const watched = allocating.then(
+				(value) => ({ status: "fulfilled" as const, value }),
+				(reason) => ({ status: "rejected" as const, reason }),
+			);
+			await vi.waitFor(
+				async () => {
+					const [rows] = await pool.query(
+						"SELECT trx_state AS state, trx_query AS query FROM information_schema.innodb_trx",
+					);
+					const [waits] = await pool.query(
+						"SELECT requesting_engine_lock_id AS requesting, blocking_engine_lock_id AS blocking FROM performance_schema.data_lock_waits",
+					);
+					const waiting =
+						(rows as { state: string }[]).some(
+							(row) => row.state === "LOCK WAIT",
+						) || (waits as unknown[]).length > 0;
+					expect(
+						waiting,
+						JSON.stringify({
+							enteredB,
+							rows,
+							waits,
+							allocError:
+								allocError instanceof Error
+									? allocError.message
+									: String(allocError ?? ""),
+						}).slice(0, 1500),
+					).toBe(true);
+				},
+				{ timeout: 2_000 },
+			);
+			releaseHold();
+			const settled = await Promise.all([
+				transitioning.then(
+					(value) => ({ status: "fulfilled" as const, value }),
+					(reason) => ({ status: "rejected" as const, reason }),
+				),
+				watched,
+			]);
+			for (const result of settled) {
+				if (result.status === "rejected") {
+					expect(isDeadlock(result.reason)).toBe(false);
+				}
+			}
+			expect(settled[0]?.status).toBe("fulfilled");
+		} finally {
+			revisionLockProbe.afterPublicationLock = undefined;
+			releaseHold();
+			await Promise.allSettled([transitioning, allocating]);
+			await connA.end();
+			await connB.end();
+			await pool.query("DELETE FROM source_relocation WHERE videoId = ?", [
+				lockVideo,
+			]);
+			await pool.query("DELETE FROM source_object WHERE videoId = ?", [
+				lockVideo,
+			]);
+			await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+				lockVideo,
+			]);
+			await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+				lockVideo,
+			]);
+			await pool.query("DELETE FROM videos WHERE id = ?", [lockVideo]);
+		}
+	}, 30_000);
 });

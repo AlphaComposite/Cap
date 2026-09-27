@@ -609,7 +609,7 @@ type Allocated = {
 	previousSpec: VideoEditSpec;
 };
 
-async function allocateRevision(
+export async function allocateRevision(
 	tx: PublicationTx,
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
@@ -978,7 +978,19 @@ async function readRevision(tx: PublicationTx, revisionId: string) {
 	return row ?? null;
 }
 
-async function transition(
+async function lockVideoRow(tx: PublicationTx, id: Video.VideoId) {
+	await tx
+		.select({ id: videos.id })
+		.from(videos)
+		.where(eq(videos.id, id))
+		.for("update");
+}
+
+export const revisionLockProbe: {
+	afterPublicationLock?: () => Promise<void>;
+} = {};
+
+export async function transition(
 	database: Database,
 	revisionId: string,
 	next: string,
@@ -990,6 +1002,10 @@ async function transition(
 		if (!revision) {
 			throw new RevisionPublicationError(500, `Unknown revision ${revisionId}`);
 		}
+		// videos before video_publication, same order as allocateRevision.
+		// The edit_revision update takes an FK shared lock on videos; taking
+		// publication first deadlocks with allocateRevision.
+		await lockVideoRow(tx, revision.videoId);
 		const [publication] = await tx
 			.select()
 			.from(videoPublication)
@@ -997,6 +1013,9 @@ async function transition(
 			.for("update");
 		if (!publication) {
 			throw new RevisionPublicationError(500, "Publication row disappeared");
+		}
+		if (revisionLockProbe.afterPublicationLock) {
+			await revisionLockProbe.afterPublicationLock();
 		}
 		if (expected && revision.state !== expected) return false;
 		const legal = LEGAL[revision.state] ?? [];
@@ -1804,6 +1823,7 @@ async function revertCurrentAfterReadback(
 	stamp: Date,
 ): Promise<boolean> {
 	return database.transaction(async (tx) => {
+		await lockVideoRow(tx, videoId(payload.videoId));
 		const [publication] = await tx
 			.select()
 			.from(videoPublication)
