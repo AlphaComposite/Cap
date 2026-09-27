@@ -1212,7 +1212,7 @@ async function readVerifiedText(
 	}
 }
 
-async function flipCurrent(
+export async function flipCurrent(
 	tx: PublicationTx,
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
@@ -1220,11 +1220,15 @@ async function flipCurrent(
 	prepared: PreparedMedia,
 	stamp: Date,
 ) {
+	await lockVideoRow(tx, videoId(input.videoId));
 	const [publication] = await tx
 		.select()
 		.from(videoPublication)
 		.where(eq(videoPublication.videoId, videoId(input.videoId)))
 		.for("update");
+	if (revisionLockProbe.afterPublicationLock) {
+		await revisionLockProbe.afterPublicationLock();
+	}
 	const revision = await readRevision(tx, allocated.revisionId);
 	if (!publication || !revision) {
 		throw new RevisionPublicationError(500, "Fence row disappeared");
