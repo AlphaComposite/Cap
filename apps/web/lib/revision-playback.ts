@@ -181,6 +181,15 @@ export function grantResumeStartPosition(currentTime: number): number {
 	return resumeAt > 0 ? resumeAt : -1;
 }
 
+export function playbackResumeTime(
+	lastPositive: number,
+	currentTime: number,
+): number {
+	if (Number.isFinite(currentTime) && currentTime > 0.5) return currentTime;
+	if (Number.isFinite(lastPositive) && lastPositive > 0.5) return lastPositive;
+	return currentTime;
+}
+
 export type GrantRefreshCycle = {
 	inFlight: boolean;
 	attempts: number;
