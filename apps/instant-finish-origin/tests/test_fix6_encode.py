@@ -48,11 +48,10 @@ class SupersededEncodeTests(unittest.TestCase):
         )
         self.httpd = serve(self.app, "127.0.0.1", 0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self._real_spawn = getattr(lib_origin, "spawn_encode_process", None)
+        self._real_encode = lib_origin._encode_pyav
 
     def tearDown(self) -> None:
-        if self._real_spawn is not None:
-            lib_origin.spawn_encode_process = self._real_spawn
+        lib_origin._encode_pyav = self._real_encode
         self.httpd.shutdown()
         self.httpd.server_close()
         lib_origin.reset_process_state()
@@ -118,28 +117,16 @@ class SupersededEncodeTests(unittest.TestCase):
         self.store.put_revision(RevisionRow("revolder01", VIDEO, "pendinghash", SOURCE, 1, "READY"))
         self.store.put_revision(RevisionRow("revnewer01", VIDEO, "pendinghash", SOURCE, 2, "READY"))
         started = threading.Event()
-        holder: dict = {}
-        calls = {"n": 0}
+        real = self._real_encode
 
-        def spawn(args, env):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                proc = subprocess.Popen(
-                    [
-                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-                        "-f", "lavfi", "-i", "anullsrc=r=8000:d=30", "-f", "null", "-",
-                    ],
-                    start_new_session=True,
-                )
-                holder["proc"] = proc
+        def encode(frames, dest, profile):
+            slot = lib_origin.current_encode_slot()
+            if slot is not None and slot.revision_id == "revolder01":
                 started.set()
-                return proc
-            real = self._real_spawn
-            if real is None:
-                raise AssertionError("spawn_encode_process missing")
-            return real(args, env)
+                self.assertTrue(slot.cancelled.wait(15), "older encode was not cancelled")
+            return real(frames, dest, profile)
 
-        lib_origin.spawn_encode_process = spawn
+        lib_origin._encode_pyav = encode
         older: dict = {}
 
         def run_older() -> None:
@@ -147,25 +134,18 @@ class SupersededEncodeTests(unittest.TestCase):
 
         thread = threading.Thread(target=run_older)
         thread.start()
-        self.assertTrue(started.wait(10), "older encode did not start")
-        try:
-            status, _, payload = self._prepare_revision("revnewer01", [{"start": 0.0, "end": 0.4}])
-            thread.join(60)
-            self.assertFalse(thread.is_alive())
-            proc = holder["proc"]
-            self.assertIsNotNone(proc.poll(), "older ffmpeg was not terminated")
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertEqual(status, 200, payload)
-            self.assertTrue(json.loads(payload)["ready"])
-            old_status, _, old_payload = older["result"]
-            self.assertNotEqual(old_status, 200, old_payload)
-            self.assertNotIn(b'"ready": true', old_payload)
-            self.assertNotIn(b'"ready":true', old_payload)
-        finally:
-            proc = holder.get("proc")
-            if proc is not None and proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=5)
+        self.assertTrue(started.wait(15), "older encode did not start")
+        status, _, payload = self._prepare_revision("revnewer01", [{"start": 0.0, "end": 0.4}])
+        thread.join(60)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(json.loads(payload)["ready"])
+        old_status, _, old_payload = older["result"]
+        self.assertNotEqual(old_status, 200, old_payload)
+        self.assertNotIn(b'"ready": true', old_payload)
+        self.assertNotIn(b'"ready":true', old_payload)
+        segs = list(self.cache.rglob("seg/*.m4s"))
+        self.assertEqual(len(segs), 1, segs)
 
     def test_same_spec_encodes_once_and_both_succeed(self) -> None:
         key = self._write_source()
@@ -175,19 +155,17 @@ class SupersededEncodeTests(unittest.TestCase):
         entered: list[int] = []
         calls = {"n": 0}
         ranges = [{"start": 0.0, "end": 0.5}]
+        real = self._real_encode
 
-        def spawn(args, env):
+        def encode(frames, dest, profile):
             deadline = time.time() + 3
             while len(entered) < 2 and time.time() < deadline:
                 time.sleep(0.01)
             time.sleep(0.4)
             calls["n"] += 1
-            real = self._real_spawn
-            if real is None:
-                raise AssertionError("spawn_encode_process missing")
-            return real(args, env)
+            return real(frames, dest, profile)
 
-        lib_origin.spawn_encode_process = spawn
+        lib_origin._encode_pyav = encode
         results: list = []
         lock = threading.Lock()
 
@@ -211,6 +189,38 @@ class SupersededEncodeTests(unittest.TestCase):
         for status, _, payload in results:
             self.assertEqual(status, 200, payload)
             self.assertTrue(json.loads(payload)["ready"])
+
+    def test_unsuperseded_prepare_does_not_spawn_python(self) -> None:
+        key = self._write_source()
+        self._prepare_source(key)
+        self.store.put_revision(RevisionRow("revnosub01", VIDEO, "pendinghash", SOURCE, 1, "READY"))
+        spawned: list[list[str]] = []
+        real_popen = subprocess.Popen
+
+        def tracking(args, *pos, **kwargs):
+            cmd = list(args) if isinstance(args, (list, tuple)) else [str(args)]
+            spawned.append([str(part) for part in cmd])
+            return real_popen(args, *pos, **kwargs)
+
+        subprocess.Popen = tracking
+        try:
+            status, _, payload = self._prepare_revision("revnosub01", [{"start": 0.0, "end": 0.5}])
+        finally:
+            subprocess.Popen = real_popen
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(json.loads(payload)["ready"])
+        python = [cmd for cmd in spawned if _python_encode(cmd)]
+        self.assertEqual(python, [], f"encode spawned python: {python}")
+
+
+def _python_encode(cmd: list[str]) -> bool:
+    if not cmd:
+        return False
+    head = cmd[0]
+    if head == sys.executable or Path(head).name.startswith("python"):
+        return True
+    blob = " ".join(cmd)
+    return "ORIGIN_ENCODE_CHILD" in blob or "lib_origin.Origin" in blob
 
 
 if __name__ == "__main__":
