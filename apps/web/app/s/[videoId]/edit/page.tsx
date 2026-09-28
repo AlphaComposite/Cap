@@ -18,6 +18,7 @@ import {
 	selectEditorBaselineSpec,
 } from "@/lib/editor-baseline";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
 import {
 	openInstantFinishEditor,
 	selectEditorPlayback,
@@ -112,6 +113,7 @@ export default async function EditVideoPage(props: {
 				.select({
 					canonicalSpec: editIntent.canonicalSpec,
 					metadataSnapshot: editRevision.metadataSnapshot,
+					revisionId: editRevision.revisionId,
 				})
 				.from(editIntent)
 				.innerJoin(
@@ -167,9 +169,14 @@ export default async function EditVideoPage(props: {
 	return (
 		<EditVideoClient
 			chapters={
-				publishedIntent?.metadataSnapshot?.chapters ??
-				video.metadata?.chapters ??
-				[]
+				publishedIntent
+					? resolveRevisionChapters({
+							currentRevisionId: publishedIntent.revisionId,
+							snapshotChapters: publishedIntent.metadataSnapshot?.chapters,
+							liveChapters: video.metadata?.chapters,
+							liveChaptersRevisionId: video.metadata?.chaptersRevisionId,
+						})
+					: (video.metadata?.chapters ?? [])
 			}
 			hasExistingEdits={hasExistingEdits}
 			initialEditSpec={initialEditSpec}

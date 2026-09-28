@@ -48,6 +48,7 @@ export interface VideoStatusResult {
 	aiTitle: string | null;
 	summary: string | null;
 	chapters: { title: string; start: number }[] | null;
+	chaptersRevisionId?: string | null;
 	error?: string;
 }
 
@@ -134,6 +135,7 @@ export async function getVideoStatus(
 				aiTitle: aiData.title,
 				summary: aiData.summary,
 				chapters: aiData.chapters,
+				chaptersRevisionId: metadata.chaptersRevisionId ?? null,
 			};
 		}
 
@@ -155,6 +157,7 @@ export async function getVideoStatus(
 				aiTitle: aiData.title,
 				summary: aiData.summary,
 				chapters: aiData.chapters,
+				chaptersRevisionId: metadata.chaptersRevisionId ?? null,
 			};
 		} catch (error) {
 			console.error(
@@ -168,6 +171,7 @@ export async function getVideoStatus(
 				aiTitle: aiData.title,
 				summary: aiData.summary,
 				chapters: aiData.chapters,
+				chaptersRevisionId: metadata.chaptersRevisionId ?? null,
 				error: "Failed to start transcription",
 			};
 		}
@@ -181,6 +185,7 @@ export async function getVideoStatus(
 			aiTitle: aiData.title,
 			summary: aiData.summary,
 			chapters: aiData.chapters,
+			chaptersRevisionId: metadata.chaptersRevisionId ?? null,
 			error: "Transcription failed",
 		};
 	}
@@ -193,5 +198,6 @@ export async function getVideoStatus(
 		aiTitle: aiData.title,
 		summary: aiData.summary,
 		chapters: aiData.chapters,
+		chaptersRevisionId: metadata.chaptersRevisionId ?? null,
 	};
 }

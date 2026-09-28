@@ -361,7 +361,9 @@ export const Share = ({
 			summary: videoStatus?.summary || null,
 			chapters: playback
 				? playback.mode === "hls"
-					? playback.chapters
+					? videoStatus?.chaptersRevisionId === playback.revisionId
+						? videoStatus.chapters
+						: playback.chapters
 					: []
 				: videoStatus?.chapters || null,
 			aiGenerationStatus: videoStatus?.aiGenerationStatus || null,
