@@ -6,6 +6,7 @@ import {
 	type EditTranscript,
 	remapEditTranscriptThroughSpec,
 } from "@/lib/edit-transcript";
+import { formatToWebVTT } from "@/lib/transcribe-utils";
 import {
 	createIdentityEditSpec,
 	getEditSpecOutputDuration,
@@ -209,29 +210,22 @@ function captionsVtt(
 	words: EditTranscript["words"],
 	durationSeconds: number,
 ): string {
-	const lines = [
+	// cap-fzp.8.7.37: same caption grouping as the upload path (formatToWebVTT),
+	// not one cue per word; keep the duration note after the header.
+	const grouped = formatToWebVTT({
+		words: words.map((word) => ({
+			text: word.text,
+			start: word.startMs,
+			end: word.endMs,
+		})),
+	}).replace(/^WEBVTT\n\n/, "");
+	return [
 		"WEBVTT",
 		"",
 		`NOTE duration_seconds=${durationSeconds.toFixed(3)} mapping_version=${MAPPING_VERSION}`,
 		"",
-	];
-	for (const word of words) {
-		lines.push(
-			`${vttClock(word.startMs)} --> ${vttClock(word.endMs)}`,
-			word.text,
-			"",
-		);
-	}
-	return lines.join("\n");
-}
-
-function vttClock(ms: number): string {
-	const clamped = Math.max(0, Math.round(ms));
-	const hours = Math.floor(clamped / 3_600_000);
-	const minutes = Math.floor((clamped % 3_600_000) / 60_000);
-	const seconds = Math.floor((clamped % 60_000) / 1000);
-	const millis = clamped % 1000;
-	return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+		grouped,
+	].join("\n");
 }
 
 export function chaptersDocument(input: {
