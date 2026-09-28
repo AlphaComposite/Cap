@@ -63,3 +63,21 @@ export function finishMetadataSnapshot(input: {
 		durationSeconds: input.durationSeconds,
 	};
 }
+
+export function revisionPageChapters(input: {
+	snapshotChapters: { title: string; start: number }[] | null;
+	snapshotDuration: number | null;
+	liveChapters: { title: string; start: number }[] | null;
+	liveDuration: number | null;
+}): { title: string; start: number }[] {
+	const snapshot = input.snapshotChapters ?? [];
+	if (
+		!input.liveChapters ||
+		input.snapshotDuration == null ||
+		input.liveDuration == null ||
+		Math.abs(input.liveDuration - input.snapshotDuration) > 0.001
+	) {
+		return snapshot;
+	}
+	return input.liveChapters;
+}

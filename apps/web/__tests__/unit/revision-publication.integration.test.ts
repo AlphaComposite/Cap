@@ -649,6 +649,10 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.select()
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
+		const [videoBefore] = await database
+			.select({ duration: videos.duration, metadata: videos.metadata })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
 		origin.failCaptions = true;
 		origin.artifactReads = 0;
 		const published = await publishInstantFinishRevision(
@@ -669,8 +673,33 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId as never));
 		expect(flipped?.currentRevisionId).toBe(published.revisionId);
+		const [flippedRevision] = await database
+			.select({ metadataSnapshot: editRevision.metadataSnapshot })
+			.from(editRevision)
+			.where(eq(editRevision.revisionId, published.revisionId as string));
+		const [videoFlipped] = await database
+			.select({ duration: videos.duration, metadata: videos.metadata })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
+		expect(videoFlipped?.duration).toBe(
+			flippedRevision?.metadataSnapshot?.durationSeconds,
+		);
+		expect(videoFlipped?.metadata?.chapters).toEqual(
+			flippedRevision?.metadataSnapshot?.chapters,
+		);
+		expect(videoFlipped?.metadata?.summary).toBe(
+			videoBefore?.metadata?.summary,
+		);
 		await sweepRevisionReadbacks(database, { origin: origin.client() });
 		origin.failCaptions = false;
+		const [videoReverted] = await database
+			.select({ duration: videos.duration, metadata: videos.metadata })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
+		expect(videoReverted?.duration).toBe(videoBefore?.duration);
+		expect(videoReverted?.metadata?.chapters).toEqual(
+			videoBefore?.metadata?.chapters,
+		);
 		const [reverted] = await database
 			.select()
 			.from(videoPublication)
