@@ -11,7 +11,10 @@ import { eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { relocateFlaggedSource } from "@/lib/instant-finish-source-relocate";
 import { ownerOriginalPath } from "@/lib/revision-media-grant";
-import { pageMetadataForRevision } from "@/lib/revision-metadata-snapshot";
+import {
+	pageMetadataForRevision,
+	resolveRevisionChapters,
+} from "@/lib/revision-metadata-snapshot";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import { prepareSourceOnEditorOpen } from "@/lib/revision-publication-origin";
 import { warmSourceFromRow } from "@/lib/revision-source-warm";
@@ -179,6 +182,16 @@ export async function getInstantFinishPublicationDto(input: {
 	const page = pageMetadataForRevision({
 		snapshot,
 		liveMetadata: null,
+	});
+	const [videoRow] = await database
+		.select({ metadata: videos.metadata })
+		.from(videos)
+		.where(eq(videos.id, asVideoId(input.videoId)));
+	page.chapters = resolveRevisionChapters({
+		currentRevisionId: projection.currentRevisionId,
+		snapshotChapters: page.chapters,
+		liveChapters: videoRow?.metadata?.chapters,
+		liveChaptersRevisionId: videoRow?.metadata?.chaptersRevisionId,
 	});
 	const duration = page.durationSeconds ?? input.durationFallback ?? null;
 	const commentRows = await database

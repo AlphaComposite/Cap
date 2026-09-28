@@ -64,20 +64,17 @@ export function finishMetadataSnapshot(input: {
 	};
 }
 
-export function revisionPageChapters(input: {
-	snapshotChapters: { title: string; start: number }[] | null;
-	snapshotDuration: number | null;
-	liveChapters: { title: string; start: number }[] | null;
-	liveDuration: number | null;
+export function resolveRevisionChapters(input: {
+	currentRevisionId: string;
+	snapshotChapters: { title: string; start: number }[] | null | undefined;
+	liveChapters: { title: string; start: number }[] | null | undefined;
+	liveChaptersRevisionId: unknown;
 }): { title: string; start: number }[] {
-	const snapshot = input.snapshotChapters ?? [];
 	if (
-		!input.liveChapters ||
-		input.snapshotDuration == null ||
-		input.liveDuration == null ||
-		Math.abs(input.liveDuration - input.snapshotDuration) > 0.001
+		input.liveChaptersRevisionId === input.currentRevisionId &&
+		Array.isArray(input.liveChapters)
 	) {
-		return snapshot;
+		return input.liveChapters;
 	}
-	return input.liveChapters;
+	return input.snapshotChapters ?? [];
 }

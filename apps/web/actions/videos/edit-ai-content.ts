@@ -2,7 +2,7 @@
 
 import { db } from "@cap/database";
 import { getCurrentUser } from "@cap/database/auth/session";
-import { videos } from "@cap/database/schema";
+import { editRevision, videoPublication, videos } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
@@ -17,6 +17,8 @@ import {
 	validateAiContent,
 } from "@/lib/ai-content";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
 
 const chapterSchema = z.object({
 	title: z.string().max(MAX_CHAPTER_TITLE_LENGTH),
@@ -68,6 +70,7 @@ export async function editAiContent(
 				.select({
 					metadata: videos.metadata,
 					duration: videos.duration,
+					ownerId: videos.ownerId,
 					transcriptionStatus: videos.transcriptionStatus,
 				})
 				.from(videos)
@@ -96,9 +99,19 @@ export async function editAiContent(
 						"Wait for chapter generation to finish before editing chapters.",
 				};
 			}
+			const revision = isInstantFinishEnabledForOwner(video.ownerId)
+				? await currentRevisionTimeline(tx, videoId)
+				: null;
 			const current = {
 				summary: metadata.summary || "",
-				chapters: metadata.chapters ?? [],
+				chapters: revision
+					? resolveRevisionChapters({
+							currentRevisionId: revision.revisionId,
+							snapshotChapters: revision.chapters,
+							liveChapters: metadata.chapters,
+							liveChaptersRevisionId: metadata.chaptersRevisionId,
+						})
+					: (metadata.chapters ?? []),
 			};
 			if (
 				(summaryChanged && current.summary !== expected.summary) ||
@@ -114,7 +127,10 @@ export async function editAiContent(
 				summary: summaryChanged ? value.summary : current.summary,
 				chapters: chaptersChanged ? value.chapters : current.chapters,
 			};
-			const validationError = validateAiContent(next, video.duration);
+			const validationError = validateAiContent(
+				next,
+				revision?.durationSeconds ?? video.duration,
+			);
 			if (validationError) return { success: false, message: validationError };
 			let updatedMetadata = sql`COALESCE(${videos.metadata}, JSON_OBJECT())`;
 			if (summaryChanged) {
@@ -122,6 +138,9 @@ export async function editAiContent(
 			}
 			if (chaptersChanged) {
 				updatedMetadata = sql`JSON_REMOVE(JSON_SET(${updatedMetadata}, '$.chapters', CAST(${JSON.stringify(next.chapters)} AS JSON), '$.chaptersManuallyEdited', CAST('true' AS JSON)), '$.aiChapterBackfillGenerationId')`;
+			}
+			if (chaptersChanged && revision) {
+				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.chaptersRevisionId', ${revision.revisionId})`;
 			}
 			if (summaryChanged || chaptersChanged) {
 				await tx
@@ -140,4 +159,27 @@ export async function editAiContent(
 			message: "Couldn't save your changes. Please try again.",
 		};
 	}
+}
+
+async function currentRevisionTimeline(
+	tx: Parameters<Parameters<ReturnType<typeof db>["transaction"]>[0]>[0],
+	videoId: Video.VideoId,
+) {
+	const [row] = await tx
+		.select({
+			revisionId: editRevision.revisionId,
+			metadataSnapshot: editRevision.metadataSnapshot,
+		})
+		.from(videoPublication)
+		.innerJoin(
+			editRevision,
+			eq(editRevision.revisionId, videoPublication.currentRevisionId),
+		)
+		.where(eq(videoPublication.videoId, videoId));
+	if (!row?.metadataSnapshot) return null;
+	return {
+		revisionId: row.revisionId,
+		durationSeconds: row.metadataSnapshot.durationSeconds,
+		chapters: row.metadataSnapshot.chapters,
+	};
 }

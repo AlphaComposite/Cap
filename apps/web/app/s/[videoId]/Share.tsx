@@ -28,7 +28,6 @@ import {
 import type { OrganizationSettings } from "@/app/(org)/dashboard/dashboard-data";
 import { SignedImageUrl } from "@/components/SignedImageUrl";
 import { preferInstantFinishFirstPaint } from "@/lib/instant-finish-playback-handoff";
-import { revisionPageChapters } from "@/lib/revision-metadata-snapshot";
 import {
 	applyRevisionCommentTimes,
 	type ClientRevisionPlayback,
@@ -362,17 +361,12 @@ export const Share = ({
 			summary: videoStatus?.summary || null,
 			chapters: playback
 				? playback.mode === "hls"
-					? revisionPageChapters({
-							snapshotChapters: playback.chapters,
-							snapshotDuration: playback.duration,
-							liveChapters: videoStatus?.chapters ?? null,
-							liveDuration: data.duration ?? null,
-						})
+					? playback.chapters
 					: []
 				: videoStatus?.chapters || null,
 			aiGenerationStatus: videoStatus?.aiGenerationStatus || null,
 		}),
-		[playback, videoStatus, data.duration],
+		[playback, videoStatus],
 	);
 
 	useEffect(() => {
@@ -584,7 +578,7 @@ export const Share = ({
 		);
 	}, [playback, visibleComments]);
 	const revisionChapters =
-		playback?.mode === "hls" ? (aiData.chapters ?? []) : null;
+		playback?.mode === "hls" ? (playback.chapters ?? []) : null;
 	const revisionDownloadPreparing = Boolean(
 		playback && (playback.mode === "unavailable" || !playback.downloadReady),
 	);
@@ -602,10 +596,14 @@ export const Share = ({
 	const sidebarData = useMemo(
 		() => ({
 			...data,
+			duration:
+				playback?.mode === "hls"
+					? (playback.duration ?? data.duration)
+					: data.duration,
 			createdAt: effectiveDate,
 			transcriptionStatus,
 		}),
-		[data, effectiveDate, transcriptionStatus],
+		[data, effectiveDate, transcriptionStatus, playback],
 	);
 
 	const reduceMotion = useReducedMotion() ?? false;

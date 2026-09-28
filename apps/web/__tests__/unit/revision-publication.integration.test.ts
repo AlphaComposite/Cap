@@ -681,11 +681,12 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.select({ duration: videos.duration, metadata: videos.metadata })
 			.from(videos)
 			.where(eq(videos.id, videoId as never));
-		expect(videoFlipped?.duration).toBe(
-			flippedRevision?.metadataSnapshot?.durationSeconds,
-		);
+		expect(videoFlipped?.duration).toBe(videoBefore?.duration);
 		expect(videoFlipped?.metadata?.chapters).toEqual(
 			flippedRevision?.metadataSnapshot?.chapters,
+		);
+		expect(videoFlipped?.metadata?.chaptersRevisionId).toBe(
+			published.revisionId,
 		);
 		expect(videoFlipped?.metadata?.summary).toBe(
 			videoBefore?.metadata?.summary,
@@ -699,6 +700,9 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(videoReverted?.duration).toBe(videoBefore?.duration);
 		expect(videoReverted?.metadata?.chapters).toEqual(
 			videoBefore?.metadata?.chapters,
+		);
+		expect(videoReverted?.metadata?.chaptersRevisionId).toBe(
+			videoBefore?.metadata?.chaptersRevisionId,
 		);
 		const [reverted] = await database
 			.select()

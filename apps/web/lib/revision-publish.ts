@@ -118,6 +118,7 @@ function recordedInput(
 		metadata?: { chapters?: VideoChapter[] } | null;
 		duration: number | null;
 	},
+	currentChapters: VideoChapter[] | null,
 ) {
 	return {
 		videoId: input.videoId,
@@ -126,7 +127,8 @@ function recordedInput(
 		baseGeneration: recorded.generation,
 		draftVersion: recorded.draftVersion,
 		draftSession: recorded.draftSession,
-		chapters: input.chapters ?? video.metadata?.chapters ?? [],
+		chapters:
+			input.chapters ?? currentChapters ?? video.metadata?.chapters ?? [],
 		transcript: input.transcript ?? null,
 		sourceDuration: video.duration,
 	};
@@ -151,7 +153,12 @@ export async function prepareOwnerRevision(
 	});
 	return prepareInstantFinishRevision(
 		db(),
-		recordedInput(input, recorded, video),
+		recordedInput(
+			input,
+			recorded,
+			video,
+			await currentRevisionChapters(input.videoId, video.ownerId),
+		),
 		{ origin: httpOriginClient(options?.signal) },
 	);
 }
@@ -175,7 +182,12 @@ export async function publishOwnerRevision(
 	});
 	const published = await publishInstantFinishRevision(
 		db(),
-		recordedInput(input, recorded, video),
+		recordedInput(
+			input,
+			recorded,
+			video,
+			await currentRevisionChapters(input.videoId, video.ownerId),
+		),
 		{ origin: httpOriginClient() },
 	);
 	revalidatePath(`/s/${input.videoId}`);
@@ -211,4 +223,16 @@ export function parseRevisionRouteBody(
 		draftVersion: record.draftVersion,
 		draftSession: record.draftSession,
 	};
+}
+
+async function currentRevisionChapters(
+	videoId: string,
+	ownerId: string,
+): Promise<VideoChapter[] | null> {
+	const publication = await getInstantFinishPublicationDto({
+		videoId,
+		ownerId,
+	});
+	if (!publication.currentRevisionId) return null;
+	return publication.revisionMetadata.chapters;
 }
