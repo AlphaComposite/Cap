@@ -369,6 +369,8 @@ export type OriginAttestation = {
 	rangeSnaps: RangeSnap[];
 	seg0DecodedFrames: number;
 	seg0Sha256: string;
+	/** Optional; end of the source's final video frame (cap-fzp.8.7.36). */
+	sourceEndTicks?: number;
 	timescale: number;
 };
 
@@ -509,6 +511,10 @@ export function parseVerifiedOriginAttestation(
 			rangeSnaps,
 			seg0DecodedFrames: seg0DecodedFrames as number,
 			seg0Sha256: parsed.seg0Sha256,
+			...(Number.isSafeInteger(parsed.sourceEndTicks) &&
+			(parsed.sourceEndTicks as number) > 0
+				? { sourceEndTicks: parsed.sourceEndTicks as number }
+				: {}),
 			timescale: timescale as number,
 		};
 	} catch {

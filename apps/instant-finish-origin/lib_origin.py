@@ -233,6 +233,14 @@ def max_hold_ticks(durs: list[int]) -> int:
     return max(int(dur) for dur in durs)
 
 
+def source_end_ticks(ticks: list[int], durs: list[int]) -> int:
+    """End of the source's final video frame (cap-fzp.8.7.36)."""
+    if not ticks or len(ticks) != len(durs):
+        raise RuntimeError("frame table is empty")
+    last = max(range(len(ticks)), key=lambda index: int(ticks[index]))
+    return int(ticks[last]) + int(durs[last])
+
+
 def range_snaps(ticks: list[int], durs: list[int], ranges: list[dict], tb: int) -> list[dict]:
     grouped = kept_frame_ids(ticks, ranges, tb)
     snaps = []

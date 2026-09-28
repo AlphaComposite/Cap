@@ -59,6 +59,23 @@ describe("origin prepare attestation", () => {
 			parseVerifiedOriginAttestation(vector.mac, vector.body.trim(), env),
 		).toBeNull();
 		expect(verifyOriginAttestation("forged", vector.body, env)).toBe(false);
+		// cap-fzp.8.7.36: signed sourceEndTicks is read; absent stays absent.
+		expect(
+			parseVerifiedOriginAttestation(vector.mac, vector.body, env)
+				?.sourceEndTicks,
+		).toBeUndefined();
+		const withEnd = vector.body.replace(
+			'"segmentCount": 2,',
+			'"segmentCount": 2, "sourceEndTicks": 23040,',
+		);
+		expect(withEnd).not.toBe(vector.body);
+		expect(
+			parseVerifiedOriginAttestation(
+				signOriginAttestation(withEnd, env),
+				withEnd,
+				env,
+			)?.sourceEndTicks,
+		).toBe(23040);
 		expect(vector.mac).not.toContain(vector.serviceSecret);
 		const v1 = vector.body.replace(
 			'"attestationVersion": 2',

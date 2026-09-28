@@ -112,40 +112,42 @@ describe("snapped duration check", () => {
 });
 
 // cap-fzp.8.7.36: a keep range running to the end of a source whose container
-// (audio) outlasts its last video frame must not fail publish.
+// (audio) outlasts its last video frame must not fail publish, but only when
+// the origin attests that the source's final video frame was kept.
 describe("source tail past last video frame", () => {
 	const timescale = 12000;
 	const snap = { firstPts: 0, lastPts: 142.85 * 12000, lastDur: 100 };
+	const sourceEndTicks = snap.lastPts + snap.lastDur;
 	const base = {
 		timescale,
 		maxHoldTicks: 2048,
 		durationTicks: snap.lastPts + snap.lastDur,
 		rangeSnaps: [snap],
+		keepRanges: [{ start: 0, end: 142.933 }],
+		sourceDuration: 142.933,
 	};
-	it("accepts a range ending at sourceDuration beyond the last frame", () => {
-		expect(
-			snappedDurationError({
-				...base,
-				keepRanges: [{ start: 0, end: 142.933 }],
-				sourceDuration: 142.933,
-			}),
-		).toBeNull();
+	it("accepts when the final source frame is kept and the range ends at sourceDuration", () => {
+		expect(snappedDurationError({ ...base, sourceEndTicks })).toBeNull();
 	});
-	it("still rejects the same overshoot when the range is not at the source end", () => {
+	it("rejects when the origin output is missing the final source frame (Sol fix16 item 2)", () => {
 		expect(
-			snappedDurationError({
-				...base,
-				keepRanges: [{ start: 0, end: 142.933 }],
-				sourceDuration: 150,
-			}),
+			snappedDurationError({ ...base, sourceEndTicks: sourceEndTicks + 100 }),
 		).toMatch(/is outside/);
 	});
-	it("still rejects a tail gap of a whole hold or more", () => {
+	it("rejects without a signed source end (old attestations stay strict)", () => {
+		expect(snappedDurationError(base)).toMatch(/is outside/);
+	});
+	it("rejects when the range is not at the source end", () => {
+		expect(
+			snappedDurationError({ ...base, sourceEndTicks, sourceDuration: 150 }),
+		).toMatch(/is outside/);
+	});
+	it("rejects when the range ends beyond sourceDuration", () => {
 		expect(
 			snappedDurationError({
 				...base,
+				sourceEndTicks,
 				keepRanges: [{ start: 0, end: 143.5 }],
-				sourceDuration: 143.5,
 			}),
 		).toMatch(/is outside/);
 	});

@@ -12,8 +12,10 @@ export type SnappedDurationInput = {
 	maxHoldTicks: number;
 	durationTicks: number;
 	rangeSnaps: RangeSnap[];
-	/** Source container duration; a final range may end past the last video frame by < one hold (cap-fzp.8.7.36). */
+	/** Source container duration (cap-fzp.8.7.36). */
 	sourceDuration?: number;
+	/** Origin-signed end of the source's final video frame, in ticks (cap-fzp.8.7.36). */
+	sourceEndTicks?: number;
 };
 
 export function snappedDurationError(
@@ -26,6 +28,7 @@ export function snappedDurationError(
 		durationTicks,
 		rangeSnaps,
 		sourceDuration,
+		sourceEndTicks,
 	} = input;
 	if (
 		!Number.isSafeInteger(timescale) ||
@@ -66,12 +69,17 @@ export function snappedDurationError(
 		if (first - range.start >= maxHold) {
 			return `attested range ${index} start gap ${first - range.start} >= max hold ${maxHold}`;
 		}
+		// A range may end past its last frame only at the source tail, and only
+		// when the kept last frame IS the source's final video frame (nothing
+		// missing); the remainder is container time with no video (audio tail).
 		const endsAtSourceTail =
 			index === rangeSnaps.length - 1 &&
 			typeof sourceDuration === "number" &&
-			Math.abs(range.end - sourceDuration) <= 0.001 &&
+			Number.isSafeInteger(sourceEndTicks) &&
+			snap.lastPts + snap.lastDur === sourceEndTicks &&
 			range.end > lastEnd &&
-			range.end - lastEnd < maxHold;
+			range.end <= sourceDuration + 0.001 &&
+			Math.abs(range.end - sourceDuration) <= 0.001;
 		if (!endsAtSourceTail && !(last < range.end && range.end <= lastEnd)) {
 			return `attested range ${index} end ${range.end} is outside (${last}, ${lastEnd}]`;
 		}
