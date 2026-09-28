@@ -210,8 +210,6 @@ function captionsVtt(
 	words: EditTranscript["words"],
 	durationSeconds: number,
 ): string {
-	// cap-fzp.8.7.37: same caption grouping as the upload path (formatToWebVTT),
-	// not one cue per word; keep the duration note after the header.
 	const grouped = formatToWebVTT({
 		words: words.map((word) => ({
 			text: word.text,
