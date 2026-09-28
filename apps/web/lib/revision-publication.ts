@@ -1415,7 +1415,7 @@ export async function flipCurrent(
 			.where(eq(comments.id, comment.id));
 	}
 	const [videoRow] = await tx
-		.select({ metadata: videos.metadata })
+		.select({ metadata: videos.metadata, duration: videos.duration })
 		.from(videos)
 		.where(eq(videos.id, videoId(input.videoId)));
 	const snapshot = finishMetadataSnapshot({
@@ -1472,6 +1472,17 @@ export async function flipCurrent(
 			allocated.revisionId,
 		);
 	}
+	const previousVideo = {
+		duration: videoRow?.duration ?? null,
+		chapters: videoRow?.metadata?.chapters ?? null,
+	};
+	await tx
+		.update(videos)
+		.set({
+			duration: prepared.durationSeconds,
+			metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters', CAST(${JSON.stringify(prepared.chapters)} AS JSON))`,
+		})
+		.where(eq(videos.id, videoId(input.videoId)));
 	await bumpPolicyEpoch(input.videoId, tx);
 	for (const artifact of [
 		"init",
@@ -1524,6 +1535,9 @@ export async function flipCurrent(
 							seg0Sha256: prepared.seg0Sha256,
 							captionsVtt: prepared.captionsVtt,
 							chaptersJson: prepared.chaptersJson,
+							publishedChapters: prepared.chapters,
+							previousVideoDuration: previousVideo.duration,
+							previousVideoChapters: previousVideo.chapters,
 						}
 					: {
 							job,
@@ -1694,6 +1708,9 @@ type ReadbackPayload = {
 	seg0Sha256: string;
 	captionsVtt: string;
 	chaptersJson: string;
+	publishedChapters?: { title: string; start: number }[];
+	previousVideoDuration?: number | null;
+	previousVideoChapters?: { title: string; start: number }[] | null;
 };
 
 export type ReadbackResult = {
@@ -2001,9 +2018,38 @@ async function revertCurrentAfterReadback(
 				),
 			);
 		if (affectedRows(pointed) !== 1) return false;
+		await restoreVideoFieldsAfterRevert(tx, payload);
 		await bumpPolicyEpoch(payload.videoId, tx);
 		return true;
 	});
+}
+
+async function restoreVideoFieldsAfterRevert(
+	tx: PublicationTx,
+	payload: ReadbackPayload,
+) {
+	if (!payload.publishedChapters || payload.previousVideoDuration === undefined)
+		return;
+	const [video] = await tx
+		.select({ duration: videos.duration, metadata: videos.metadata })
+		.from(videos)
+		.where(eq(videos.id, videoId(payload.videoId)));
+	if (!video) return;
+	const untouched =
+		video.duration === payload.durationSeconds &&
+		JSON.stringify(video.metadata?.chapters ?? []) ===
+			JSON.stringify(payload.publishedChapters);
+	if (!untouched) return;
+	const chapters = payload.previousVideoChapters;
+	await tx
+		.update(videos)
+		.set({
+			duration: payload.previousVideoDuration,
+			metadata: chapters
+				? sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters', CAST(${JSON.stringify(chapters)} AS JSON))`
+				: sql`JSON_REMOVE(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters')`,
+		})
+		.where(eq(videos.id, videoId(payload.videoId)));
 }
 
 export async function runRevisionReadback(
