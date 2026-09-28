@@ -580,7 +580,7 @@ export const Share = ({
 		);
 	}, [playback, visibleComments]);
 	const revisionChapters =
-		playback?.mode === "hls" ? (playback.chapters ?? []) : null;
+		playback?.mode === "hls" ? (aiData.chapters ?? []) : null;
 	const revisionDownloadPreparing = Boolean(
 		playback && (playback.mode === "unavailable" || !playback.downloadReady),
 	);
