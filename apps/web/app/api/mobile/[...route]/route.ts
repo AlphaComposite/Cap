@@ -57,6 +57,7 @@ import {
 	hasPendingAccountDeletion,
 } from "@/lib/account-deletion-request";
 import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import { queueDesktopSegmentsFinalization } from "@/lib/desktop-segments-finalization";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
@@ -1568,7 +1569,7 @@ const getCapRows = Effect.fn("Mobile.getCapRows")(function* (
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,
 				ownerName: Db.users.name,
-				duration: Db.videos.duration,
+				duration: currentVideoDuration,
 				folderId: Db.videos.folderId,
 				public: Db.videos.public,
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(
@@ -1901,7 +1902,7 @@ const getCapById = Effect.fn("Mobile.getCapById")(function* (
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,
 				ownerName: Db.users.name,
-				duration: Db.videos.duration,
+				duration: currentVideoDuration,
 				folderId: Db.videos.folderId,
 				public: Db.videos.public,
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(

@@ -22,6 +22,7 @@ import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { type Array, Effect } from "effect";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import { runPromise } from "@/lib/server";
 import { Caps } from "./Caps";
 
@@ -159,7 +160,7 @@ export default async function CapsPage(props: PageProps<"/dashboard/caps">) {
 			metadata: videos.metadata,
 			source: videos.source,
 			isScreenshot: videos.isScreenshot,
-			duration: videos.duration,
+			duration: currentVideoDuration,
 			public: videos.public,
 			totalComments: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'text' THEN ${comments.id} END)`,
 			totalReactions: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'emoji' THEN ${comments.id} END)`,
