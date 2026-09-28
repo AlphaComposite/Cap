@@ -15,7 +15,6 @@ export function doneRoute(
 
 export type RestoreRoute = "wait" | "editor" | "legacy";
 
-/** Restore waits for the flag like Done (cap-fzp.8.7.34). */
 export function restoreRoute(
 	state: { enabled: boolean } | null | undefined,
 ): RestoreRoute {

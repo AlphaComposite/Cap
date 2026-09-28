@@ -369,7 +369,6 @@ export type OriginAttestation = {
 	rangeSnaps: RangeSnap[];
 	seg0DecodedFrames: number;
 	seg0Sha256: string;
-	/** Optional; end of the source's final video frame (cap-fzp.8.7.36). */
 	sourceEndTicks?: number;
 	timescale: number;
 };
