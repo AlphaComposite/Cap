@@ -13,6 +13,16 @@ export function doneRoute(
 	return state.enabled ? "publish" : "save";
 }
 
+export type RestoreRoute = "wait" | "editor" | "legacy";
+
+/** Restore waits for the flag like Done (cap-fzp.8.7.34). */
+export function restoreRoute(
+	state: { enabled: boolean } | null | undefined,
+): RestoreRoute {
+	if (state == null) return "wait";
+	return state.enabled ? "editor" : "legacy";
+}
+
 export function planDoneAfterPublish(
 	result: PublishRevisionResult,
 ): Exclude<DonePlan, "leave"> {

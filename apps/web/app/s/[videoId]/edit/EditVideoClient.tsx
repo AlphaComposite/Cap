@@ -47,7 +47,11 @@ import {
 	prefetchInstantFinishPlaylist,
 	stashInstantFinishPlayback,
 } from "@/lib/instant-finish-playback-handoff";
-import { doneRoute, readOrCreateDraftSession } from "@/lib/revision-done";
+import {
+	doneRoute,
+	readOrCreateDraftSession,
+	restoreRoute,
+} from "@/lib/revision-done";
 import { createPrepareOnce, prepareSpecKey } from "@/lib/revision-prepare-once";
 import { postRevisionRoute } from "@/lib/revision-publish-client";
 import {
@@ -1482,13 +1486,15 @@ export function EditVideoClient({
 
 	const handleRestore = useCallback(async () => {
 		if (isRestoring || isSaving) return;
+		const route = restoreRoute(instantFinish);
+		if (route === "wait") return;
 
 		if (!hasExistingEdits) {
 			resetTimeline();
 			setShowRestoreConfirm(false);
 			return;
 		}
-		if (instantFinish?.enabled) {
+		if (route === "editor") {
 			// Instant finish: restore = uncut timeline in the editor; Done
 			// publishes it as a normal revision (no legacy renderer).
 			setDraftState(null);
@@ -1519,7 +1525,7 @@ export function EditVideoClient({
 		commitState,
 		hasExistingEdits,
 		initialEditSpec,
-		instantFinish?.enabled,
+		instantFinish,
 		isRestoring,
 		isSaving,
 		resetTimeline,
@@ -2040,7 +2046,12 @@ export function EditVideoClient({
 							type="button"
 							aria-label="Restore original"
 							title="Restore original"
-							disabled={!canRestore || isSaving || isRestoring}
+							disabled={
+								!canRestore ||
+								isSaving ||
+								isRestoring ||
+								restoreRoute(instantFinish) === "wait"
+							}
 							onClick={() => setShowRestoreConfirm(true)}
 							className="inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-[13px] font-medium text-gray-11 transition hover:bg-gray-3 hover:text-gray-12 active:bg-gray-4 disabled:pointer-events-none disabled:opacity-30 sm:px-3"
 						>

@@ -4,6 +4,7 @@ import {
 	restoredEditorSpec,
 	selectEditorBaselineSpec,
 } from "@/lib/editor-baseline";
+import { restoreRoute } from "@/lib/revision-done";
 import { previousEditionSpec } from "@/lib/revision-publication-metadata";
 import {
 	areEditSpecDocumentsEquivalent,
@@ -127,5 +128,18 @@ describe("restoredEditorSpec", () => {
 			expect(spec.autoCuts?.silence.enabled ?? false).toBe(false);
 			expect(spec.autoCuts?.fillers.enabled ?? false).toBe(false);
 		}
+	});
+});
+
+// cap-fzp.8.7.34 (Sol re-review): Restore must wait for the instant-finish
+// flag like Done, or an early click takes the legacy path that throws.
+describe("restoreRoute", () => {
+	it("waits until the flag state is known", () => {
+		expect(restoreRoute(undefined)).toBe("wait");
+		expect(restoreRoute(null)).toBe("wait");
+	});
+	it("uses the editor reset when instant finish is on, legacy otherwise", () => {
+		expect(restoreRoute({ enabled: true })).toBe("editor");
+		expect(restoreRoute({ enabled: false })).toBe("legacy");
 	});
 });
