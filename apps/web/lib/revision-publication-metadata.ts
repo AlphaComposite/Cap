@@ -176,7 +176,7 @@ export function previousEditionSpec(input: {
 export function deriveRevisionChapters(input: {
 	storedChapters: readonly VideoChapter[];
 	previousSpec: VideoEditSpec;
-	nextSpec: VideoEditSpecV2;
+	nextSpec: VideoEditSpec;
 }): VideoChapter[] {
 	const sourceChapters = mapOutputChaptersToSource(
 		[...input.storedChapters],
@@ -192,6 +192,39 @@ export function deriveRevisionChapters(input: {
 			projected[index + 1] === undefined ||
 			(projected[index + 1] as VideoChapter).start > chapter.start,
 	);
+}
+
+function sameChapters(
+	a: readonly VideoChapter[] | null | undefined,
+	b: readonly VideoChapter[] | null | undefined,
+) {
+	const left = a ?? [];
+	const right = b ?? [];
+	return (
+		left.length === right.length &&
+		left.every(
+			(chapter, index) =>
+				chapter.title === right[index]?.title &&
+				chapter.start === right[index]?.start,
+		)
+	);
+}
+
+export function chaptersAfterRevert(input: {
+	rowChapters: readonly VideoChapter[] | null | undefined;
+	publishedChapters: readonly VideoChapter[];
+	previousChapters: readonly VideoChapter[] | null | undefined;
+	failedSpec: VideoEditSpec;
+	previousSpec: VideoEditSpec;
+}): VideoChapter[] | null {
+	if (sameChapters(input.rowChapters, input.publishedChapters)) {
+		return input.previousChapters ? [...input.previousChapters] : null;
+	}
+	return deriveRevisionChapters({
+		storedChapters: input.rowChapters ?? [],
+		previousSpec: input.failedSpec,
+		nextSpec: input.previousSpec,
+	});
 }
 
 export function deriveRevisionCaptions(input: {
