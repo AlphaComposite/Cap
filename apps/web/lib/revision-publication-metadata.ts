@@ -182,7 +182,16 @@ export function deriveRevisionChapters(input: {
 		[...input.storedChapters],
 		input.previousSpec,
 	);
-	return projectSourceChaptersToOutput(sourceChapters, input.nextSpec);
+	const outputEnd = getEditSpecOutputDuration(input.nextSpec);
+	const projected = projectSourceChaptersToOutput(
+		sourceChapters,
+		input.nextSpec,
+	).filter((chapter) => chapter.start < outputEnd);
+	return projected.filter(
+		(chapter, index) =>
+			projected[index + 1] === undefined ||
+			(projected[index + 1] as VideoChapter).start > chapter.start,
+	);
 }
 
 export function deriveRevisionCaptions(input: {
