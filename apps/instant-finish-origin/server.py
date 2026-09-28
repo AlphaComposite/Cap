@@ -302,6 +302,7 @@ class OriginApp:
             "encoderHash": origin.encoder_hash,
             "maxHoldTicks": lib_origin.max_hold_ticks(origin.durs),
             "rangeSnaps": snaps,
+            "sourceEndTicks": lib_origin.source_end_ticks(origin.ticks, origin.durs),
             "timescale": origin.profile.timescale,
             "initSha256": hashlib.sha256(init).hexdigest(),
             "intentId": intent_id,

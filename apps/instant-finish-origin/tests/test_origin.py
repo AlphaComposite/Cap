@@ -120,6 +120,18 @@ class PlanTests(unittest.TestCase):
         extra = [{"start": 0.0, "end": 5.776}]
         self.assertEqual(lib_origin.duration_ticks(lib_origin.plan_segments(extra, ticks, durs, tb, None)), 90752)
 
+    def test_source_end_ticks_is_final_frame_end(self) -> None:
+        # cap-fzp.8.7.36: a range to the source tail keeps the final frame, so its
+        # snap end equals source_end_ticks; a range stopping earlier does not.
+        tb = 12000
+        ticks = [0, 400, 1000, 1400]
+        durs = [400, 600, 400, 100]
+        self.assertEqual(lib_origin.source_end_ticks(ticks, durs), 1500)
+        tail = lib_origin.range_snaps(ticks, durs, [{"start": 0.0, "end": 1600 / tb}], tb)[0]
+        self.assertEqual(tail["lastPts"] + tail["lastDur"], 1500)
+        short = lib_origin.range_snaps(ticks, durs, [{"start": 0.0, "end": 1300 / tb}], tb)[0]
+        self.assertLess(short["lastPts"] + short["lastDur"], 1500)
+
     def test_removed_frame_refused(self) -> None:
         ranges = [{"start": 0.0, "end": 0.1}]
         frame = lib_origin.FrameRec(0, 15360, 512, 0, 0)
