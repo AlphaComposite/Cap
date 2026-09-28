@@ -12,13 +12,21 @@ export type SnappedDurationInput = {
 	maxHoldTicks: number;
 	durationTicks: number;
 	rangeSnaps: RangeSnap[];
+	/** Source container duration; a final range may end past the last video frame by < one hold (cap-fzp.8.7.36). */
+	sourceDuration?: number;
 };
 
 export function snappedDurationError(
 	input: SnappedDurationInput,
 ): string | null {
-	const { keepRanges, timescale, maxHoldTicks, durationTicks, rangeSnaps } =
-		input;
+	const {
+		keepRanges,
+		timescale,
+		maxHoldTicks,
+		durationTicks,
+		rangeSnaps,
+		sourceDuration,
+	} = input;
 	if (
 		!Number.isSafeInteger(timescale) ||
 		timescale <= 0 ||
@@ -58,7 +66,13 @@ export function snappedDurationError(
 		if (first - range.start >= maxHold) {
 			return `attested range ${index} start gap ${first - range.start} >= max hold ${maxHold}`;
 		}
-		if (!(last < range.end && range.end <= lastEnd)) {
+		const endsAtSourceTail =
+			index === rangeSnaps.length - 1 &&
+			typeof sourceDuration === "number" &&
+			Math.abs(range.end - sourceDuration) <= 0.001 &&
+			range.end > lastEnd &&
+			range.end - lastEnd < maxHold;
+		if (!endsAtSourceTail && !(last < range.end && range.end <= lastEnd)) {
 			return `attested range ${index} end ${range.end} is outside (${last}, ${lastEnd}]`;
 		}
 		spanTicks += snap.lastPts + snap.lastDur - snap.firstPts;

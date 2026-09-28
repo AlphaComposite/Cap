@@ -166,6 +166,7 @@ type PreparedMedia = {
 	chapters: { title: string; start: number }[];
 	attestedDurationSeconds: number;
 	keepRanges: { start: number; end: number }[];
+	sourceDuration?: number;
 	timescale: number;
 	maxHoldTicks: number;
 	durationTicks: number;
@@ -299,6 +300,7 @@ async function reuseVerifiedReady(
 			maxHoldTicks: attested.maxHoldTicks,
 			durationTicks: attested.durationTicks,
 			rangeSnaps: attested.rangeSnaps,
+			sourceDuration: spec.sourceDuration,
 		});
 		if (snapError) {
 			throw new RevisionPublicationError(
@@ -368,6 +370,7 @@ async function reuseVerifiedReady(
 				chapters,
 				attestedDurationSeconds: mediaDuration,
 				keepRanges: spec.keepRanges,
+				sourceDuration: spec.sourceDuration,
 				timescale: found.attested.timescale,
 				maxHoldTicks: found.attested.maxHoldTicks,
 				durationTicks: found.attested.durationTicks,
@@ -1210,6 +1213,7 @@ async function produceAndVerify(
 		prepared,
 		allocated,
 		spec.keepRanges,
+		spec.sourceDuration,
 	);
 	const mediaDuration = attested.playlistDurationSeconds;
 	return {
@@ -1219,6 +1223,7 @@ async function produceAndVerify(
 		chapters,
 		attestedDurationSeconds: mediaDuration,
 		keepRanges: spec.keepRanges,
+		sourceDuration: spec.sourceDuration,
 		timescale: attested.timescale,
 		maxHoldTicks: attested.maxHoldTicks,
 		durationTicks: attested.durationTicks,
@@ -1237,6 +1242,7 @@ async function readPlaylist(
 	check: {
 		attestedDurationSeconds: number;
 		keepRanges: { start: number; end: number }[];
+		sourceDuration?: number;
 		timescale: number;
 		maxHoldTicks: number;
 		durationTicks: number;
@@ -1284,6 +1290,7 @@ async function readPlaylist(
 		maxHoldTicks: check.maxHoldTicks,
 		durationTicks: check.durationTicks,
 		rangeSnaps: check.rangeSnaps,
+		sourceDuration: check.sourceDuration,
 	});
 	if (snapError) {
 		throw new RevisionPublicationError(
@@ -1501,6 +1508,7 @@ export async function flipCurrent(
 							durationSeconds: prepared.durationSeconds,
 							attestedDurationSeconds: prepared.attestedDurationSeconds,
 							keepRanges: prepared.keepRanges,
+							sourceDuration: prepared.sourceDuration,
 							timescale: prepared.timescale,
 							maxHoldTicks: prepared.maxHoldTicks,
 							durationTicks: prepared.durationTicks,
@@ -1669,6 +1677,7 @@ type ReadbackPayload = {
 	durationSeconds: number;
 	attestedDurationSeconds: number;
 	keepRanges: { start: number; end: number }[];
+	sourceDuration?: number;
 	timescale: number;
 	maxHoldTicks: number;
 	durationTicks: number;
@@ -1761,6 +1770,7 @@ function assertSignedPrepareAttestation(
 	prepared: RevisionPrepareResult,
 	allocated: Allocated,
 	keepRanges: { start: number; end: number }[],
+	sourceDuration?: number,
 ): OriginAttestation {
 	const classified = classifyOriginAttestation(
 		prepared.attestationMac,
@@ -1797,6 +1807,7 @@ function assertSignedPrepareAttestation(
 		maxHoldTicks: attested.maxHoldTicks,
 		durationTicks: attested.durationTicks,
 		rangeSnaps: attested.rangeSnaps,
+		sourceDuration,
 	});
 	if (snapError) {
 		throw new RevisionPublicationError(
@@ -1895,6 +1906,10 @@ async function verifyRevisionArtifacts(
 	const playlistCheck = {
 		attestedDurationSeconds: payload.attestedDurationSeconds,
 		keepRanges: payload.keepRanges,
+		sourceDuration:
+			typeof payload.sourceDuration === "number"
+				? payload.sourceDuration
+				: undefined,
 		timescale: payload.timescale,
 		maxHoldTicks: payload.maxHoldTicks,
 		durationTicks: payload.durationTicks,

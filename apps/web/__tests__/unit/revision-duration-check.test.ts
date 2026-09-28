@@ -110,3 +110,43 @@ describe("snapped duration check", () => {
 		).toMatch(/duration ticks/);
 	});
 });
+
+// cap-fzp.8.7.36: a keep range running to the end of a source whose container
+// (audio) outlasts its last video frame must not fail publish.
+describe("source tail past last video frame", () => {
+	const timescale = 12000;
+	const snap = { firstPts: 0, lastPts: 142.85 * 12000, lastDur: 100 };
+	const base = {
+		timescale,
+		maxHoldTicks: 2048,
+		durationTicks: snap.lastPts + snap.lastDur,
+		rangeSnaps: [snap],
+	};
+	it("accepts a range ending at sourceDuration beyond the last frame", () => {
+		expect(
+			snappedDurationError({
+				...base,
+				keepRanges: [{ start: 0, end: 142.933 }],
+				sourceDuration: 142.933,
+			}),
+		).toBeNull();
+	});
+	it("still rejects the same overshoot when the range is not at the source end", () => {
+		expect(
+			snappedDurationError({
+				...base,
+				keepRanges: [{ start: 0, end: 142.933 }],
+				sourceDuration: 150,
+			}),
+		).toMatch(/is outside/);
+	});
+	it("still rejects a tail gap of a whole hold or more", () => {
+		expect(
+			snappedDurationError({
+				...base,
+				keepRanges: [{ start: 0, end: 143.5 }],
+				sourceDuration: 143.5,
+			}),
+		).toMatch(/is outside/);
+	});
+});
