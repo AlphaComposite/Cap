@@ -1569,7 +1569,7 @@ const getCapRows = Effect.fn("Mobile.getCapRows")(function* (
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,
 				ownerName: Db.users.name,
-				duration: currentVideoDuration,
+				duration: currentVideoDuration(),
 				folderId: Db.videos.folderId,
 				public: Db.videos.public,
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(
@@ -1902,7 +1902,7 @@ const getCapById = Effect.fn("Mobile.getCapById")(function* (
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,
 				ownerName: Db.users.name,
-				duration: currentVideoDuration,
+				duration: currentVideoDuration(),
 				folderId: Db.videos.folderId,
 				public: Db.videos.public,
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(

@@ -160,7 +160,7 @@ export default async function CapsPage(props: PageProps<"/dashboard/caps">) {
 			metadata: videos.metadata,
 			source: videos.source,
 			isScreenshot: videos.isScreenshot,
-			duration: currentVideoDuration,
+			duration: currentVideoDuration(),
 			public: videos.public,
 			totalComments: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'text' THEN ${comments.id} END)`,
 			totalReactions: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'emoji' THEN ${comments.id} END)`,
