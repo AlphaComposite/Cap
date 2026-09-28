@@ -1,3 +1,4 @@
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import "server-only";
 
 import { db } from "@cap/database";
@@ -419,7 +420,7 @@ const videoSelect = {
 	name: videos.name,
 	createdAt: videos.createdAt,
 	metadata: videos.metadata,
-	duration: videos.duration,
+	duration: currentVideoDuration,
 	totalComments: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'text' THEN ${comments.id} END)`,
 	totalReactions: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'emoji' THEN ${comments.id} END)`,
 	ownerName: users.name,

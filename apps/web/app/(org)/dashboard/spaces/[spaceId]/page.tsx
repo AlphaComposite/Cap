@@ -32,6 +32,7 @@ import { and, count, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import { runPromise } from "@/lib/server";
 import { SharedCaps } from "./SharedCaps";
 
@@ -328,7 +329,7 @@ export default async function SharedCapsPage(props: {
 						createdAt: videos.createdAt,
 						metadata: videos.metadata,
 						isScreenshot: videos.isScreenshot,
-						duration: videos.duration,
+						duration: currentVideoDuration,
 						public: videos.public,
 						settings: videos.settings,
 						hasPassword: sql`${videos.password} IS NOT NULL`.mapWith(Boolean),
@@ -459,7 +460,7 @@ export default async function SharedCapsPage(props: {
 						createdAt: videos.createdAt,
 						metadata: videos.metadata,
 						isScreenshot: videos.isScreenshot,
-						duration: videos.duration,
+						duration: currentVideoDuration,
 						public: videos.public,
 						settings: videos.settings,
 						hasPassword: sql`${videos.password} IS NOT NULL`.mapWith(Boolean),

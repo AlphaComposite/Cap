@@ -39,6 +39,7 @@ import {
 	getEditTranscriptObjectKey,
 	serializeEditTranscript,
 } from "@/lib/edit-transcript";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import { encryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
 import { snapsCoveringRanges } from "@/lib/revision-duration-check";
 import {
@@ -682,6 +683,14 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.from(videos)
 			.where(eq(videos.id, videoId as never));
 		expect(videoFlipped?.duration).toBe(videoBefore?.duration);
+		const [listed] = await database
+			.select({ duration: currentVideoDuration })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
+		expect(listed?.duration).toBeCloseTo(
+			flippedRevision?.metadataSnapshot?.durationSeconds ?? -1,
+			3,
+		);
 		expect(videoFlipped?.metadata?.chapters).toEqual(
 			flippedRevision?.metadataSnapshot?.chapters,
 		);

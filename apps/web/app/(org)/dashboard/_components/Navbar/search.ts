@@ -14,6 +14,7 @@ import {
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 
 const MAX_VIDEO_RESULTS = 8;
 const MIN_VIDEO_QUERY_LENGTH = 2;
@@ -88,7 +89,7 @@ export async function searchDashboardVideos(
 			name: videos.name,
 			ownerName: users.name,
 			createdAt: videos.createdAt,
-			duration: videos.duration,
+			duration: currentVideoDuration,
 			isScreenshot: videos.isScreenshot,
 		})
 		.from(videos)

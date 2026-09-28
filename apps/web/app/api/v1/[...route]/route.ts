@@ -119,6 +119,7 @@ import {
 	runAgentMutation,
 	updateAgentCap,
 } from "@/lib/agent-write";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import { hashKey } from "@/lib/developer-key-hash";
 import { startAiGeneration } from "@/lib/generate-ai";
 import { probeVideoViaMediaServer } from "@/lib/media-client";
@@ -497,7 +498,7 @@ const getCapRows = Effect.fn("Agent.getCapRows")(function* (
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(
 					Boolean,
 				),
-				duration: Db.videos.duration,
+				duration: currentVideoDuration,
 				folderId: Db.videos.folderId,
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,
@@ -797,7 +798,7 @@ const listCaps = Effect.fn("Agent.listCaps")(function* (
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(
 					Boolean,
 				),
-				duration: Db.videos.duration,
+				duration: currentVideoDuration,
 				folderId: Db.videos.folderId,
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,

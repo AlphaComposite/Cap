@@ -1,3 +1,4 @@
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import "server-only";
 
 import {
@@ -188,7 +189,7 @@ export const getVideosByFolderId = Effect.fn(function* (
 				metadata: videos.metadata,
 				source: videos.source,
 				isScreenshot: videos.isScreenshot,
-				duration: videos.duration,
+				duration: currentVideoDuration,
 				settings: videos.settings,
 				orgId: videos.orgId,
 				totalComments: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'text' THEN ${comments.id} END)`,
