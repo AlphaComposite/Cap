@@ -89,7 +89,7 @@ export async function searchDashboardVideos(
 			name: videos.name,
 			ownerName: users.name,
 			createdAt: videos.createdAt,
-			duration: currentVideoDuration,
+			duration: currentVideoDuration(),
 			isScreenshot: videos.isScreenshot,
 		})
 		.from(videos)

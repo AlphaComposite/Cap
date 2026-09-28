@@ -420,7 +420,7 @@ const videoSelect = {
 	name: videos.name,
 	createdAt: videos.createdAt,
 	metadata: videos.metadata,
-	duration: currentVideoDuration,
+	duration: currentVideoDuration(),
 	totalComments: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'text' THEN ${comments.id} END)`,
 	totalReactions: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'emoji' THEN ${comments.id} END)`,
 	ownerName: users.name,

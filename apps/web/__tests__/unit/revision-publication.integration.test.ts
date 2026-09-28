@@ -36,10 +36,13 @@ vi.mock("@/lib/server", () => ({
 }));
 
 import {
+	currentVideoDuration,
+	currentVideoDurationFor,
+} from "@/lib/current-video-duration";
+import {
 	getEditTranscriptObjectKey,
 	serializeEditTranscript,
 } from "@/lib/edit-transcript";
-import { currentVideoDuration } from "@/lib/current-video-duration";
 import { encryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
 import { snapsCoveringRanges } from "@/lib/revision-duration-check";
 import {
@@ -684,13 +687,23 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			.where(eq(videos.id, videoId as never));
 		expect(videoFlipped?.duration).toBe(videoBefore?.duration);
 		const [listed] = await database
-			.select({ duration: currentVideoDuration })
+			.select({ duration: currentVideoDuration() })
 			.from(videos)
 			.where(eq(videos.id, videoId as never));
 		expect(listed?.duration).toBeCloseTo(
 			flippedRevision?.metadataSnapshot?.durationSeconds ?? -1,
 			3,
 		);
+		const [listedFlagOff] = await database
+			.select({ duration: currentVideoDurationFor([]) })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
+		expect(listedFlagOff?.duration).toBe(videoBefore?.duration);
+		const [listedOtherOwner] = await database
+			.select({ duration: currentVideoDurationFor(["someoneelse0001"]) })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
+		expect(listedOtherOwner?.duration).toBe(videoBefore?.duration);
 		expect(videoFlipped?.metadata?.chapters).toEqual(
 			flippedRevision?.metadataSnapshot?.chapters,
 		);

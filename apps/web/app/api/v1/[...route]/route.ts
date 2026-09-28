@@ -498,7 +498,7 @@ const getCapRows = Effect.fn("Agent.getCapRows")(function* (
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(
 					Boolean,
 				),
-				duration: currentVideoDuration,
+				duration: currentVideoDuration(),
 				folderId: Db.videos.folderId,
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,
@@ -798,7 +798,7 @@ const listCaps = Effect.fn("Agent.listCaps")(function* (
 				hasPassword: sql<boolean>`${Db.videos.password} IS NOT NULL`.mapWith(
 					Boolean,
 				),
-				duration: currentVideoDuration,
+				duration: currentVideoDuration(),
 				folderId: Db.videos.folderId,
 				createdAt: Db.videos.createdAt,
 				updatedAt: Db.videos.updatedAt,

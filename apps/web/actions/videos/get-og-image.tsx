@@ -5,6 +5,7 @@ import { getPublishedRecordingThumbnailKey } from "@cap/web-backend/src/Storage/
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { extractPosterFrameDataUri } from "@/lib/og/poster-frame";
 import { renderVideoOg } from "@/lib/og/video-og";
@@ -18,7 +19,7 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 
 	if (!videoData) return renderVideoOg({ kind: "not-found" });
 
-	const { video, ownerName } = videoData;
+	const { video, ownerName, currentDuration } = videoData;
 
 	if (video.password) return renderVideoOg({ kind: "password" });
 	if (video.public === false) return renderVideoOg({ kind: "locked" });
@@ -35,7 +36,7 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 			video: {
 				title: video.name,
 				ownerName: ownerName ?? undefined,
-				duration: video.duration ?? undefined,
+				duration: currentDuration ?? undefined,
 				screenshotUrl:
 					screenshotUrl ??
 					`data:image/jpeg;base64,${neutralPreviewJpeg().toString("base64")}`,
@@ -91,7 +92,11 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 
 async function getData(videoId: Video.VideoId) {
 	const query = await db()
-		.select({ video: videos, ownerName: users.name })
+		.select({
+			video: videos,
+			ownerName: users.name,
+			currentDuration: currentVideoDuration(),
+		})
 		.from(videos)
 		.leftJoin(users, eq(videos.ownerId, users.id))
 		.where(eq(videos.id, videoId));

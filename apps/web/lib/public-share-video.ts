@@ -9,6 +9,7 @@ import {
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { currentVideoDuration } from "@/lib/current-video-duration";
 
 export type PublicShareVideoCandidate = {
 	id: Video.VideoId;
@@ -85,7 +86,7 @@ export async function getPublicShareVideo(
 			skipProcessing: videos.skipProcessing,
 			width: videos.width,
 			height: videos.height,
-			duration: videos.duration,
+			duration: currentVideoDuration(),
 		})
 		.from(videos)
 		.innerJoin(
