@@ -9,8 +9,6 @@ import {
 import { deriveRevisionCaptions } from "@/lib/revision-publication-metadata";
 import { createIdentityEditSpec } from "@/lib/video-edits";
 
-// cap-fzp.8.7.37: revision captions must group words into caption lines the
-// same way the upload path does (formatToWebVTT), not one cue per word.
 function word(id: string, text: string, startMs: number, endMs: number) {
 	return {
 		id,
