@@ -12,9 +12,7 @@ export type SnappedDurationInput = {
 	maxHoldTicks: number;
 	durationTicks: number;
 	rangeSnaps: RangeSnap[];
-	/** Source container duration (cap-fzp.8.7.36). */
 	sourceDuration?: number;
-	/** Origin-signed end of the source's final video frame, in ticks (cap-fzp.8.7.36). */
 	sourceEndTicks?: number;
 };
 

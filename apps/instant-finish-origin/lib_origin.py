@@ -234,7 +234,6 @@ def max_hold_ticks(durs: list[int]) -> int:
 
 
 def source_end_ticks(ticks: list[int], durs: list[int]) -> int:
-    """End of the source's final video frame (cap-fzp.8.7.36)."""
     if not ticks or len(ticks) != len(durs):
         raise RuntimeError("frame table is empty")
     last = max(range(len(ticks)), key=lambda index: int(ticks[index]))

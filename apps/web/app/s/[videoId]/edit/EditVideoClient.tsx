@@ -1495,8 +1495,6 @@ export function EditVideoClient({
 			return;
 		}
 		if (route === "editor") {
-			// Instant finish: restore = uncut timeline in the editor; Done
-			// publishes it as a normal revision (no legacy renderer).
 			setDraftState(null);
 			dragDraftRef.current = null;
 			const uncut = createTimelineStateFromEditSpec(
