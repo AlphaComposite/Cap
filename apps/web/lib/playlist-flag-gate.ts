@@ -16,6 +16,7 @@ export function flaggedPlaylistGate(input: {
 	fileType?: string;
 	sourceType: string;
 	env?: NodeJS.ProcessEnv;
+	eligibleLegacy?: boolean;
 }): FlaggedPlaylistGate {
 	if (!isInstantFinishEnabledForOwner(input.ownerId, input.env))
 		return "legacy";
@@ -23,19 +24,31 @@ export function flaggedPlaylistGate(input: {
 	if (
 		fileType === "transcription" ||
 		fileType === "enhanced-audio" ||
-		SEGMENT_TYPES.has(input.videoType)
+		input.videoType === "raw-preview"
 	) {
 		return "unavailable";
 	}
 	const mp4Source =
 		input.sourceType === "webMP4" || input.sourceType === "desktopMP4";
+	const mp4Alias =
+		input.videoType === "mp4" ||
+		input.videoType === "master" ||
+		input.videoType === "video" ||
+		input.videoType === "audio";
 	if (
-		mp4Source &&
-		(input.videoType === "mp4" ||
-			input.videoType === "master" ||
-			input.videoType === "video" ||
-			input.videoType === "audio")
+		input.eligibleLegacy &&
+		(SEGMENT_TYPES.has(input.videoType) || (mp4Source && mp4Alias))
 	) {
+		return "legacy";
+	}
+	if (
+		fileType === "transcription" ||
+		fileType === "enhanced-audio" ||
+		SEGMENT_TYPES.has(input.videoType)
+	) {
+		return "unavailable";
+	}
+	if (mp4Source && mp4Alias) {
 		return "revision";
 	}
 	return "unavailable";

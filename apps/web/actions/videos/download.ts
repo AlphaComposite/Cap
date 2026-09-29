@@ -7,6 +7,7 @@ import { Storage } from "@cap/web-backend";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	ownerOriginalPath,
@@ -52,23 +53,29 @@ export async function downloadVideo(videoId: Video.VideoId) {
 	}
 
 	if (isInstantFinishEnabledForOwner(video.ownerId)) {
-		const downloadUrl = await revisionArtifactUrl({
+		const eligible = await loadEligibleLegacy({
 			videoId,
 			ownerId: video.ownerId,
-			artifact: "download",
-			child: "download.mp4",
 		});
-		if (!downloadUrl) {
+		if (!eligible) {
+			const downloadUrl = await revisionArtifactUrl({
+				videoId,
+				ownerId: video.ownerId,
+				artifact: "download",
+				child: "download.mp4",
+			});
+			if (!downloadUrl) {
+				return {
+					success: false as const,
+					error: "Preparing download...",
+				};
+			}
 			return {
-				success: false as const,
-				error: "Preparing download...",
+				success: true as const,
+				downloadUrl,
+				filename: `${video.name}.mp4`,
 			};
 		}
-		return {
-			success: true as const,
-			downloadUrl,
-			filename: `${video.name}.mp4`,
-		};
 	}
 
 	try {
@@ -132,23 +139,29 @@ export async function getVideoDownloadInfo(
 				filename: `${video.name} (original).mp4`,
 			};
 		}
-		const downloadUrl = await revisionArtifactUrl({
+		const eligible = await loadEligibleLegacy({
 			videoId,
 			ownerId: video.ownerId,
-			artifact: "download",
-			child: "download.mp4",
 		});
-		if (!downloadUrl) {
+		if (!eligible) {
+			const downloadUrl = await revisionArtifactUrl({
+				videoId,
+				ownerId: video.ownerId,
+				artifact: "download",
+				child: "download.mp4",
+			});
+			if (!downloadUrl) {
+				return {
+					success: false,
+					error: "Preparing download...",
+				};
+			}
 			return {
-				success: false,
-				error: "Preparing download...",
+				success: true as const,
+				downloadUrl,
+				filename: `${video.name}.mp4`,
 			};
 		}
-		return {
-			success: true as const,
-			downloadUrl,
-			filename: `${video.name}.mp4`,
-		};
 	}
 
 	if (variant === "current") {
@@ -193,6 +206,13 @@ export async function getVideoDownloadInfo(
 
 		downloadKey = existingEdit.sourceKey;
 		filename = `${video.name} (original).mp4`;
+	}
+
+	if (isViewerPrivateKey(downloadKey)) {
+		return {
+			success: false,
+			error: "Video file is not available for download yet.",
+		};
 	}
 
 	try {
