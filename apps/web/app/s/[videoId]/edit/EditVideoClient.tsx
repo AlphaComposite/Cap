@@ -78,6 +78,7 @@ import {
 	findNextPlayableTime,
 	findNextPlayableTimeInRanges,
 	findPlayableRangeIndex,
+	findPreviousPlayableTime,
 	getEditSpecOutputDuration,
 	getTimelineDisplaySplitPoints,
 	getTimelineEditSpec,
@@ -1509,12 +1510,19 @@ export function EditVideoClient({
 	]);
 
 	const seekTo = useCallback(
-		(time: number, immediate = false) => {
+		(
+			time: number,
+			immediate = false,
+			direction: "forward" | "backward" = "forward",
+		) => {
 			const current = stateRef.current;
 			const { trimStart, trimEnd } = current;
 			const trimmedTime = Math.min(Math.max(time, trimStart), trimEnd);
 			const spec = getTimelineEditSpec(current);
 			const playable =
+				(direction === "backward"
+					? findPreviousPlayableTime(trimmedTime, spec)
+					: null) ??
 				findNextPlayableTime(trimmedTime, spec) ??
 				spec.keepRanges.at(-1)?.end ??
 				trimStart;
@@ -1928,7 +1936,7 @@ export function EditVideoClient({
 			if (event.key === "ArrowLeft") {
 				event.preventDefault();
 				const step = event.shiftKey ? 1 : 0.1;
-				seekTo(playhead - step, true);
+				seekTo(playhead - step, true, "backward");
 				return;
 			}
 

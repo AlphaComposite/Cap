@@ -1624,6 +1624,23 @@ export function findNextPlayableTime(
 	return findNextPlayableTimeInRanges(currentTime, normalized.keepRanges);
 }
 
+export function findPreviousPlayableTime(
+	currentTime: number,
+	editSpec: VideoEditSpec,
+) {
+	if (!isFiniteNumber(currentTime)) return null;
+	const { keepRanges } = normalizeKeepRanges(
+		editSpec.keepRanges,
+		editSpec.sourceDuration,
+	);
+	for (let index = keepRanges.length - 1; index >= 0; index--) {
+		const range = keepRanges[index];
+		if (!range || range.start > currentTime + EPSILON) continue;
+		return Math.min(currentTime, range.end);
+	}
+	return null;
+}
+
 export function findNextPlayableTimeInRanges(
 	currentTime: number,
 	keepRanges: readonly VideoEditRange[],
