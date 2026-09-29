@@ -147,6 +147,7 @@ class PresentationReuseTests(unittest.TestCase):
                 "pcm": dest.name,
                 "pcm_sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
                 "prepare_ms": 12.5,
+                "input_rate": 48000,
                 "resampled_from": None,
                 "samples": 2,
                 "source": source.name,
