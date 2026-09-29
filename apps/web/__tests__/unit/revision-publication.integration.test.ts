@@ -860,7 +860,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				return row?.metadata;
 			};
 			await publish(40);
-			await publish(40, [
+			await publish(39, [
 				{ title: "Start", start: 0 },
 				{ title: "Late", start: 20 },
 			]);
@@ -929,7 +929,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			return row?.metadata;
 		};
 		await publish(9);
-		await publish(9, [
+		await publish(8.5, [
 			{ title: "Start", start: 0 },
 			{ title: "Late", start: 6 },
 		]);

@@ -397,86 +397,121 @@ describe("chapters shorter than 10 seconds are hidden after an edit", () => {
 		]);
 	});
 
-	it("keeps a hidden chapter when an owner edit lands on its start", () => {
+	function expectOwnerListPreserved(
+		merged: { title: string; start: number }[],
+		ownerList: { title: string; start: number }[],
+		spec: Parameters<typeof projectSourceChapters>[1],
+		hiddenTitles: string[],
+	) {
+		const projected = projectSourceChapters(merged, spec);
+		expect(projected).toHaveLength(ownerList.length);
+		projected.forEach((chapter, index) => {
+			expect(chapter.title).toBe(ownerList[index]?.title);
+			expect(
+				Math.abs(chapter.start - (ownerList[index]?.start ?? 0)),
+			).toBeLessThanOrEqual(0.001);
+		});
+		for (const title of hiddenTitles) {
+			expect(merged.some((chapter) => chapter.title === title)).toBe(true);
+		}
+	}
+
+	it("keeps the owner's chapter when an edit lands on a hidden chapter", () => {
 		const source = [
 			{ title: "A", start: 0 },
 			{ title: "B", start: 30 },
 			{ title: "C", start: 35 },
 		];
+		const ownerList = [
+			{ title: "A", start: 0 },
+			{ title: "C", start: 30 },
+		];
 		const edited = mergeOwnerChapterEdit({
 			previousSourceChapters: source,
 			currentSpec: full,
-			editedChapters: [
-				{ title: "A", start: 0 },
-				{ title: "C", start: 30 },
-			],
+			editedChapters: ownerList,
 		});
 		expect(edited).toEqual([
 			{ title: "A", start: 0 },
+			{ title: "B", start: 29.999 },
 			{ title: "C", start: 30 },
-			{ title: "B", start: 30.001 },
 		]);
-		const restored = deriveRevisionChapterState({
-			storedChapters: [
-				{ title: "A", start: 0 },
-				{ title: "C", start: 30 },
-			],
-			storedSourceChapters: edited,
-			previousSpec: full,
-			nextSpec: full,
-		});
-		expect(restored.sourceChapters).toEqual([
-			{ title: "A", start: 0 },
-			{ title: "C", start: 30 },
-			{ title: "B", start: 30.001 },
-		]);
-		const bLength = full.sourceDuration - 30.001;
-		expect(bLength).toBeGreaterThanOrEqual(MIN_CHAPTER_SECONDS);
-		expect(restored.chapters).toEqual([
-			{ title: "A", start: 0 },
-			{ title: "B", start: 30.001 },
-		]);
+		expectOwnerListPreserved(edited, ownerList, full, ["B"]);
+		expect(30 - 29.999).toBeLessThan(MIN_CHAPTER_SECONDS);
 	});
 
-	it("keeps a shifted hidden chapter present but off screen when it is still under 10 seconds", () => {
+	it("parks a hidden chapter just before a cut edge the owner claims", () => {
+		const edge = cut([
+			{ start: 0, end: 50 },
+			{ start: 80, end: 100 },
+		]);
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "H", start: 80 },
+			{ title: "C", start: 85 },
+		];
+		const ownerList = [
+			{ title: "A", start: 0 },
+			{ title: "C", start: 50 },
+		];
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: source,
+			currentSpec: edge,
+			editedChapters: ownerList,
+		});
+		expect(edited.find((chapter) => chapter.title === "H")?.start).toBe(79.999);
+		expect(edited.find((chapter) => chapter.title === "C")?.start).toBe(80);
+		expectOwnerListPreserved(edited, ownerList, edge, ["H"]);
+	});
+
+	it("keeps the owner's chapter when a hidden chapter collides at 0", () => {
+		const openingCut = cut([{ start: 20, end: 100 }]);
+		const source = [
+			{ title: "H", start: 0 },
+			{ title: "A", start: 20 },
+			{ title: "C", start: 60 },
+		];
+		const ownerList = [{ title: "C", start: 0 }];
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: source,
+			currentSpec: openingCut,
+			editedChapters: ownerList,
+		});
+		const hidden = edited.find((chapter) => chapter.title === "H");
+		expect(hidden?.start).toBe(99.999);
+		expectOwnerListPreserved(edited, ownerList, openingCut, ["H"]);
+	});
+
+	it("parks hidden chapters that would hide the chapter the owner placed", () => {
 		const source = [
 			{ title: "A", start: 0 },
 			{ title: "B", start: 30 },
 			{ title: "C", start: 35 },
 			{ title: "E", start: 40 },
 		];
+		const ownerList = [
+			{ title: "A", start: 0 },
+			{ title: "E", start: 30 },
+		];
 		const edited = mergeOwnerChapterEdit({
 			previousSourceChapters: source,
 			currentSpec: full,
-			editedChapters: [
-				{ title: "A", start: 0 },
-				{ title: "E", start: 30 },
-			],
+			editedChapters: ownerList,
 		});
 		expect(edited).toEqual([
 			{ title: "A", start: 0 },
+			{ title: "C", start: 29.998 },
+			{ title: "B", start: 29.999 },
 			{ title: "E", start: 30 },
-			{ title: "B", start: 30.001 },
-			{ title: "C", start: 35 },
 		]);
-		const restored = deriveRevisionChapterState({
-			storedChapters: [
-				{ title: "A", start: 0 },
-				{ title: "E", start: 30 },
-			],
-			storedSourceChapters: edited,
-			previousSpec: full,
-			nextSpec: full,
-		});
-		expect(restored.sourceChapters).toEqual(edited);
-		expect(35 - 30.001).toBeLessThan(MIN_CHAPTER_SECONDS);
-		expect(restored.chapters).toEqual([
-			{ title: "A", start: 0 },
-			{ title: "C", start: 35 },
-		]);
+		expectOwnerListPreserved(edited, ownerList, full, ["B", "C"]);
 	});
 
-	it("moves a collided hidden chapter past the next occupied instant", () => {
+	it("parks a collided hidden chapter and the one just after it behind the owner", () => {
+		const ownerList = [
+			{ title: "A", start: 0 },
+			{ title: "C", start: 30 },
+		];
 		const edited = mergeOwnerChapterEdit({
 			previousSourceChapters: [
 				{ title: "A", start: 0 },
@@ -485,17 +520,15 @@ describe("chapters shorter than 10 seconds are hidden after an edit", () => {
 				{ title: "C", start: 35 },
 			],
 			currentSpec: full,
-			editedChapters: [
-				{ title: "A", start: 0 },
-				{ title: "C", start: 30 },
-			],
+			editedChapters: ownerList,
 		});
 		expect(edited).toEqual([
 			{ title: "A", start: 0 },
+			{ title: "D", start: 29.998 },
+			{ title: "B", start: 29.999 },
 			{ title: "C", start: 30 },
-			{ title: "D", start: 30.001 },
-			{ title: "B", start: 30.002 },
 		]);
+		expectOwnerListPreserved(edited, ownerList, full, ["B", "D"]);
 	});
 
 	it("leaves a no-conflict owner edit byte-identical", () => {

@@ -47,6 +47,15 @@ export function isKnownLegacyAutomaticChapterState(
 		"duration" | "transcriptionStatus" | "metadata"
 	>,
 ): boolean {
+	const chapters = row.metadata?.chapters;
+	const sourceChapters = row.metadata?.sourceChapters;
+	if (
+		Array.isArray(sourceChapters) &&
+		Array.isArray(chapters) &&
+		sourceChapters.length > chapters.length
+	) {
+		return false;
+	}
 	return (
 		row.transcriptionStatus === "COMPLETE" &&
 		typeof row.duration === "number" &&
