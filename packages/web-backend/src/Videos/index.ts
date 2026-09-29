@@ -14,6 +14,7 @@ import { Effect, Exit, Option } from "effect";
 import type { Schema } from "effect/Schema";
 
 import { Database } from "../Database.ts";
+import { isViewerPrivateKey, loadEligibleLegacy } from "../flagged-unedited.ts";
 import { Storage as StorageService } from "../Storage/index.ts";
 import {
 	getPublishedRecordingCopyKeys,
@@ -712,7 +713,15 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				if (Option.isNone(maybeVideo))
 					return yield* Effect.fail(new Video.NotFoundError());
 				const [video] = maybeVideo.value;
-				if (isInstantFinishEnabledForOwner(video.ownerId)) return Option.none();
+				if (isInstantFinishEnabledForOwner(video.ownerId)) {
+					const eligible = yield* Effect.promise(() =>
+						loadEligibleLegacy({
+							videoId: video.id,
+							ownerId: video.ownerId,
+						}),
+					);
+					if (!eligible) return Option.none();
+				}
 
 				const [bucket] = yield* storage.getAccessForVideo(video);
 				const [videoRow] = yield* db.use((db) =>
@@ -729,7 +738,8 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 					const screenshotKey = findScreenshotObjectKey(
 						listResponse.Contents || [],
 					);
-					if (!screenshotKey) return Option.none();
+					if (!screenshotKey || isViewerPrivateKey(screenshotKey))
+						return Option.none();
 					const extension = getFileExtensionFromKey(screenshotKey) ?? "jpg";
 					const downloadUrl = yield* bucket.getSignedObjectUrl(screenshotKey);
 					return Option.some({
@@ -740,7 +750,11 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 
 				const src = Video.Video.getSource(video);
 
-				if (src instanceof Video.Mp4Source && video.source.type === "webMP4") {
+				if (
+					src instanceof Video.Mp4Source &&
+					video.source.type === "webMP4" &&
+					!isViewerPrivateKey(src.getFileKey())
+				) {
 					const mp4Head = yield* bucket
 						.headObject(src.getFileKey())
 						.pipe(Effect.option);
@@ -766,7 +780,7 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 							.where(Dz.eq(Db.videoUploads.videoId, video.id)),
 					);
 
-					if (upload?.rawFileKey) {
+					if (upload?.rawFileKey && !isViewerPrivateKey(upload.rawFileKey)) {
 						const downloadUrl = yield* bucket.getSignedObjectUrl(
 							upload.rawFileKey,
 						);
@@ -782,6 +796,7 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 
 				if (!src) return Option.none();
 				if (!(src instanceof Video.Mp4Source)) return Option.none();
+				if (isViewerPrivateKey(src.getFileKey())) return Option.none();
 
 				const downloadUrl = yield* bucket.getSignedObjectUrl(src.getFileKey());
 				return Option.some({ fileName: `${video.name}.mp4`, downloadUrl });
@@ -793,11 +808,19 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				const maybeVideo = yield* policy.getViewableById(videoId);
 				if (Option.isNone(maybeVideo)) return Option.none();
 				const [video] = maybeVideo.value;
-				if (isInstantFinishEnabledForOwner(video.ownerId)) return Option.none();
+				if (isInstantFinishEnabledForOwner(video.ownerId)) {
+					const eligible = yield* Effect.promise(() =>
+						loadEligibleLegacy({
+							videoId: video.id,
+							ownerId: video.ownerId,
+						}),
+					);
+					if (!eligible) return Option.none();
+				}
 
 				const [bucket] = yield* storage.getAccessForVideo(video);
 				const publishedThumbnail = getPublishedRecordingThumbnailKey(video);
-				if (publishedThumbnail) {
+				if (publishedThumbnail && !isViewerPrivateKey(publishedThumbnail)) {
 					return Option.some(
 						yield* bucket.getSignedObjectUrl(publishedThumbnail),
 					);
@@ -807,7 +830,8 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				});
 				const contents = listResponse.Contents || [];
 				const thumbnailKey = findScreenshotObjectKey(contents);
-				if (!thumbnailKey) return Option.none();
+				if (!thumbnailKey || isViewerPrivateKey(thumbnailKey))
+					return Option.none();
 				const url = yield* bucket.getSignedObjectUrl(thumbnailKey);
 				return Option.some(url);
 			}),

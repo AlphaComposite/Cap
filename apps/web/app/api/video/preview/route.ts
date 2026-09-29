@@ -3,6 +3,7 @@ import { provideOptionalAuth, Storage, Videos } from "@cap/web-backend";
 import { Video } from "@cap/web-domain";
 import { Effect, Option } from "effect";
 import { type NextRequest, NextResponse } from "next/server";
+import { loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { previewRedirectOrigin } from "@/lib/mobile-request-origin";
 import { revisionArtifactUrl } from "@/lib/revision-media-grant";
@@ -48,7 +49,15 @@ export async function GET(request: NextRequest) {
 
 			const [video] = maybeVideo.value;
 			const flagged = isInstantFinishEnabledForOwner(video.ownerId);
-			if (flagged) {
+			const eligible =
+				flagged &&
+				(yield* Effect.promise(() =>
+					loadEligibleLegacy({
+						videoId: video.id,
+						ownerId: video.ownerId,
+					}),
+				));
+			if (flagged && !eligible) {
 				const url = yield* Effect.promise(() =>
 					revisionArtifactUrl({
 						videoId: video.id,

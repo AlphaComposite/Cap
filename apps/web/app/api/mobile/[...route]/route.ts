@@ -59,6 +59,7 @@ import {
 import { bumpOrganizationAccess } from "@/lib/acl-policy-epoch";
 import { currentVideoDuration } from "@/lib/current-video-duration";
 import { queueDesktopSegmentsFinalization } from "@/lib/desktop-segments-finalization";
+import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	resolveMobileRequestOrigin,
@@ -398,25 +399,33 @@ const getMobileThumbnailUrl = Effect.fn("Mobile.getThumbnailUrl")(function* (
 
 	const [video] = maybeVideo.value;
 	if (isInstantFinishEnabledForOwner(video.ownerId)) {
-		return yield* Effect.promise(() =>
-			revisionArtifactUrl({
+		const eligible = yield* Effect.promise(() =>
+			loadEligibleLegacy({
 				videoId: video.id,
 				ownerId: video.ownerId,
-				artifact: "thumbnail",
-				child: "thumbnail.jpg",
 			}),
 		);
+		if (!eligible) {
+			return yield* Effect.promise(() =>
+				revisionArtifactUrl({
+					videoId: video.id,
+					ownerId: video.ownerId,
+					artifact: "thumbnail",
+					child: "thumbnail.jpg",
+				}),
+			);
+		}
 	}
 	const [bucket] = yield* storage.getAccessForVideo(video);
 	const publishedThumbnail = getPublishedRecordingThumbnailKey(video);
-	if (publishedThumbnail) {
+	if (publishedThumbnail && !isViewerPrivateKey(publishedThumbnail)) {
 		return yield* bucket.getSignedObjectUrl(publishedThumbnail);
 	}
 	const response = yield* bucket.listObjects({
 		prefix: `${video.ownerId}/${video.id}/`,
 	});
 	const thumbnailKey = findScreenshotObjectKey(response.Contents ?? []);
-	if (!thumbnailKey) return null;
+	if (!thumbnailKey || isViewerPrivateKey(thumbnailKey)) return null;
 	return yield* bucket.getSignedObjectUrl(thumbnailKey);
 });
 
@@ -2187,30 +2196,43 @@ const getPlayback = Effect.fn("Mobile.getPlayback")(function* (
 			origin: publicOrigin,
 		}),
 	);
-	if (revisionPlayback.enabled) {
-		if (!revisionPlayback.url) {
-			return yield* Effect.fail(new HttpApiError.NotFound());
-		}
+	if (revisionPlayback.enabled && revisionPlayback.url) {
 		return {
 			kind: "hls" as const,
 			url: revisionPlayback.url,
 			transcriptUrl: revisionPlayback.transcriptUrl,
 		};
 	}
+	if (revisionPlayback.enabled && !revisionPlayback.url) {
+		const eligible = yield* Effect.promise(() =>
+			loadEligibleLegacy({
+				videoId: video.id,
+				ownerId: video.ownerId,
+			}),
+		);
+		if (!eligible) {
+			return yield* Effect.fail(new HttpApiError.NotFound());
+		}
+	}
 
 	const [bucket] = yield* storage.getAccessForVideo(video);
 	const source = Video.Video.getSource(video);
 
 	const transcriptKey = `${video.ownerId}/${video.id}/transcription.vtt`;
-	const transcriptUrl = yield* bucket.headObject(transcriptKey).pipe(
-		Effect.flatMap(() => bucket.getSignedObjectUrl(transcriptKey)),
-		Effect.map((url) =>
-			resolveMobileWebResourceUrl(url, serverEnv().WEB_URL, publicOrigin),
-		),
-		Effect.catchAll(() => Effect.succeed(null)),
-	);
+	const transcriptUrl = revisionPlayback.enabled
+		? null
+		: yield* bucket.headObject(transcriptKey).pipe(
+				Effect.flatMap(() => bucket.getSignedObjectUrl(transcriptKey)),
+				Effect.map((url) =>
+					resolveMobileWebResourceUrl(url, serverEnv().WEB_URL, publicOrigin),
+				),
+				Effect.catchAll(() => Effect.succeed(null)),
+			);
 
 	if (source instanceof Video.Mp4Source) {
+		if (isViewerPrivateKey(source.getFileKey())) {
+			return yield* Effect.fail(new HttpApiError.NotFound());
+		}
 		const signedUrl = yield* bucket.getSignedObjectUrl(source.getFileKey());
 		const url = resolveMobileWebResourceUrl(
 			signedUrl,
@@ -2221,6 +2243,9 @@ const getPlayback = Effect.fn("Mobile.getPlayback")(function* (
 	}
 
 	if (source instanceof Video.M3U8Source) {
+		if (isViewerPrivateKey(source.getPlaylistFileKey())) {
+			return yield* Effect.fail(new HttpApiError.NotFound());
+		}
 		const signedUrl = yield* bucket.getSignedObjectUrl(
 			source.getPlaylistFileKey(),
 		);

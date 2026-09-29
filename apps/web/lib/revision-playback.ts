@@ -38,21 +38,22 @@ export function planSharePlayback(input: {
 	isScreenshot: boolean;
 	hasActiveUpload: boolean;
 	sourceType: string;
+	eligibleLegacy?: boolean;
 }): SharePlaybackPlan {
-	if (input.enabled) {
+	if (!input.enabled || (input.eligibleLegacy && !input.currentRevisionId)) {
+		const isMp4 =
+			input.sourceType === "desktopMP4" || input.sourceType === "webMP4";
 		return {
-			prefetchResultMp4: false,
-			player: input.currentRevisionId ? "hls" : "unavailable",
-			omitRawFallback: true,
+			prefetchResultMp4: isMp4 && !input.isScreenshot && !input.hasActiveUpload,
+			player: "legacy",
+			omitRawFallback: false,
 			blockProcessingOverlay: false,
 		};
 	}
-	const isMp4 =
-		input.sourceType === "desktopMP4" || input.sourceType === "webMP4";
 	return {
-		prefetchResultMp4: isMp4 && !input.isScreenshot && !input.hasActiveUpload,
-		player: "legacy",
-		omitRawFallback: false,
+		prefetchResultMp4: false,
+		player: input.currentRevisionId ? "hls" : "unavailable",
+		omitRawFallback: true,
 		blockProcessingOverlay: false,
 	};
 }
@@ -113,8 +114,10 @@ export function buildClientRevisionPlayback(input: {
 	videoId: string;
 	origin: string;
 	grant: string | null;
+	eligibleLegacy?: boolean;
 }): ClientRevisionPlayback | null {
 	if (!input.publication.enabled) return null;
+	if (input.eligibleLegacy && !input.publication.currentRevisionId) return null;
 	if (!input.publication.currentRevisionId || !input.grant) {
 		return {
 			mode: "unavailable",

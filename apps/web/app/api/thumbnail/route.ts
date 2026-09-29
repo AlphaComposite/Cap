@@ -11,6 +11,7 @@ import { Policy, Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Exit } from "effect";
 import type { NextRequest } from "next/server";
+import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { revisionArtifactUrl } from "@/lib/revision-media-grant";
 import * as EffectRuntime from "@/lib/server";
@@ -70,30 +71,36 @@ export async function GET(request: NextRequest) {
 	const video = decodeStorageVideo(query);
 
 	if (isInstantFinishEnabledForOwner(video.ownerId)) {
-		const thumbnailUrl = await revisionArtifactUrl({
+		const eligible = await loadEligibleLegacy({
 			videoId: video.id,
 			ownerId: video.ownerId,
-			artifact: "thumbnail",
-			child: "thumbnail.jpg",
-			origin: request.nextUrl.origin,
 		});
-		if (!thumbnailUrl) {
-			return new Response(
-				JSON.stringify({
-					error: true,
-					message: "Thumbnail is not available for this revision",
-				}),
-				{ status: 404, headers: getHeaders(origin) },
-			);
+		if (!eligible) {
+			const thumbnailUrl = await revisionArtifactUrl({
+				videoId: video.id,
+				ownerId: video.ownerId,
+				artifact: "thumbnail",
+				child: "thumbnail.jpg",
+				origin: request.nextUrl.origin,
+			});
+			if (!thumbnailUrl) {
+				return new Response(
+					JSON.stringify({
+						error: true,
+						message: "Thumbnail is not available for this revision",
+					}),
+					{ status: 404, headers: getHeaders(origin) },
+				);
+			}
+			return new Response(JSON.stringify({ screen: thumbnailUrl }), {
+				status: 200,
+				headers: {
+					...getHeaders(origin),
+					"Cache-Control": "private, no-store",
+					"Referrer-Policy": "no-referrer",
+				},
+			});
 		}
-		return new Response(JSON.stringify({ screen: thumbnailUrl }), {
-			status: 200,
-			headers: {
-				...getHeaders(origin),
-				"Cache-Control": "private, no-store",
-				"Referrer-Policy": "no-referrer",
-			},
-		});
 	}
 
 	const prefix = `${video.ownerId}/${video.id}/`;
@@ -110,7 +117,7 @@ export async function GET(request: NextRequest) {
 				findScreenshotObjectKey(listResponse.Contents || []) ?? undefined;
 		}
 
-		if (!thumbnailKey)
+		if (!thumbnailKey || isViewerPrivateKey(thumbnailKey))
 			return new Response(
 				JSON.stringify({
 					error: true,
