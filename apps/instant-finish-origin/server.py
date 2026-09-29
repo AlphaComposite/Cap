@@ -36,6 +36,44 @@ ARTIFACT_RE = re.compile(
 SERVICE_HEADER = service_auth.SERVICE_HEADER
 NO_STORE = "private, no-store"
 REFERRER = "no-referrer"
+_SAFE_LOG_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_SAFE_LOG_KIND = re.compile(
+    r"^(?:playlist\.m3u8|init\.mp4|seg/[0-9]+\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg|download\.mp4)$"
+)
+
+
+def _log_failed(route: str, exc: BaseException, **fields: str) -> None:
+    name = type(exc).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        name = "Exception"
+    parts = [f"{route}-failed", name]
+    for key, pattern in (("video", _SAFE_LOG_ID), ("rev", _SAFE_LOG_ID), ("kind", _SAFE_LOG_KIND)):
+        value = fields.get(key)
+        if isinstance(value, str) and pattern.fullmatch(value):
+            parts.append(f"{key}={value}")
+    sys.stderr.write(" ".join(parts) + "\n")
+    sys.stderr.flush()
+
+
+def _log_dispatch_failure(raw_path: str, exc: BaseException) -> None:
+    path = urlparse(raw_path).path
+    media = MEDIA_RE.match(path)
+    if media is not None:
+        _log_failed("media", exc, video=media.group("video"), rev=media.group("rev"), kind=media.group("kind"))
+        return
+    source = SOURCE_PREPARE_RE.match(path)
+    if source is not None:
+        _log_failed("source-prepare", exc, video=source.group("video"))
+        return
+    revision = REVISION_PREPARE_RE.match(path)
+    if revision is not None:
+        _log_failed("revision-prepare", exc, rev=revision.group("rev"))
+        return
+    artifact = ARTIFACT_RE.match(path)
+    if artifact is not None:
+        _log_failed("artifact", exc, rev=artifact.group("rev"), kind=artifact.group("name"))
+        return
+    _log_failed("dispatch", exc)
 
 
 class OriginApp:
@@ -205,7 +243,7 @@ class OriginApp:
         except (StorageError, MezzanineError, lib_origin.MezzanineRequired):
             return self._json(409, {"error": "mezzanine_required"})
         except Exception as exc:
-            sys.stderr.write(f"source-prepare-failed {type(exc).__name__}\n")
+            _log_failed("source-prepare", exc, video=video_id)
             return self._text(500, b"unavailable")
         ttl = float(os.environ.get("ORIGIN_WARM_TTL_S", "600"))
         expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + ttl))
@@ -280,7 +318,7 @@ class OriginApp:
             except lib_origin.MezzanineRequired:
                 return self._text(409, b'{"error":"mezzanine_required"}\n', "application/json")
             except Exception as exc:
-                sys.stderr.write(f"revision-prepare-failed {type(exc).__name__}: {exc}\n")
+                _log_failed("revision-prepare", exc, video=video_id, rev=revision_id)
                 return self._text(500, b"unavailable")
             if slot.cancelled.is_set():
                 return self._text(499, b"superseded")
@@ -352,7 +390,8 @@ class OriginApp:
             return self._text(500, b"unavailable")
         except IndexError:
             return self._text(404, b"not found")
-        except (lib_origin.MezzanineRequired, lib_origin.CacheIntegrityError, Exception):
+        except (lib_origin.MezzanineRequired, lib_origin.CacheIntegrityError, Exception) as exc:
+            _log_failed("media", exc, video=video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
         if self.before_send is not None:
             self.before_send(snap)
@@ -643,7 +682,8 @@ class OriginApp:
                 }
             else:
                 return self._text(404, b"not found")
-        except Exception:
+        except Exception as exc:
+            _log_failed("artifact", exc, video=row.video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
         return 200, body, content_type, {"Cache-Control": NO_STORE, "Accept-Ranges": "bytes"}
 
@@ -1106,7 +1146,8 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             hdrs = headers if headers is not None else {key: value for key, value in self.headers.items()}
             try:
                 status, body, content_type, extra = app.handle(method, self.path, hdrs)
-            except Exception:
+            except Exception as exc:
+                _log_dispatch_failure(self.path, exc)
                 status, body, content_type, extra = 500, b"unavailable", "text/plain", {"Cache-Control": NO_STORE}
             self._emit(status, body, content_type, extra)
 
