@@ -6,6 +6,7 @@ import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { currentVideoDuration } from "@/lib/current-video-duration";
+import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { extractPosterFrameDataUri } from "@/lib/og/poster-frame";
 import { renderVideoOg } from "@/lib/og/video-og";
@@ -25,23 +26,29 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 	if (video.public === false) return renderVideoOg({ kind: "locked" });
 
 	if (isInstantFinishEnabledForOwner(video.ownerId)) {
-		const screenshotUrl = await revisionArtifactUrl({
+		const eligible = await loadEligibleLegacy({
 			videoId,
 			ownerId: video.ownerId,
-			artifact: "thumbnail",
-			child: "thumbnail.jpg",
-		}).catch(() => null);
-		return renderVideoOg({
-			kind: "video",
-			video: {
-				title: video.name,
-				ownerName: ownerName ?? undefined,
-				duration: currentDuration ?? undefined,
-				screenshotUrl:
-					screenshotUrl ??
-					`data:image/jpeg;base64,${neutralPreviewJpeg().toString("base64")}`,
-			},
 		});
+		if (!eligible) {
+			const screenshotUrl = await revisionArtifactUrl({
+				videoId,
+				ownerId: video.ownerId,
+				artifact: "thumbnail",
+				child: "thumbnail.jpg",
+			}).catch(() => null);
+			return renderVideoOg({
+				kind: "video",
+				video: {
+					title: video.name,
+					ownerName: ownerName ?? undefined,
+					duration: currentDuration ?? undefined,
+					screenshotUrl:
+						screenshotUrl ??
+						`data:image/jpeg;base64,${neutralPreviewJpeg().toString("base64")}`,
+				},
+			});
+		}
 	}
 
 	let screenshotUrl: string | undefined;
@@ -52,7 +59,7 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 				decodeStorageVideo(video),
 			);
 			const publishedThumbnail = getPublishedRecordingThumbnailKey(video);
-			if (publishedThumbnail) {
+			if (publishedThumbnail && !isViewerPrivateKey(publishedThumbnail)) {
 				screenshotUrl = yield* bucket.getSignedObjectUrl(publishedThumbnail);
 				return;
 			}
@@ -63,7 +70,7 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 				listResponse.Contents || [],
 			);
 
-			if (!screenshotKey) return;
+			if (!screenshotKey || isViewerPrivateKey(screenshotKey)) return;
 			screenshotUrl = yield* bucket.getSignedObjectUrl(screenshotKey);
 		}).pipe(runPromise);
 	} catch (error) {
