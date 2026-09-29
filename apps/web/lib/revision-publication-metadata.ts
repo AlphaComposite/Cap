@@ -33,7 +33,13 @@ export const ENCODER_PROFILE: RevisionEncoderProfile = {
 	mappingVersion: MAPPING_VERSION,
 };
 
-export const OUTBOX_JOBS = ["prewarm", "export", "purge", "readback"] as const;
+export const OUTBOX_JOBS = [
+	"prewarm",
+	"export",
+	"purge",
+	"readback",
+	"download",
+] as const;
 
 export type SourceIdentity = {
 	key: string;

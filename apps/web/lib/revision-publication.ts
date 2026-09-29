@@ -28,6 +28,7 @@ import {
 	deriveRevisionChapterState,
 	projectSourceChapters,
 } from "@/lib/revision-chapter-source";
+import { sweepRevisionDownloads } from "@/lib/revision-download-job";
 import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
 	snappedDurationError,
@@ -1553,12 +1554,20 @@ export async function flipCurrent(
 							failedSpec: spec,
 							previousSpec: allocated.previousSpec,
 						}
-					: {
-							job,
-							revisionId: allocated.revisionId,
-							durationSeconds: prepared.durationSeconds,
-							downloadReady: false,
-						},
+					: job === "download"
+						? {
+								job,
+								revisionId: allocated.revisionId,
+								videoId: input.videoId,
+								durationSeconds: prepared.durationSeconds,
+								downloadReady: false,
+							}
+						: {
+								job,
+								revisionId: allocated.revisionId,
+								durationSeconds: prepared.durationSeconds,
+								downloadReady: false,
+							},
 			createdAt: stamp,
 		});
 	}
@@ -1790,6 +1799,10 @@ export function startRevisionReadbackWorker(input: {
 			origin: input.origin,
 			now: input.now?.(),
 		}).then(async () => {
+			await sweepRevisionDownloads(input.database, {
+				origin: input.origin,
+				now: input.now?.(),
+			});
 			await input.onTick?.();
 		});
 		readbackInFlight = run;

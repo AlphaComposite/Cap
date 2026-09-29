@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -29,6 +30,7 @@ MEDIA_RE = re.compile(
 )
 SOURCE_PREPARE_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/prepare$")
 REVISION_PREPARE_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/prepare$")
+REVISION_DOWNLOAD_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/download$")
 ARTIFACT_RE = re.compile(
     r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/artifact/"
     r"(?P<name>playlist\.m3u8|init\.mp4|seg/(?P<n>\d+)\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg)$"
@@ -96,6 +98,12 @@ def _dispatch_failure_target(raw_path: str) -> tuple[str, dict[str, str]]:
         if rev is None:
             return "dispatch", {}
         return "revision-prepare", {"rev": rev}
+    download = REVISION_DOWNLOAD_RE.match(path)
+    if download is not None:
+        rev = download.group("rev")
+        if rev is None:
+            return "dispatch", {}
+        return "revision-download", {"rev": rev}
     artifact = ARTIFACT_RE.match(path)
     if artifact is not None:
         rev, kind = artifact.group("rev"), artifact.group("name")
@@ -120,6 +128,76 @@ def _log_dispatch_failure(raw_path: str, exc: BaseException) -> None:
         )
     except Exception:
         return
+
+
+class DownloadJob:
+    def __init__(self) -> None:
+        self.thread: threading.Thread | None = None
+        self.failed = False
+        self.reported = False
+
+
+def _lower_child_priority() -> None:
+    try:
+        os.nice(10)
+    except OSError:
+        return
+
+
+def _slot_cancelled(slot: lib_origin.EncodeSlot) -> None:
+    if slot.cancelled.is_set() or lib_origin.foreign_encode_active(slot.video_id, slot):
+        raise lib_origin.EncodeCancelled(slot.reason or "cancelled")
+
+
+def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> None:
+    dest = origin.cache / "download.mp4"
+    if dest.is_file() and dest.stat().st_size > 0:
+        return
+    _slot_cancelled(slot)
+    parts = [origin.ensure_init()]
+    for index in range(len(origin.segments)):
+        _slot_cancelled(slot)
+        parts.append(_without_styp(origin.ensure(index)))
+    _slot_cancelled(slot)
+    ident = f"{os.getpid()}-{threading.get_ident()}"
+    tmp_in = dest.with_name(f".download-in-{ident}.mp4")
+    tmp_out = dest.with_name(f".download-out-{ident}.mp4")
+    try:
+        with tmp_in.open("wb") as stream:
+            for part in parts:
+                stream.write(part)
+        os.chmod(tmp_in, 0o600)
+        result = limits.run_cmd(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(tmp_in),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(tmp_out),
+            ],
+            limits.FFMPEG_TIMEOUT_S,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            preexec_fn=_lower_child_priority,
+        )
+        if result.returncode or not tmp_out.is_file() or tmp_out.stat().st_size < 8:
+            raise RuntimeError("download remux failed")
+        os.chmod(tmp_out, 0o600)
+        os.replace(tmp_out, dest)
+        private(dest)
+    finally:
+        for path in (tmp_in, tmp_out):
+            if path.exists():
+                path.unlink()
 
 
 class OriginApp:
@@ -157,6 +235,10 @@ class OriginApp:
         self._origins: dict[str, tuple[lib_origin.Origin, float]] = {}
         self._lock = threading.Lock()
         self._prepare_locks: dict[str, threading.Lock] = {}
+        self._downloads: dict[str, DownloadJob] = {}
+        self._download_lock = threading.Lock()
+        self.download_gate: Callable[[], None] | None = None
+        self.download_builds = 0
         self._sha_cache = ShaIdentityCache(limits.SHA_CACHE_MAX)
         self._sha_ident: dict[str, tuple[ObjectIdentity, float]] = {}
         self._validated: dict[str, float] = {}
@@ -212,6 +294,9 @@ class OriginApp:
         revision = REVISION_PREPARE_RE.match(path)
         if revision:
             return self._prepare_revision(revision.group("rev"), headers)
+        download = REVISION_DOWNLOAD_RE.match(path)
+        if download:
+            return self._request_download(download.group("rev"))
         return self._text(404, b"not found")
 
     def _source_prepare_lock(self, cache_id: str) -> threading.Lock:
@@ -413,6 +498,160 @@ class OriginApp:
             if not joined:
                 slot.finish()
 
+    def _request_download(self, revision_id: str) -> tuple[int, bytes, str, dict[str, str]]:
+        row = self.store.revision(revision_id)
+        if row is None:
+            return self._text(404, b"not found")
+        ranges_path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
+        if not ranges_path.is_file():
+            return self._text(404, b"not found")
+        try:
+            ranges = json.loads(ranges_path.read_text())
+            origin = self._origin_for(row.video_id, row.source_id, ranges)
+        except Exception as exc:
+            _log_failed(
+                "revision-download",
+                exc,
+                video=row.video_id,
+                rev=revision_id,
+                kind="download.mp4",
+            )
+            return self._text(500, b"unavailable")
+        path = origin.cache / "download.mp4"
+        with self._download_lock:
+            ready = path.is_file() and path.stat().st_size > 0
+            job = self._downloads.get(revision_id)
+            if ready and (job is None or job.thread is None or not job.thread.is_alive()):
+                self._downloads.pop(revision_id, None)
+                return self._json(200, {"status": "ready"})
+            if ready:
+                return self._json(200, {"status": "ready"})
+            if job is not None and job.thread is not None and job.thread.is_alive():
+                return self._json(202, {"status": "building"})
+            if job is not None and job.failed and not job.reported:
+                job.reported = True
+                self._downloads.pop(revision_id, None)
+                return self._text(500, b"unavailable")
+            job = DownloadJob()
+            thread = threading.Thread(
+                target=self._run_download,
+                args=(revision_id, row.video_id, row.source_id, ranges, job),
+                name="revision-download",
+                daemon=True,
+            )
+            job.thread = thread
+            self._downloads[revision_id] = job
+            thread.start()
+            return self._json(202, {"status": "building"})
+
+    def _run_download(
+        self,
+        revision_id: str,
+        video_id: str,
+        source_id: str,
+        ranges: list[dict],
+        job: DownloadJob,
+    ) -> None:
+        try:
+            gate = self.download_gate
+            if gate is not None:
+                gate()
+            with self._download_lock:
+                self.download_builds += 1
+            while True:
+                slot = None
+                deadline = time.monotonic() + limits.FFMPEG_TIMEOUT_S
+                while slot is None:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("encode busy")
+                    slot = lib_origin.begin_download_hold(video_id, revision_id)
+                    if slot is None:
+                        time.sleep(0.05)
+                lib_origin.bind_encode_slot(slot)
+                try:
+                    origin = self._origin_for(video_id, source_id, ranges)
+                    remux_download(origin, slot)
+                    slot.finish()
+                    return
+                except lib_origin.EncodeCancelled:
+                    continue
+                finally:
+                    lib_origin.bind_encode_slot(None)
+                    if not slot.finished:
+                        slot.finish()
+        except Exception as exc:
+            job.failed = True
+            _log_failed(
+                "revision-download",
+                exc,
+                video=video_id,
+                rev=revision_id,
+                kind="download.mp4",
+            )
+
+    def _serve_download(
+        self,
+        snap: dict,
+        video_id: str,
+        revision_id: str,
+        headers,
+    ) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            path = self._download_media_path(snap)
+        except Exception as exc:
+            _log_failed("media", exc, video=video_id, rev=revision_id, kind="download.mp4")
+            return self._text(500, b"unavailable")
+        if path is None or not path.is_file() or path.stat().st_size <= 0:
+            return self._json(202, {"status": "unavailable"})
+        if self.before_send is not None:
+            self.before_send(snap)
+        again = self._recheck(video_id, revision_id)
+        if again is None or (
+            again["current_revision_id"] != snap["current_revision_id"]
+            or again["current_generation"] != snap["generation"]
+            or int(again["publication_epoch"]) != snap["publication_epoch"]
+            or int(again["policy_epoch"]) != snap["policy_epoch"]
+            or again["revision_state"] not in {"CURRENT", "READY"}
+            or int(again["revision_generation"]) != snap["generation"]
+        ):
+            return self._text(410, b"gone")
+        extra = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": NO_STORE,
+            "Referrer-Policy": REFERRER,
+        }
+        range_header = headers.get("Range")
+        if range_header:
+            status, chunk, content_range = read_file_range(path, range_header)
+            if status != 206:
+                return self._text(status, chunk)
+            extra["Content-Range"] = content_range
+            return status, chunk, "video/mp4", extra
+        return 200, path.read_bytes(), "video/mp4", extra
+
+    def _download_media_path(self, snap: dict) -> Path | None:
+        rev = snap["revision"]
+        ranges_path = self.cache / "revisions" / rev.revision_id / "ranges.json"
+        if not ranges_path.is_file():
+            return None
+        ranges = json.loads(ranges_path.read_text())
+        origin = self._origin_for(
+            rev.video_id,
+            rev.source_id,
+            ranges,
+            expected_sha=snap.get("source_sha256"),
+            source_key=snap.get("source_live_key"),
+        )
+        if origin.rev != _namespace(self.cache, rev.revision_id):
+            raise lib_origin.CacheIntegrityError("intent mismatch")
+        return origin.cache / "download.mp4"
+
+    def drain_downloads(self, timeout: float = 30) -> None:
+        with self._download_lock:
+            threads = [job.thread for job in self._downloads.values() if job.thread is not None]
+        for thread in threads:
+            thread.join(timeout)
+
     def _media(self, method: str, match: re.Match, query: dict, headers) -> tuple[int, bytes, str, dict[str, str]]:
         video_id = match.group("video")
         revision_id = match.group("rev")
@@ -428,7 +667,7 @@ class OriginApp:
             return snap
         kind = match.group("kind")
         if kind == "download.mp4":
-            return self._json(202, {"status": "unavailable"})
+            return self._serve_download(snap, video_id, revision_id, headers)
         range_header = headers.get("Range")
         prefetched = None
         try:

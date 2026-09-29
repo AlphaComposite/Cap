@@ -581,9 +581,6 @@ export const Share = ({
 	}, [playback, visibleComments]);
 	const revisionChapters =
 		playback?.mode === "hls" ? (aiData.chapters ?? []) : null;
-	const revisionDownloadPreparing = Boolean(
-		playback && (playback.mode === "unavailable" || !playback.downloadReady),
-	);
 
 	// Stable identities for the spreads handed to ShareVideo and Sidebar —
 	// without these, every Share render (each 2s status poll while a video is
@@ -795,14 +792,6 @@ export const Share = ({
 					)}
 				>
 					{header}
-					{revisionDownloadPreparing ? (
-						<p
-							className="px-1 pb-2 text-sm text-gray-11"
-							data-testid="revision-download-preparing"
-						>
-							Preparing
-						</p>
-					) : null}
 				</div>
 
 				{/*
