@@ -24,6 +24,12 @@ import type { Video } from "@cap/web-domain";
 import { sql } from "drizzle-orm";
 import { editAiContent } from "@/actions/videos/edit-ai-content";
 import { setGeneratedAiContent } from "@/lib/ai-content-metadata";
+import { INSTANT_FINISH_OWNER_ENV } from "@/lib/instant-finish-flag";
+import {
+	mergeOwnerChapterEdit,
+	projectSourceChapters,
+} from "@/lib/revision-chapter-source";
+import { createIdentityEditSpec } from "@/lib/video-edits";
 
 const videoId = "video-id" as Video.VideoId;
 const expected = {
@@ -34,6 +40,7 @@ let readSql: string;
 let writeSql: string;
 let writeParams: unknown[];
 let metadata: Record<string, unknown>;
+let revisionRows: unknown[] = [];
 
 beforeEach(() => {
 	metadata = {
@@ -41,6 +48,7 @@ beforeEach(() => {
 		aiGenerationStatus: "COMPLETE",
 		customCreatedAt: "2026-01-01",
 	};
+	revisionRows = [];
 	mocks.getCurrentUser.mockResolvedValue({ id: "owner" });
 	mocks.entitled.mockReturnValue(true);
 	mocks.lockedRead.mockImplementation(async () => [
@@ -55,6 +63,11 @@ beforeEach(() => {
 					readSql = JSON.stringify(dialect.sqlToQuery(condition));
 					return { for: mocks.lockedRead };
 				},
+				innerJoin: () => ({
+					innerJoin: () => ({
+						where: () => revisionRows,
+					}),
+				}),
 			}),
 		}),
 		update: () => ({
@@ -134,6 +147,27 @@ describe("editing AI content", () => {
 		expect(readSql).toContain("owner");
 		expect(mocks.lockedRead).toHaveBeenCalledWith("update");
 		expect(mocks.write).not.toHaveBeenCalled();
+	});
+	it("saves a summary-only edit when an existing chapter is shorter than 10 seconds", async () => {
+		const chapters = [
+			{ title: "Intro", start: 0 },
+			{ title: "Beat", start: 5 },
+		];
+		metadata = {
+			summary: "Original",
+			chapters,
+			aiGenerationStatus: "COMPLETE",
+		};
+		const result = await editAiContent(videoId, {
+			expected: { summary: "Original", chapters },
+			value: { summary: "Edited", chapters },
+		});
+		expect(result).toEqual({
+			success: true,
+			data: { summary: "Edited", chapters },
+		});
+		expect(writeSql).toContain("summaryManuallyEdited");
+		expect(writeSql).not.toContain("chaptersManuallyEdited");
 	});
 	it("updates only the summary while retaining concurrently updated chapters", async () => {
 		metadata.chapters = [{ title: "Updated elsewhere", start: 10 }];
@@ -272,6 +306,183 @@ describe("editing AI content", () => {
 			).success,
 		).toBe(false);
 		expect(mocks.revalidatePath).not.toHaveBeenCalled();
+	});
+});
+
+describe("owner chapter rules on a revision", () => {
+	const spec = createIdentityEditSpec(100);
+
+	async function asRevisionOwner(
+		source: { title: string; start: number }[],
+		visible: { title: string; start: number }[],
+		run: () => Promise<void>,
+		durationSeconds = 100,
+	) {
+		const previousOwners = process.env[INSTANT_FINISH_OWNER_ENV];
+		process.env[INSTANT_FINISH_OWNER_ENV] = "owner";
+		metadata = {
+			summary: "Original",
+			chapters: visible,
+			sourceChapters: source,
+			chaptersRevisionId: "rev-1",
+			aiGenerationStatus: "COMPLETE",
+		};
+		revisionRows = [
+			{
+				revisionId: "rev-1",
+				metadataSnapshot: {
+					durationSeconds,
+					chapters: visible,
+					captionsVtt: "",
+					summaryStatus: "persisted",
+					summaryDerived: false,
+					summaryText: null,
+					thumbnail: "unavailable",
+				},
+				canonicalSpec: spec,
+			},
+		];
+		mocks.lockedRead.mockResolvedValue([
+			{
+				metadata,
+				duration: 120,
+				ownerId: "owner",
+				transcriptionStatus: "COMPLETE",
+			},
+		]);
+		try {
+			await run();
+		} finally {
+			if (previousOwners === undefined) {
+				delete process.env[INSTANT_FINISH_OWNER_ENV];
+			} else {
+				process.env[INSTANT_FINISH_OWNER_ENV] = previousOwners;
+			}
+		}
+	}
+
+	it("measures the last chapter against the revision the viewer sees, not the source duration", async () => {
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "Late", start: 20 },
+		];
+		const visible = projectSourceChapters(source, spec);
+		const submitted = [
+			{ title: "A", start: 0 },
+			{ title: "Late", start: 35 },
+		];
+		expect(visible).not.toEqual(submitted);
+		await asRevisionOwner(
+			source,
+			visible,
+			async () => {
+				const result = await editAiContent(videoId, {
+					expected: { summary: "Original", chapters: visible },
+					value: { summary: "Original", chapters: submitted },
+				});
+				expect(result).toEqual({
+					success: false,
+					message: "Chapter 2 must be at least 10 seconds long.",
+				});
+				expect(mocks.write).not.toHaveBeenCalled();
+			},
+			40,
+		);
+	});
+
+	it("refuses a chapter shorter than 10 seconds and saves nothing", async () => {
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "HiddenB", start: 30 },
+			{ title: "C", start: 35 },
+		];
+		const visible = projectSourceChapters(source, spec);
+		await asRevisionOwner(source, visible, async () => {
+			const result = await editAiContent(videoId, {
+				expected: { summary: "Original", chapters: visible },
+				value: {
+					summary: "Original",
+					chapters: [
+						{ title: "A", start: 0 },
+						{ title: "C", start: 30 },
+						{ title: "D", start: 35 },
+					],
+				},
+			});
+			expect(result).toEqual({
+				success: false,
+				message: "Chapter 2 must be at least 10 seconds long.",
+			});
+			expect(mocks.write).not.toHaveBeenCalled();
+		});
+	});
+
+	it("rejects a projection mismatch and saves nothing", async () => {
+		const source = [
+			{ title: "HiddenBeacon", start: 0 },
+			{ title: "HiddenTwo", start: 4 },
+			{ title: "Kept", start: 9 },
+			{ title: "Moved", start: 20 },
+		];
+		const visible = projectSourceChapters(source, spec);
+		const submitted = visible.map((chapter, index) =>
+			index === visible.length - 1
+				? { ...chapter, start: chapter.start - 5 }
+				: chapter,
+		);
+		expect(
+			projectSourceChapters(
+				mergeOwnerChapterEdit({
+					previousSourceChapters: source,
+					currentSpec: spec,
+					editedChapters: submitted,
+				}),
+				spec,
+			),
+		).not.toEqual(submitted);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await asRevisionOwner(source, visible, async () => {
+				const result = await editAiContent(videoId, {
+					expected: { summary: "Original", chapters: visible },
+					value: { summary: "Original", chapters: submitted },
+				});
+				expect(result).toEqual({
+					success: false,
+					message:
+						"Couldn't save chapters. Please check the times and try again.",
+				});
+				expect(mocks.write).not.toHaveBeenCalled();
+				const logged = errorSpy.mock.calls.flat().join(" ");
+				expect(logged).toContain("OwnerChapterProjectionMismatch");
+				expect(logged).not.toContain("HiddenBeacon");
+				expect(logged).not.toContain("Kept");
+				expect(logged).not.toContain("Moved");
+			});
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("saves an empty owner list without restoring hidden chapters", async () => {
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "HiddenB", start: 30 },
+			{ title: "C", start: 35 },
+		];
+		const visible = projectSourceChapters(source, spec);
+		await asRevisionOwner(source, visible, async () => {
+			const result = await editAiContent(videoId, {
+				expected: { summary: "Original", chapters: visible },
+				value: { summary: "Original", chapters: [] },
+			});
+			expect(result).toEqual({
+				success: true,
+				data: { summary: "Original", chapters: [] },
+			});
+			expect(writeParams).toContain("[]");
+			expect(JSON.stringify(writeParams)).not.toContain("HiddenB");
+		});
 	});
 });
 

@@ -416,6 +416,35 @@ describe("summary autosave editor", () => {
 		},
 	);
 
+	it("autosaves a summary-only edit when an existing chapter is shorter than 10 seconds", async () => {
+		vi.useFakeTimers();
+		const content = {
+			summary: initialContent.summary,
+			chapters: [
+				{ title: "Introduction", start: 0 },
+				{ title: "Quick", start: 5 },
+			],
+		};
+		vi.mocked(editAiContent).mockResolvedValue({
+			success: true,
+			data: { ...content, summary: "Edited summary" },
+		});
+		await render(
+			createElement(SummaryEditor, {
+				videoId,
+				initialContent: content,
+				duration: 120,
+			}),
+		);
+		await change(summary(), "Edited summary");
+		expect(container.textContent).not.toContain("at least 10 seconds");
+		await act(async () => vi.advanceTimersByTimeAsync(700));
+		expect(editAiContent).toHaveBeenCalledWith(videoId, {
+			expected: content,
+			value: { ...content, summary: "Edited summary" },
+		});
+	});
+
 	it("keeps fractional chapter times when only the summary changes", async () => {
 		vi.useFakeTimers();
 		const content = {
@@ -511,5 +540,17 @@ describe("summary permissions", () => {
 		);
 		await act(async () => chapter?.click());
 		expect(onSeek).toHaveBeenCalledWith(60);
+	});
+
+	it("shows a short owner chapter error the same way as other chapter errors", async () => {
+		vi.useFakeTimers();
+		await render();
+		await change(chapterInputs().times[1] as HTMLInputElement, "00:05");
+		expect(container.textContent).toContain(
+			"Error: Chapter 1 must be at least 10 seconds long.",
+		);
+		expect(status()).toContain("Autosave paused");
+		await act(async () => vi.advanceTimersByTimeAsync(700));
+		expect(editAiContent).not.toHaveBeenCalled();
 	});
 });

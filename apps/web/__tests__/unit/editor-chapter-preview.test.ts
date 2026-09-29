@@ -8,6 +8,7 @@ import {
 	EditorChapterMarkers,
 	useEditorChapterPreview,
 } from "@/app/s/[videoId]/edit/EditorChapterPreview";
+import { deriveRevisionChapterState } from "@/lib/revision-chapter-source";
 import {
 	getEditSpecOutputDuration,
 	normalizeVideoEditSpec,
@@ -195,7 +196,7 @@ describe("editor chapter preview", () => {
 		).toEqual(originalMarkers);
 	});
 
-	it("matches publication for a flagged video without a stored source list", async () => {
+	it("keeps one chapter when a flagged cut leaves every chapter under 10 seconds", async () => {
 		const cutSection = normalizeVideoEditSpec({
 			version: 1,
 			sourceDuration: 10,
@@ -213,9 +214,49 @@ describe("editor chapter preview", () => {
 			),
 		);
 		const vtt = await readBlob(blobs.at(-1));
-		expect(vtt).toContain("Opening");
-		expect(vtt).not.toContain("Inside silence");
 		expect(vtt).toContain("Inside filler");
+		expect(vtt).not.toContain("Opening");
+		expect(vtt).not.toContain("Inside silence");
+		expect(vtt).not.toContain("Tail fallback");
+	});
+
+	it("agrees with publication when source chapters exist and a cut leaves one under 10 seconds", async () => {
+		const sourceChapters = [
+			{ title: "A", start: 0 },
+			{ title: "B", start: 30 },
+			{ title: "C", start: 40 },
+		];
+		const spec = normalizeVideoEditSpec({
+			version: 1,
+			sourceDuration: 100,
+			keepRanges: [
+				{ start: 0, end: 35 },
+				{ start: 40, end: 100 },
+			],
+		});
+		let projected: { title: string; start: number }[] = [];
+		function AgreeHarness() {
+			const preview = useEditorChapterPreview({
+				chapters: sourceChapters,
+				sourceChapters,
+				initialEditSpec: spec,
+				editSpec: spec,
+			});
+			projected = preview.projectedChapters;
+			return null;
+		}
+		await act(async () => root.render(createElement(AgreeHarness)));
+		const published = deriveRevisionChapterState({
+			storedChapters: sourceChapters,
+			storedSourceChapters: sourceChapters,
+			previousSpec: spec,
+			nextSpec: spec,
+		}).chapters;
+		expect(projected).toEqual(published);
+		expect(projected).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "C", start: 35 },
+		]);
 	});
 
 	it("previews the opening chapter at 0:00 after the cut start is restored", async () => {

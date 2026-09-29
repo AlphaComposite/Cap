@@ -864,10 +864,13 @@ async function AuthorizedContent({
 	const videoWithOrganizationInfo = {
 		...video,
 		duration:
-			revisionLoaded.playback?.mode === "hls" &&
-			revisionLoaded.playback.duration != null
+			(revisionLoaded.playback?.mode === "hls"
 				? revisionLoaded.playback.duration
-				: video.duration,
+				: null) ??
+			(revisionLoaded.publication.currentRevisionId
+				? revisionLoaded.publication.duration
+				: null) ??
+			video.duration,
 		metadata: filterVideoMetadataForViewer(metadata, rules.settings, isOwner),
 		hasActiveUpload,
 		ownerIsOverShareLimit,

@@ -1,3 +1,5 @@
+import { MIN_CHAPTER_SECONDS } from "@/lib/revision-chapter-source";
+
 export const MAX_SUMMARY_LENGTH = 50000;
 export const MAX_CHAPTERS = 200;
 export const MAX_CHAPTER_TITLE_LENGTH = 300;
@@ -32,6 +34,24 @@ export function validateAiContent(
 		const previous = content.chapters[index - 1];
 		if (previous && chapter.start <= previous.start) {
 			return "Chapter timestamps must be unique and in increasing order.";
+		}
+	}
+	return null;
+}
+
+export function validateOwnerChapterLengths(
+	chapters: AiContent["chapters"],
+	duration?: number | null,
+) {
+	if (chapters.length > 1) {
+		for (const [index, chapter] of chapters.entries()) {
+			const label = `Chapter ${index + 1}`;
+			const next = chapters[index + 1];
+			const end = next ? next.start : duration;
+			if (typeof end !== "number" || !(end > 0)) continue;
+			if (end - chapter.start < MIN_CHAPTER_SECONDS - 0.0005) {
+				return `${label} must be at least ${MIN_CHAPTER_SECONDS} seconds long.`;
+			}
 		}
 	}
 	return null;
