@@ -1636,7 +1636,8 @@ export function findPreviousPlayableTime(
 	for (let index = keepRanges.length - 1; index >= 0; index--) {
 		const range = keepRanges[index];
 		if (!range || range.start > currentTime + EPSILON) continue;
-		return Math.min(currentTime, range.end);
+		if (currentTime < range.end - EPSILON) return currentTime;
+		return Math.max(range.start, range.end - MIN_RANGE_DURATION);
 	}
 	return null;
 }
