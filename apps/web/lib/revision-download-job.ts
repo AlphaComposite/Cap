@@ -6,7 +6,7 @@ import {
 	videoPublication,
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { readArtifactReady } from "@/lib/revision-media-grant";
 import type { OriginClient } from "@/lib/revision-publication-origin";
 import { revisionSnapshotKeySql } from "@/lib/revision-snapshot-patch";
@@ -15,6 +15,8 @@ type Database = ReturnType<typeof db>;
 
 export const DOWNLOAD_MAX_FAILURES = 8;
 export const DOWNLOAD_MAX_POLLS = 240;
+export const DOWNLOAD_MAX_FAILED_CYCLES = 3;
+export const DOWNLOAD_FAILED_COOLDOWN_MS = 30 * 60 * 1000;
 const DOWNLOAD_LEASE_MS = 20_000;
 const DOWNLOAD_POLL_MS = 5_000;
 const DOWNLOAD_BACKOFF_MS = [
@@ -30,6 +32,7 @@ export type DownloadPlan =
 			failures: number;
 			polls: number;
 	  }
+	| { action: "yield" }
 	| { action: "exhausted"; failures: number };
 
 type DownloadPayload = {
@@ -54,9 +57,7 @@ export function planDownloadAttempt(input: {
 	if (input.originStatus === 200) return { action: "ready" };
 	if (input.originStatus === 202) {
 		const polls = input.polls + 1;
-		if (polls > DOWNLOAD_MAX_POLLS) {
-			return { action: "exhausted", failures: input.failures };
-		}
+		if (polls > DOWNLOAD_MAX_POLLS) return { action: "yield" };
 		return {
 			action: "retry",
 			notBeforeMs: input.nowMs + DOWNLOAD_POLL_MS,
@@ -321,7 +322,7 @@ async function finishDownload(
 		await deleteLeased(database, claimed.id, claimed.leaseToken);
 		return;
 	}
-	if (plan.action === "skip") {
+	if (plan.action === "skip" || plan.action === "yield") {
 		await deleteLeased(database, claimed.id, claimed.leaseToken);
 		return;
 	}
@@ -335,7 +336,10 @@ async function finishDownload(
 			.update(revisionArtifactStatus)
 			.set({
 				state: "FAILED",
-				attempts: plan.failures,
+				attempts: await downloadFailedCycle(
+					database,
+					claimed.payload.revisionId,
+				),
 				heartbeatAt: stamp,
 				leaseUntil: null,
 			})
@@ -357,15 +361,37 @@ async function finishDownload(
 	);
 }
 
+async function downloadFailedCycle(
+	database: Database,
+	revisionId: string,
+): Promise<number> {
+	const [row] = await database
+		.select({ attempts: revisionArtifactStatus.attempts })
+		.from(revisionArtifactStatus)
+		.where(
+			and(
+				eq(revisionArtifactStatus.revisionId, revisionId),
+				eq(revisionArtifactStatus.artifact, "download"),
+			),
+		)
+		.limit(1);
+	const prior = row?.attempts ?? 0;
+	if (prior > DOWNLOAD_MAX_FAILURES) return 1;
+	return Math.min(prior + 1, DOWNLOAD_MAX_FAILED_CYCLES);
+}
+
 async function enqueueCurrentDownloads(
 	database: Database,
 	stamp: Date,
 	limit: number,
 ) {
+	const cooledBefore = new Date(stamp.getTime() - DOWNLOAD_FAILED_COOLDOWN_MS);
 	const pending = await database
 		.select({
 			revisionId: revisionArtifactStatus.revisionId,
 			videoId: videoPublication.videoId,
+			state: revisionArtifactStatus.state,
+			attempts: revisionArtifactStatus.attempts,
 		})
 		.from(revisionArtifactStatus)
 		.innerJoin(
@@ -375,16 +401,45 @@ async function enqueueCurrentDownloads(
 		.where(
 			and(
 				eq(revisionArtifactStatus.artifact, "download"),
-				eq(revisionArtifactStatus.state, "PENDING"),
 				sql`not exists (
 					select 1 from ${revisionOutbox}
 					where ${revisionOutbox.job} = 'download'
 						and ${revisionOutbox.revisionId} = ${revisionArtifactStatus.revisionId}
 				)`,
+				or(
+					eq(revisionArtifactStatus.state, "PENDING"),
+					and(
+						eq(revisionArtifactStatus.state, "FAILED"),
+						or(
+							isNull(revisionArtifactStatus.heartbeatAt),
+							lte(revisionArtifactStatus.heartbeatAt, cooledBefore),
+						),
+						or(
+							lt(revisionArtifactStatus.attempts, DOWNLOAD_MAX_FAILED_CYCLES),
+							gt(revisionArtifactStatus.attempts, DOWNLOAD_MAX_FAILURES),
+						),
+					),
+				),
 			),
 		)
 		.limit(limit);
 	for (const row of pending) {
+		if (row.state === "FAILED") {
+			await database
+				.update(revisionArtifactStatus)
+				.set({
+					state: "PENDING",
+					leaseUntil: null,
+					...(row.attempts > DOWNLOAD_MAX_FAILURES ? { attempts: 0 } : {}),
+				})
+				.where(
+					and(
+						eq(revisionArtifactStatus.revisionId, row.revisionId),
+						eq(revisionArtifactStatus.artifact, "download"),
+						eq(revisionArtifactStatus.state, "FAILED"),
+					),
+				);
+		}
 		const [existing] = await database
 			.select({ id: revisionOutbox.id })
 			.from(revisionOutbox)

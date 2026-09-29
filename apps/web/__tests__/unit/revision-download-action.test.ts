@@ -115,7 +115,7 @@ describe("revision download action", () => {
 });
 
 describe("revision download job plan", () => {
-	it("retries a building origin without counting a failure, then stops", () => {
+	it("retries a building origin without counting a failure, then yields", () => {
 		const building = planDownloadAttempt({
 			current: false,
 			originStatus: 202,
@@ -165,6 +165,6 @@ describe("revision download job plan", () => {
 				polls: DOWNLOAD_MAX_POLLS,
 				nowMs: 1_000,
 			}).action,
-		).toBe("exhausted");
+		).toBe("yield");
 	});
 });
