@@ -9,6 +9,7 @@ import type { Video } from "@cap/web-domain";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { readArtifactReady } from "@/lib/revision-media-grant";
 import type { OriginClient } from "@/lib/revision-publication-origin";
+import { revisionSnapshotKeySql } from "@/lib/revision-snapshot-patch";
 
 type Database = ReturnType<typeof db>;
 
@@ -173,7 +174,7 @@ export async function markRevisionDownloadReady(
 	await database
 		.update(editRevision)
 		.set({
-			metadataSnapshot: sql`JSON_SET(COALESCE(${editRevision.metadataSnapshot}, JSON_OBJECT()), '$.downloadReady', CAST('true' AS JSON))`,
+			metadataSnapshot: revisionSnapshotKeySql("downloadReady"),
 			updatedAt: stamp,
 		})
 		.where(eq(editRevision.revisionId, revisionId));

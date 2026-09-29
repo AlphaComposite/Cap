@@ -38,6 +38,7 @@ class Grant:
     exp: int
     grant_id: str
     kid: str
+    artifact: str | None = None
 
 
 def _safe_int(value: object) -> int:
@@ -59,9 +60,17 @@ def canonical_grant_json(claims: dict) -> str:
         "exp",
         "grantId",
     )
-    if set(claims) != set(required) or claims.get("v") != 1:
+    if not isinstance(claims, dict) or claims.get("v") != 1 or set(required) - set(claims):
         raise GrantError(401, "claims")
-    return (
+    extra = set(claims) - set(required)
+    artifact = None
+    if extra == {"artifact"}:
+        if claims.get("artifact") != "download":
+            raise GrantError(401, "claims")
+        artifact = "download"
+    elif extra:
+        raise GrantError(401, "claims")
+    body = (
         '{"v":1,"videoId":'
         + json.dumps(claims["videoId"], ensure_ascii=False)
         + ',"revisionId":'
@@ -76,8 +85,10 @@ def canonical_grant_json(claims: dict) -> str:
         + str(_safe_int(claims["exp"]))
         + ',"grantId":'
         + json.dumps(claims["grantId"], ensure_ascii=False)
-        + "}"
     )
+    if artifact is not None:
+        body += ',"artifact":' + json.dumps(artifact, ensure_ascii=False)
+    return body + "}"
 
 
 def b64url_encode(data: bytes) -> str:
@@ -179,6 +190,7 @@ def verify(
             exp=int(claims["exp"]),
             grant_id=str(claims["grantId"]),
             kid=presented_kid,
+            artifact=str(claims["artifact"]) if "artifact" in claims else None,
         )
     except (TypeError, ValueError) as exc:
         raise GrantError(401, "claims") from exc

@@ -66,6 +66,7 @@ import {
 	type OriginClient,
 	type RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
+import { writeRevisionThumbnailSha } from "@/lib/revision-snapshot-patch";
 import {
 	isVerifiedJpeg,
 	thumbnailRetryDelayMs,
@@ -2462,18 +2463,5 @@ async function recordThumbnailStatus(
 		);
 	if (!verified || !status) return;
 	const digest = thumbnailSha256(thumb.body);
-	const [revision] = await database
-		.select({ metadataSnapshot: editRevision.metadataSnapshot })
-		.from(editRevision)
-		.where(eq(editRevision.revisionId, payload.revisionId));
-	if (!revision?.metadataSnapshot) return;
-	await database
-		.update(editRevision)
-		.set({
-			metadataSnapshot: {
-				...revision.metadataSnapshot,
-				thumbnailSha256: digest,
-			},
-		})
-		.where(eq(editRevision.revisionId, payload.revisionId));
+	await writeRevisionThumbnailSha(database, payload.revisionId, digest);
 }

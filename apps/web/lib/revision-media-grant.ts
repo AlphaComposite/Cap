@@ -240,6 +240,7 @@ export function issueGrantForPublication(input: {
 	policyEpoch: number;
 	origin?: string;
 	child?: string;
+	artifact?: "download";
 	now?: number;
 	env?: NodeJS.ProcessEnv;
 }) {
@@ -250,6 +251,7 @@ export function issueGrantForPublication(input: {
 			publicationEpoch: input.publicationEpoch,
 			policyEpoch: input.policyEpoch,
 			now: input.now,
+			artifact: input.artifact,
 		},
 		input.env,
 	);
@@ -482,21 +484,25 @@ export function denyFlaggedPresign(input: {
 	return { deny: false };
 }
 
-export async function revisionArtifactUrl(input: {
-	videoId: string;
-	ownerId: string;
-	artifact: "download" | "captions" | "thumbnail" | "preview";
-	child: string;
-	origin?: string;
-}): Promise<string | null> {
+export async function revisionArtifactUrl(
+	input: {
+		videoId: string;
+		ownerId: string;
+		artifact: "download" | "captions" | "thumbnail" | "preview";
+		child: string;
+		origin?: string;
+	},
+	executor: SqlExecutor = db(),
+): Promise<string | null> {
 	if (!isInstantFinishEnabledForOwner(input.ownerId)) return null;
-	const publication = await readPublication(input.videoId);
+	const publication = await readPublication(input.videoId, executor);
 	if (publication === "missing_table" || !publication?.currentRevisionId) {
 		return null;
 	}
 	const ready = await readArtifactReady(
 		publication.currentRevisionId,
 		input.artifact,
+		executor,
 	);
 	if (ready !== true) return null;
 	const issued = issueGrantForPublication({
@@ -506,6 +512,7 @@ export async function revisionArtifactUrl(input: {
 		policyEpoch: publication.policyEpoch,
 		origin: input.origin,
 		child: input.child,
+		artifact: input.artifact === "download" ? "download" : undefined,
 	});
 	return issued.playbackUrl;
 }

@@ -149,14 +149,24 @@ def _slot_cancelled(slot: lib_origin.EncodeSlot) -> None:
         raise lib_origin.EncodeCancelled(slot.reason or "cancelled")
 
 
+class DownloadYield(Exception):
+    pass
+
+
+def _yield_to_playback(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> None:
+    _slot_cancelled(slot)
+    if origin.playback_waiting():
+        raise DownloadYield()
+
+
 def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> None:
     dest = origin.cache / "download.mp4"
     if dest.is_file() and dest.stat().st_size > 0:
         return
-    _slot_cancelled(slot)
+    _yield_to_playback(origin, slot)
     parts = [origin.ensure_init()]
     for index in range(len(origin.segments)):
-        _slot_cancelled(slot)
+        _yield_to_playback(origin, slot)
         parts.append(_without_styp(origin.ensure(index)))
     _slot_cancelled(slot)
     ident = f"{os.getpid()}-{threading.get_ident()}"
@@ -560,6 +570,7 @@ class OriginApp:
                 self.download_builds += 1
             while True:
                 slot = None
+                origin = None
                 deadline = time.monotonic() + limits.FFMPEG_TIMEOUT_S
                 while slot is None:
                     if time.monotonic() > deadline:
@@ -574,6 +585,15 @@ class OriginApp:
                     slot.finish()
                     return
                 except lib_origin.EncodeCancelled:
+                    continue
+                except DownloadYield:
+                    if origin is None:
+                        continue
+                    deadline = time.monotonic() + 30
+                    while origin.playback_waiting():
+                        if time.monotonic() > deadline:
+                            break
+                        time.sleep(0.01)
                     continue
                 finally:
                     lib_origin.bind_encode_slot(None)
@@ -620,14 +640,19 @@ class OriginApp:
             "Cache-Control": NO_STORE,
             "Referrer-Policy": REFERRER,
         }
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return self._text(500, b"unavailable")
         range_header = headers.get("Range")
         if range_header:
-            status, chunk, content_range = read_file_range(path, range_header)
-            if status != 206:
-                return self._text(status, chunk)
-            extra["Content-Range"] = content_range
-            return status, chunk, "video/mp4", extra
-        return 200, path.read_bytes(), "video/mp4", extra
+            parsed_range = parse_byte_range(range_header, size)
+            if parsed_range is None:
+                return self._text(416, b"range")
+            start, end = parsed_range
+            extra["Content-Range"] = f"bytes {start}-{end}/{size}"
+            return 206, StreamedBody(path, start, end - start + 1), "video/mp4", extra
+        return 200, StreamedBody(path, 0, size), "video/mp4", extra
 
     def _download_media_path(self, snap: dict) -> Path | None:
         rev = snap["revision"]
@@ -666,6 +691,8 @@ class OriginApp:
         if isinstance(snap, tuple):
             return snap
         kind = match.group("kind")
+        if kind == "download.mp4" and parsed.artifact != "download":
+            return self._text(403, b"forbidden")
         if kind == "download.mp4":
             return self._serve_download(snap, video_id, revision_id, headers)
         range_header = headers.get("Range")
@@ -1123,6 +1150,50 @@ def _ts(value: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
+DOWNLOAD_CHUNK_BYTES = 256 * 1024
+
+
+class StreamedBody:
+    def __init__(self, path: Path, start: int, length: int, chunk_size: int = DOWNLOAD_CHUNK_BYTES) -> None:
+        self.path = path
+        self.start = start
+        self.length = length
+        self.chunk_size = chunk_size
+
+    def __iter__(self):
+        remaining = self.length
+        stream = self.path.open("rb")
+        try:
+            stream.seek(self.start)
+            while remaining > 0:
+                chunk = stream.read(min(self.chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+        finally:
+            stream.close()
+
+
+def parse_byte_range(header: str, size: int) -> tuple[int, int] | None:
+    if not header.startswith("bytes=") or "," in header or size <= 0:
+        return None
+    spec = header.split("=", 1)[1]
+    if "-" not in spec:
+        return None
+    start_s, end_s = spec.split("-", 1)
+    if start_s == "":
+        return None
+    try:
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size or end < start:
+        return None
+    return start, min(end, size - 1)
+
+
 def read_file_range(path: Path, header: str) -> tuple[int, bytes, str]:
     size = path.stat().st_size
     if not header.startswith("bytes=") or "," in header:
@@ -1455,17 +1526,27 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
                 status, body, content_type, extra = 500, b"unavailable", "text/plain", {"Cache-Control": NO_STORE}
             self._emit(status, body, content_type, extra)
 
-        def _emit(self, status: int, body: bytes, content_type: str, extra: dict) -> None:
-            extra.setdefault("Cache-Control", NO_STORE)
-            extra.setdefault("Referrer-Policy", REFERRER)
+        def _emit(self, status: int, body: bytes | StreamedBody, content_type: str, extra: dict) -> None:
+            streamed = isinstance(body, StreamedBody)
+            length = body.length if streamed else len(body)
+            headers = dict(extra)
+            headers.pop("Content-Length", None)
+            headers.setdefault("Cache-Control", NO_STORE)
+            headers.setdefault("Referrer-Policy", REFERRER)
             try:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                for key, value in extra.items():
+                self.send_header("Content-Length", str(length))
+                for key, value in headers.items():
                     self.send_header(key, value)
                 self.end_headers()
-                if self.command != "HEAD" and body:
+                if self.command == "HEAD" or length == 0:
+                    return
+                if streamed:
+                    for chunk in body:
+                        self.wfile.write(chunk)
+                    return
+                if body:
                     self.wfile.write(body)
             except BrokenPipeError:
                 return

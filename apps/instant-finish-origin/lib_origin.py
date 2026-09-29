@@ -1041,6 +1041,8 @@ class Origin:
         self.productions: list[dict] = []
         self._last_produce: dict | None = None
         self._served_body = b""
+        self._playback_lock = threading.Lock()
+        self._playback_waiting = 0
         self._write_namespace_record()
 
     def keyframes(self) -> list[dict]:
@@ -1220,7 +1222,30 @@ class Origin:
                 raise RemovedRangeError("produced a removed frame")
         return body, elapsed
 
+    def begin_playback(self) -> None:
+        with self._playback_lock:
+            self._playback_waiting += 1
+
+    def end_playback(self) -> None:
+        with self._playback_lock:
+            if self._playback_waiting > 0:
+                self._playback_waiting -= 1
+
+    def playback_waiting(self) -> bool:
+        with self._playback_lock:
+            return self._playback_waiting > 0
+
     def ensure(self, index: int) -> bytes:
+        playback = current_encode_slot() is None
+        if playback:
+            self.begin_playback()
+        try:
+            return self._ensure(index)
+        finally:
+            if playback:
+                self.end_playback()
+
+    def _ensure(self, index: int) -> bytes:
         if index < 0 or index >= len(self.segments):
             raise IndexError(index)
         wall0 = time.perf_counter()
@@ -1251,6 +1276,16 @@ class Origin:
         return self._served_body
 
     def ensure_init(self) -> bytes:
+        playback = current_encode_slot() is None
+        if playback:
+            self.begin_playback()
+        try:
+            return self._ensure_init()
+        finally:
+            if playback:
+                self.end_playback()
+
+    def _ensure_init(self) -> bytes:
         with self._lock:
             if self._init_bytes is not None and self.init_path.is_file() and sidecar_path(self.init_path).is_file():
                 return self._init_bytes
