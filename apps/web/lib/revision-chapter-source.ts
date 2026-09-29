@@ -1,10 +1,10 @@
-import type { VideoChapter } from "@cap/database/types";
+import type { VideoEditSpec } from "@cap/database/types";
 import {
 	getEditSpecOutputDuration,
 	mapOutputChaptersToSource,
 	mapSourceTimeToOutputTime,
 	normalizeKeepRanges,
-	type VideoEditSpec,
+	type VideoChapter,
 } from "@/lib/video-edits";
 
 const EPSILON = 0.001;
