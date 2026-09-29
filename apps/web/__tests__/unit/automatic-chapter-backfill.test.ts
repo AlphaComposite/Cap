@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type AutomaticChapterBackfillRow,
 	classifyAutomaticChapterBackfill,
+	isKnownLegacyAutomaticChapterState,
 	parseAutomaticChapterBackfillArgs,
 	runAutomaticChapterBackfill,
 } from "@/lib/automatic-chapter-backfill";
@@ -111,6 +112,45 @@ describe("automatic chapter backfill eligibility", () => {
 				},
 			}),
 		).toEqual({
+			eligible: true,
+			reason: "chapters-inadequate-for-duration",
+			chapterCount: 1,
+		});
+	});
+
+	it("does not treat one visible chapter as legacy when source chapters hold more", () => {
+		const row = {
+			...baseRow,
+			duration: 1972.9,
+			metadata: {
+				aiGenerationStatus: "COMPLETE" as const,
+				chapters: [{ title: "Only visible", start: 0 }],
+				sourceChapters: [
+					{ title: "Only visible", start: 0 },
+					{ title: "Hidden short", start: 30 },
+				],
+			},
+		};
+		expect(isKnownLegacyAutomaticChapterState(row)).toBe(false);
+		expect(classifyAutomaticChapterBackfill(row)).toEqual({
+			eligible: false,
+			reason: "chapters-valid",
+			chapterCount: 1,
+		});
+	});
+
+	it("still treats one visible chapter as legacy when source chapters are not longer", () => {
+		const row = {
+			...baseRow,
+			duration: 1972.9,
+			metadata: {
+				aiGenerationStatus: "COMPLETE" as const,
+				chapters: [{ title: "Only chapter", start: 0 }],
+				sourceChapters: [{ title: "Only chapter", start: 0 }],
+			},
+		};
+		expect(isKnownLegacyAutomaticChapterState(row)).toBe(true);
+		expect(classifyAutomaticChapterBackfill(row)).toEqual({
 			eligible: true,
 			reason: "chapters-inadequate-for-duration",
 			chapterCount: 1,
