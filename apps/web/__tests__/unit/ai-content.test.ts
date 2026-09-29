@@ -4,6 +4,7 @@ import {
 	MAX_CHAPTERS,
 	parseChapterTime,
 	validateAiContent,
+	validateOwnerChapterLengths,
 } from "@/lib/ai-content";
 
 const content = (starts: number[]) => ({
@@ -47,28 +48,9 @@ describe("AI content validation", () => {
 		expect(validateAiContent({ summary: "", chapters: [] }, 10)).toBeNull();
 	});
 	it("allows strictly ordered chapters within duration", () => {
-		expect(validateAiContent(content([0, 10.125, 40]), 60)).toBeNull();
+		expect(validateAiContent(content([0, 10.125, 59]), 60)).toBeNull();
 	});
-	it("accepts an owner chapter of exactly 10 seconds", () => {
-		expect(validateAiContent(content([0, 10, 20]), 30)).toBeNull();
-		expect(validateAiContent(content([0, 10]), 20)).toBeNull();
-	});
-	it("accepts a single chapter shorter than 10 seconds", () => {
-		expect(validateAiContent(content([0]), 7)).toBeNull();
-		expect(validateAiContent(content([2]), 6)).toBeNull();
-	});
-	it("rejects an owner chapter shorter than 10 seconds", () => {
-		expect(validateAiContent(content([0, 30, 35]), 100)).toBe(
-			"Chapter 2 must be at least 10 seconds long.",
-		);
-		expect(validateAiContent(content([0, 9.999]), 30)).toBe(
-			"Chapter 1 must be at least 10 seconds long.",
-		);
-		expect(validateAiContent(content([0, 95]), 100)).toBe(
-			"Chapter 2 must be at least 10 seconds long.",
-		);
-	});
-	it("keeps earlier chapter errors ahead of the length rule", () => {
+	it("keeps earlier chapter errors ahead of a short span", () => {
 		expect(validateAiContent(content([5, 1]), 60)).toContain(
 			"increasing order",
 		);
@@ -119,5 +101,35 @@ describe("AI content validation", () => {
 				content(Array.from({ length: MAX_CHAPTERS + 1 }, (_, i) => i)),
 			),
 		).toContain("no more than");
+	});
+});
+
+describe("owner chapter lengths", () => {
+	it("accepts an owner chapter of exactly 10 seconds", () => {
+		expect(
+			validateOwnerChapterLengths(content([0, 10, 20]).chapters, 30),
+		).toBeNull();
+		expect(
+			validateOwnerChapterLengths(content([0, 10]).chapters, 20),
+		).toBeNull();
+	});
+	it("accepts a single chapter shorter than 10 seconds", () => {
+		expect(validateOwnerChapterLengths(content([0]).chapters, 7)).toBeNull();
+		expect(validateOwnerChapterLengths(content([2]).chapters, 6)).toBeNull();
+	});
+	it("rejects an owner chapter shorter than 10 seconds", () => {
+		expect(
+			validateOwnerChapterLengths(content([0, 30, 35]).chapters, 100),
+		).toBe("Chapter 2 must be at least 10 seconds long.");
+		expect(validateOwnerChapterLengths(content([0, 9.999]).chapters, 30)).toBe(
+			"Chapter 1 must be at least 10 seconds long.",
+		);
+		expect(validateOwnerChapterLengths(content([0, 95]).chapters, 100)).toBe(
+			"Chapter 2 must be at least 10 seconds long.",
+		);
+	});
+	it("does not apply inside validateAiContent", () => {
+		expect(validateAiContent(content([0, 30, 35]), 100)).toBeNull();
+		expect(validateAiContent(content([0, 9.999]), 30)).toBeNull();
 	});
 });

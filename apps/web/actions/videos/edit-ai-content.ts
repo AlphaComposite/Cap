@@ -20,6 +20,7 @@ import {
 	MAX_SUMMARY_LENGTH,
 	normalizeAiContent,
 	validateAiContent,
+	validateOwnerChapterLengths,
 } from "@/lib/ai-content";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
@@ -138,11 +139,16 @@ export async function editAiContent(
 				summary: summaryChanged ? value.summary : current.summary,
 				chapters: chaptersChanged ? value.chapters : current.chapters,
 			};
-			const validationError = validateAiContent(
-				next,
-				revision?.durationSeconds ?? video.duration,
-			);
+			const duration = revision?.durationSeconds ?? video.duration;
+			const validationError = validateAiContent(next, duration);
 			if (validationError) return { success: false, message: validationError };
+			if (chaptersChanged) {
+				const lengthError = validateOwnerChapterLengths(
+					next.chapters,
+					duration,
+				);
+				if (lengthError) return { success: false, message: lengthError };
+			}
 			let updatedMetadata = sql`COALESCE(${videos.metadata}, JSON_OBJECT())`;
 			if (summaryChanged) {
 				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.summary', ${next.summary}, '$.summaryManuallyEdited', CAST('true' AS JSON))`;

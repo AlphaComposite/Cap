@@ -416,6 +416,35 @@ describe("summary autosave editor", () => {
 		},
 	);
 
+	it("autosaves a summary-only edit when an existing chapter is shorter than 10 seconds", async () => {
+		vi.useFakeTimers();
+		const content = {
+			summary: initialContent.summary,
+			chapters: [
+				{ title: "Introduction", start: 0 },
+				{ title: "Quick", start: 5 },
+			],
+		};
+		vi.mocked(editAiContent).mockResolvedValue({
+			success: true,
+			data: { ...content, summary: "Edited summary" },
+		});
+		await render(
+			createElement(SummaryEditor, {
+				videoId,
+				initialContent: content,
+				duration: 120,
+			}),
+		);
+		await change(summary(), "Edited summary");
+		expect(container.textContent).not.toContain("at least 10 seconds");
+		await act(async () => vi.advanceTimersByTimeAsync(700));
+		expect(editAiContent).toHaveBeenCalledWith(videoId, {
+			expected: content,
+			value: { ...content, summary: "Edited summary" },
+		});
+	});
+
 	it("keeps fractional chapter times when only the summary changes", async () => {
 		vi.useFakeTimers();
 		const content = {

@@ -36,10 +36,17 @@ export function validateAiContent(
 			return "Chapter timestamps must be unique and in increasing order.";
 		}
 	}
-	if (content.chapters.length > 1) {
-		for (const [index, chapter] of content.chapters.entries()) {
+	return null;
+}
+
+export function validateOwnerChapterLengths(
+	chapters: AiContent["chapters"],
+	duration?: number | null,
+) {
+	if (chapters.length > 1) {
+		for (const [index, chapter] of chapters.entries()) {
 			const label = `Chapter ${index + 1}`;
-			const next = content.chapters[index + 1];
+			const next = chapters[index + 1];
 			const end = next ? next.start : duration;
 			if (typeof end !== "number" || !(end > 0)) continue;
 			if (end - chapter.start < MIN_CHAPTER_SECONDS - 0.0005) {
