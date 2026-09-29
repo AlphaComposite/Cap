@@ -6,8 +6,14 @@ import {
 } from "node:crypto";
 
 export const REVISION_MEDIA_GRANT_TTL_SECONDS = 60;
+export const REVISION_MEDIA_DOWNLOAD_GRANT_TTL_SECONDS = 30 * 60;
 export const REVISION_MEDIA_GRANT_SKEW_SECONDS = 5;
 export const REVISION_MEDIA_GRANT_VERSION = 1 as const;
+export function revisionMediaGrantTtlSeconds(artifact?: "download"): number {
+	return artifact === "download"
+		? REVISION_MEDIA_DOWNLOAD_GRANT_TTL_SECONDS
+		: REVISION_MEDIA_GRANT_TTL_SECONDS;
+}
 
 export const REVISION_MEDIA_CACHE_CONTROL = "private, no-store";
 export const REVISION_MEDIA_REFERRER_POLICY = "no-referrer";
@@ -28,6 +34,7 @@ export type RevisionMediaGrantPayload = {
 	iat: number;
 	exp: number;
 	grantId: string;
+	artifact?: "download";
 };
 
 export type GrantDenial =
@@ -61,7 +68,9 @@ export function grantDenialStatus(denial: GrantDenial): 401 | 403 | 410 {
 }
 
 export function canonicalGrantJson(payload: RevisionMediaGrantPayload): string {
-	return `{"v":1,"videoId":${JSON.stringify(payload.videoId)},"revisionId":${JSON.stringify(payload.revisionId)},"publicationEpoch":${payload.publicationEpoch},"policyEpoch":${payload.policyEpoch},"iat":${payload.iat},"exp":${payload.exp},"grantId":${JSON.stringify(payload.grantId)}}`;
+	const base = `{"v":1,"videoId":${JSON.stringify(payload.videoId)},"revisionId":${JSON.stringify(payload.revisionId)},"publicationEpoch":${payload.publicationEpoch},"policyEpoch":${payload.policyEpoch},"iat":${payload.iat},"exp":${payload.exp},"grantId":${JSON.stringify(payload.grantId)}`;
+	if (payload.artifact === undefined) return `${base}}`;
+	return `${base},"artifact":${JSON.stringify(payload.artifact)}}`;
 }
 
 const isSafeInteger = (value: unknown): value is number =>
@@ -133,6 +142,9 @@ const signatureMatches = (
 const isGrantPayload = (value: unknown): value is RevisionMediaGrantPayload => {
 	if (typeof value !== "object" || value === null) return false;
 	const record = value as Record<string, unknown>;
+	const artifact = record.artifact;
+	const hasArtifact = Object.hasOwn(record, "artifact");
+	if (hasArtifact && artifact !== "download") return false;
 	return (
 		record.v === 1 &&
 		typeof record.videoId === "string" &&
@@ -145,7 +157,7 @@ const isGrantPayload = (value: unknown): value is RevisionMediaGrantPayload => {
 		isSafeInteger(record.exp) &&
 		typeof record.grantId === "string" &&
 		GRANT_ID_PATTERN.test(record.grantId) &&
-		Object.keys(record).length === 8
+		Object.keys(record).length === (hasArtifact ? 9 : 8)
 	);
 };
 
@@ -167,9 +179,10 @@ export function signRevisionMediaGrant(
 		publicationEpoch: input.publicationEpoch,
 		policyEpoch: input.policyEpoch,
 		iat,
-		exp: iat + REVISION_MEDIA_GRANT_TTL_SECONDS,
+		exp: iat + revisionMediaGrantTtlSeconds(input.artifact),
 		grantId: input.grantId ?? randomBytes(16).toString("base64url"),
 	};
+	if (input.artifact === "download") payload.artifact = "download";
 	const encoded = Buffer.from(canonicalGrantJson(payload), "utf8").toString(
 		"base64url",
 	);
@@ -210,7 +223,10 @@ export function verifyRevisionMediaGrant(
 	if (!constantTimeEqual(encoded, canonical)) {
 		return { ok: false, denial: "malformed" };
 	}
-	if (parsed.exp - parsed.iat !== REVISION_MEDIA_GRANT_TTL_SECONDS) {
+	if (
+		parsed.exp - parsed.iat !==
+		revisionMediaGrantTtlSeconds(parsed.artifact)
+	) {
 		return { ok: false, denial: "malformed" };
 	}
 	const now = options.now ?? Math.floor(Date.now() / 1000);

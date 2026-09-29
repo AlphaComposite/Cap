@@ -75,6 +75,10 @@ export type OriginClient = {
 		name: string;
 		method: "HEAD" | "GET";
 	}): Promise<OriginArtifact>;
+	requestDownload?(input: {
+		videoId: string;
+		revisionId: string;
+	}): Promise<{ status: number }>;
 };
 
 export function originBaseUrl(): string {
@@ -178,6 +182,12 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 				body,
 				contentType: response.headers.get("content-type"),
 			};
+		},
+		async requestDownload(input) {
+			const path = `/internal/revisions/${input.revisionId}/download`;
+			const encoded = JSON.stringify({ videoId: input.videoId });
+			const response = await signedFetch(path, "POST", encoded);
+			return { status: response.status };
 		},
 	};
 }

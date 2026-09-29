@@ -53,6 +53,7 @@ import {
 } from "@/lib/permissions/roles";
 import { resolveDefaultPlaybackSpeed } from "@/lib/playback-speed";
 import { getPublicShareVideo } from "@/lib/public-share-video";
+import { shareCanDownload } from "@/lib/revision-playback";
 import { loadRevisionPlayback } from "@/lib/revision-playback-load";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
@@ -944,13 +945,10 @@ async function AuthorizedContent({
 						spacesData={spacesData}
 						branding={getSharePageBranding(videoWithOrganizationInfo)}
 						canManageSharePageBranding={canManageSharePageBranding}
-						canDownload={
-							revisionLoaded.playback
-								? revisionLoaded.playback.mode === "hls" &&
-									revisionLoaded.playback.downloadReady &&
-									canDownloadVideo
-								: canDownloadVideo
-						}
+						canDownload={shareCanDownload({
+							playback: revisionLoaded.playback,
+							permitted: canDownloadVideo,
+						})}
 						hasEdits={videoHasEdits}
 						// Caught separately from the copy the sidebar consumes: the
 						// header renders for everyone, and a failed count is worth

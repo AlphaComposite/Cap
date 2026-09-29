@@ -337,6 +337,16 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
 	HttpApiSchema.annotations({ status: 404 }),
 ) {}
 
+export const DOWNLOAD_PREPARING_MESSAGE =
+	"Preparing your download. Try again in a minute.";
+
+export class DownloadPreparingError extends Schema.TaggedError<DownloadPreparingError>()(
+	"DownloadPreparingError",
+	{
+		message: Schema.Literal(DOWNLOAD_PREPARING_MESSAGE),
+	},
+) {}
+
 export class VideoRpcs extends RpcGroup.make(
 	Rpc.make("VideoDelete", {
 		payload: VideoId,
@@ -376,6 +386,7 @@ export class VideoRpcs extends RpcGroup.make(
 			InternalError,
 			PolicyDeniedError,
 			VerifyVideoPasswordError,
+			DownloadPreparingError,
 		),
 	}),
 	Rpc.make("VideosGetThumbnails", {
