@@ -24,6 +24,9 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/actions/videos/download", () => ({
 	getVideoDownloadInfo: vi.fn(),
 }));
+vi.mock("@/actions/videos/publish-revision", () => ({
+	getEditorInstantFinishState: vi.fn(async () => null),
+}));
 vi.mock("@/actions/videos/save-edits", () => ({
 	restoreVideoToOriginal: vi.fn(),
 	saveVideoEdits: vi.fn(),
