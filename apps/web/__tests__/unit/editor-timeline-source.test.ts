@@ -234,6 +234,48 @@ describe("editor source timeline", () => {
 		expect(container.textContent).not.toContain("00:06.00");
 	});
 
+	it("steps backward over a removed section with the left arrow", async () => {
+		await renderEditor();
+		const timeline = timelineElement(container);
+		const preview = container.querySelector(
+			"[data-editor-preview]",
+		) as HTMLVideoElement;
+		timeline.getBoundingClientRect = () =>
+			({
+				x: 0,
+				y: 0,
+				left: 0,
+				top: 0,
+				right: 1000,
+				bottom: 64,
+				width: 1000,
+				height: 64,
+				toJSON() {
+					return {};
+				},
+			}) as DOMRect;
+		await act(async () => {
+			timeline.dispatchEvent(
+				new MouseEvent("pointerdown", {
+					bubbles: true,
+					cancelable: true,
+					button: 0,
+					clientX: 600,
+					clientY: 32,
+				}),
+			);
+		});
+		expect(preview.currentTime).toBe(6);
+
+		await act(async () => {
+			window.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+			);
+		});
+
+		expect(preview.currentTime).toBeCloseTo(4);
+	});
+
 	it("places an output chapter at its source time on the full timeline", async () => {
 		await renderEditor([{ title: "Middle", start: 5 }]);
 		const marker = container.querySelector(
