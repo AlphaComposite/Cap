@@ -576,6 +576,21 @@ describe("chapters shorter than 10 seconds are hidden after an edit", () => {
 		]);
 	});
 
+	it("clears hidden chapters when the owner deletes every visible chapter", () => {
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "B", start: 30 },
+			{ title: "C", start: 35 },
+		];
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: source,
+			currentSpec: full,
+			editedChapters: [],
+		});
+		expect(edited).toEqual([]);
+		expect(projectSourceChapters(edited, full)).toEqual([]);
+	});
+
 	it("projects the same chapters for the editor preview and publication", () => {
 		const preview = projectSourceChapters(withShortMiddle, shortMiddle);
 		const published = deriveRevisionChapterState({

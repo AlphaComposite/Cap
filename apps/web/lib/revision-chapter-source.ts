@@ -284,6 +284,7 @@ export function mergeOwnerChapterEdit(input: {
 	currentSpec: VideoEditSpec;
 	editedChapters: readonly VideoChapter[];
 }): VideoChapter[] {
+	if (input.editedChapters.length === 0) return [];
 	const visible = projectWithSource(
 		input.previousSourceChapters,
 		input.currentSpec,

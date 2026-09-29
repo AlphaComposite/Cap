@@ -26,6 +26,7 @@ import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	mergeOwnerChapterEdit,
 	outputChaptersToSource,
+	projectSourceChapters,
 } from "@/lib/revision-chapter-source";
 import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
 import { parseVideoEditSpec } from "@/lib/video-edits";
@@ -163,6 +164,23 @@ export async function editAiContent(
 					currentSpec: revision.spec,
 					editedChapters: next.chapters,
 				});
+				const projected = projectSourceChapters(sourceChapters, revision.spec);
+				const submitted = next.chapters;
+				const projectsToSubmitted =
+					projected.length === submitted.length &&
+					projected.every(
+						(chapter, index) =>
+							chapter.title === submitted[index]?.title &&
+							Math.abs(chapter.start - (submitted[index]?.start ?? 0)) <= 0.001,
+					);
+				if (!projectsToSubmitted) {
+					console.error("OwnerChapterProjectionMismatch");
+					return {
+						success: false,
+						message:
+							"Couldn't save chapters. Please check the times and try again.",
+					};
+				}
 				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.chaptersRevisionId', ${revision.revisionId}, '$.sourceChapters', CAST(${JSON.stringify(sourceChapters)} AS JSON))`;
 			}
 			if (summaryChanged || chaptersChanged) {
