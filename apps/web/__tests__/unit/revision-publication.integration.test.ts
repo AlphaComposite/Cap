@@ -313,10 +313,10 @@ class FakeOrigin {
 	}
 }
 
-function spec(end = 2): VideoEditSpecV2 {
+function spec(end = 2, sourceDuration = 9): VideoEditSpecV2 {
 	return {
 		version: 2,
-		sourceDuration: 9,
+		sourceDuration: Math.max(sourceDuration, end),
 		manualKeepRanges: [{ start: 0, end }],
 		keepRanges: [{ start: 0, end }],
 		autoCuts: {
@@ -758,7 +758,146 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(after?.currentRevisionId).toBe(retried.revisionId);
 	});
 
-	it("keeps a sub-10-second chapter in the source list across a cut and restore", async () => {
+	it("hides a chapter inside a cut and brings it back when the section is restored", async () => {
+		const longVideoId = "wirealong000001";
+		const cleanup = async () => {
+			await pool.query("DELETE FROM outbox WHERE videoId = ?", [longVideoId]);
+			await pool.query("DELETE FROM source_relocation WHERE videoId = ?", [
+				longVideoId,
+			]);
+			await pool.query(
+				"DELETE FROM revision_artifact_status WHERE revisionId IN (SELECT revisionId FROM edit_revision WHERE videoId = ?)",
+				[longVideoId],
+			);
+			await pool.query("DELETE FROM edit_revision WHERE videoId = ?", [
+				longVideoId,
+			]);
+			await pool.query("DELETE FROM edit_intent WHERE videoId = ?", [
+				longVideoId,
+			]);
+			await pool.query("DELETE FROM video_publication WHERE videoId = ?", [
+				longVideoId,
+			]);
+			await pool.query("DELETE FROM source_object WHERE videoId = ?", [
+				longVideoId,
+			]);
+			await pool.query("DELETE FROM comments WHERE videoId = ?", [longVideoId]);
+			await pool.query("DELETE FROM video_edits WHERE videoId = ?", [
+				longVideoId,
+			]);
+			await pool.query("DELETE FROM video_uploads WHERE video_id = ?", [
+				longVideoId,
+			]);
+			await pool.query("DELETE FROM videos WHERE id = ?", [longVideoId]);
+		};
+		await cleanup();
+		try {
+			await database.insert(videos).values({
+				id: longVideoId as never,
+				ownerId: ownerId as never,
+				orgId: "wireaorg0000001" as never,
+				source: { type: "webMP4" },
+				duration: 40,
+			});
+			await database.insert(videoEdits).values({
+				videoId: longVideoId as never,
+				sourceKey: `${ownerId}/${longVideoId}/source/original.mp4`,
+				editSpec: {
+					version: 1,
+					sourceDuration: 40,
+					keepRanges: [{ start: 0, end: 40 }],
+				},
+			});
+			await database.insert(sourceObject).values({
+				videoId: longVideoId as never,
+				liveKey: `private/source/${longVideoId}/wireopaque`,
+				sha256: "b".repeat(64),
+				relocationState: "PURGED",
+				codec: "h264",
+				timebase: "1/15360",
+				frameMode: "vfr",
+				a1Digest: "c".repeat(64),
+				indexId: "index-long",
+				warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+			});
+			await database.insert(sourceRelocation).values({
+				videoId: longVideoId as never,
+				revisionId: "relocate",
+				oldKey: `${ownerId}/${longVideoId}/source/original.mp4`,
+				newKey: `private/source/${longVideoId}/wireopaque`,
+				sha256: "b".repeat(64),
+				state: "PURGED",
+				createdAt: new Date(),
+			});
+			const publish = async (
+				end: number,
+				chapters?: { title: string; start: number }[],
+				sourceChapters?: { title: string; start: number }[],
+			) => {
+				const [before] = await database
+					.select()
+					.from(videoPublication)
+					.where(eq(videoPublication.videoId, longVideoId as never));
+				const result = await publishInstantFinishRevision(
+					database,
+					{
+						videoId: longVideoId,
+						editSpec: spec(end, 40),
+						baseGeneration: before?.generation ?? 0,
+						draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+						draftSession: "editor",
+						...(chapters ? { chapters } : {}),
+						...(sourceChapters ? { sourceChapters } : {}),
+					},
+					{ origin: origin.client() },
+				);
+				expect(result.success).toBe(true);
+				await sweepRevisionReadbacks(database, { origin: origin.client() });
+				const [row] = await database
+					.select({ metadata: videos.metadata })
+					.from(videos)
+					.where(eq(videos.id, longVideoId as never));
+				return row?.metadata;
+			};
+			await publish(40);
+			await publish(40, [
+				{ title: "Start", start: 0 },
+				{ title: "Late", start: 20 },
+			]);
+			const [fullRow] = await database
+				.select({ metadata: videos.metadata })
+				.from(videos)
+				.where(eq(videos.id, longVideoId as never));
+			const full = fullRow?.metadata;
+			expect(full?.chapters).toEqual([
+				{ title: "Start", start: 0 },
+				{ title: "Late", start: 20 },
+			]);
+			expect(full?.sourceChapters).toEqual([
+				{ title: "Start", start: 0 },
+				{ title: "Late", start: 20 },
+			]);
+			const cut = await publish(15, full?.chapters, full?.sourceChapters);
+			expect(cut?.chapters).toEqual([{ title: "Start", start: 0 }]);
+			expect(cut?.sourceChapters).toEqual([
+				{ title: "Start", start: 0 },
+				{ title: "Late", start: 20 },
+			]);
+			const restored = await publish(40, cut?.chapters, cut?.sourceChapters);
+			expect(restored?.chapters).toEqual([
+				{ title: "Start", start: 0 },
+				{ title: "Late", start: 20 },
+			]);
+			expect(restored?.sourceChapters).toEqual([
+				{ title: "Start", start: 0 },
+				{ title: "Late", start: 20 },
+			]);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("hides a sub-10-second chapter on screen and keeps it in the source list", async () => {
 		const publish = async (
 			end: number,
 			chapters?: { title: string; start: number }[],
@@ -789,33 +928,18 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				.where(eq(videos.id, videoId as never));
 			return row?.metadata;
 		};
-		const readChaptersInput = async () => {
-			const [row] = await database
-				.select({ metadata: videos.metadata })
-				.from(videos)
-				.where(eq(videos.id, videoId as never));
-			return row?.metadata;
-		};
 		await publish(9);
-		await publish(8, [
+		await publish(9, [
 			{ title: "Start", start: 0 },
 			{ title: "Late", start: 6 },
 		]);
-		const full = await readChaptersInput();
+		const [fullRow] = await database
+			.select({ metadata: videos.metadata })
+			.from(videos)
+			.where(eq(videos.id, videoId as never));
+		const full = fullRow?.metadata;
 		expect(full?.chapters).toEqual([{ title: "Start", start: 0 }]);
 		expect(full?.sourceChapters).toEqual([
-			{ title: "Start", start: 0 },
-			{ title: "Late", start: 6 },
-		]);
-		const cut = await publish(4, full?.chapters, full?.sourceChapters);
-		expect(cut?.chapters).toEqual([{ title: "Start", start: 0 }]);
-		expect(cut?.sourceChapters).toEqual([
-			{ title: "Start", start: 0 },
-			{ title: "Late", start: 6 },
-		]);
-		const restored = await publish(9, cut?.chapters, cut?.sourceChapters);
-		expect(restored?.chapters).toEqual([{ title: "Start", start: 0 }]);
-		expect(restored?.sourceChapters).toEqual([
 			{ title: "Start", start: 0 },
 			{ title: "Late", start: 6 },
 		]);

@@ -397,6 +397,152 @@ describe("chapters shorter than 10 seconds are hidden after an edit", () => {
 		]);
 	});
 
+	it("keeps a hidden chapter when an owner edit lands on its start", () => {
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "B", start: 30 },
+			{ title: "C", start: 35 },
+		];
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: source,
+			currentSpec: full,
+			editedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "C", start: 30 },
+			],
+		});
+		expect(edited).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "C", start: 30 },
+			{ title: "B", start: 30.001 },
+		]);
+		const restored = deriveRevisionChapterState({
+			storedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "C", start: 30 },
+			],
+			storedSourceChapters: edited,
+			previousSpec: full,
+			nextSpec: full,
+		});
+		expect(restored.sourceChapters).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "C", start: 30 },
+			{ title: "B", start: 30.001 },
+		]);
+		const bLength = full.sourceDuration - 30.001;
+		expect(bLength).toBeGreaterThanOrEqual(MIN_CHAPTER_SECONDS);
+		expect(restored.chapters).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "B", start: 30.001 },
+		]);
+	});
+
+	it("keeps a shifted hidden chapter present but off screen when it is still under 10 seconds", () => {
+		const source = [
+			{ title: "A", start: 0 },
+			{ title: "B", start: 30 },
+			{ title: "C", start: 35 },
+			{ title: "E", start: 40 },
+		];
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: source,
+			currentSpec: full,
+			editedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "E", start: 30 },
+			],
+		});
+		expect(edited).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "E", start: 30 },
+			{ title: "B", start: 30.001 },
+			{ title: "C", start: 35 },
+		]);
+		const restored = deriveRevisionChapterState({
+			storedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "E", start: 30 },
+			],
+			storedSourceChapters: edited,
+			previousSpec: full,
+			nextSpec: full,
+		});
+		expect(restored.sourceChapters).toEqual(edited);
+		expect(35 - 30.001).toBeLessThan(MIN_CHAPTER_SECONDS);
+		expect(restored.chapters).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "C", start: 35 },
+		]);
+	});
+
+	it("moves a collided hidden chapter past the next occupied instant", () => {
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: [
+				{ title: "A", start: 0 },
+				{ title: "B", start: 30 },
+				{ title: "D", start: 30.001 },
+				{ title: "C", start: 35 },
+			],
+			currentSpec: full,
+			editedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "C", start: 30 },
+			],
+		});
+		expect(edited).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "C", start: 30 },
+			{ title: "D", start: 30.001 },
+			{ title: "B", start: 30.002 },
+		]);
+	});
+
+	it("leaves a no-conflict owner edit byte-identical", () => {
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: [
+				{ title: "A", start: 0 },
+				{ title: "B", start: 30 },
+				{ title: "C", start: 35 },
+			],
+			currentSpec: full,
+			editedChapters: [
+				{ title: "A renamed", start: 0 },
+				{ title: "C", start: 35 },
+			],
+		});
+		expect(JSON.stringify(edited)).toBe(
+			JSON.stringify([
+				{ title: "A renamed", start: 0 },
+				{ title: "B", start: 30 },
+				{ title: "C", start: 35 },
+			]),
+		);
+	});
+
+	it("keeps every length-hidden chapter unchanged when the owner only changes titles", () => {
+		expect(
+			mergeOwnerChapterEdit({
+				previousSourceChapters: [
+					{ title: "A", start: 0 },
+					{ title: "B", start: 30 },
+					{ title: "C", start: 35 },
+					{ title: "D", start: 36 },
+				],
+				currentSpec: full,
+				editedChapters: [
+					{ title: "A renamed", start: 0 },
+					{ title: "D renamed", start: 36 },
+				],
+			}),
+		).toEqual([
+			{ title: "A renamed", start: 0 },
+			{ title: "B", start: 30 },
+			{ title: "C", start: 35 },
+			{ title: "D renamed", start: 36 },
+		]);
+	});
+
 	it("projects the same chapters for the editor preview and publication", () => {
 		const preview = projectSourceChapters(withShortMiddle, shortMiddle);
 		const published = deriveRevisionChapterState({
