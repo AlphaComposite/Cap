@@ -305,8 +305,8 @@ class ClickTests(unittest.TestCase):
                         f"skip_samples={skip_samples}"
                     )
                     self.assertIn(b"elst", blob[blob.find(b"moov"):blob.find(b"mdat")])
-                    self.assertGreater(media_time, 0)
-                    self.assertGreater(skip_samples, 0)
+                    self.assertEqual(media_time, 1024)
+                    self.assertEqual(skip_samples, 1024)
                     offset_ms, amp, drift_s, frame_s = _click_stats(source, rate)
                     self.assertGreater(amp, 0.2)
                     self.assertLessEqual(offset_ms, AAC_OFFSET_LIMIT_MS)
