@@ -124,6 +124,7 @@ function renderSidebar(
 	},
 	keepRanges: VideoEditRange[] = [{ start: 0, end: 3 }],
 	onDeleteRanges = vi.fn(),
+	onRestoreRanges = vi.fn(),
 ) {
 	return act(async () => {
 		root.render(
@@ -135,6 +136,7 @@ function renderSidebar(
 				autoCuts,
 				autoCutsInitialized,
 				onDeleteRanges,
+				onRestoreRanges,
 				onSetAutoCutLayer,
 				onInitializeAutoCuts,
 			}),
