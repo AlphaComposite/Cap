@@ -4,6 +4,7 @@ import { provideOptionalAuth, VideosPolicy } from "@cap/web-backend";
 import { Video } from "@cap/web-domain";
 import { eq, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
+import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	evaluatePresentedGrant,
@@ -417,10 +418,22 @@ export async function decidePlaylistPresign(input: {
 	videoId: string;
 	ownerId: string;
 	kind: PlaylistPresignKind;
+	purpose?: "raw-preview" | "segments" | "mp4";
+	eligibleLegacy?: boolean;
 }): Promise<PlaylistPresignDecision> {
 	const forced = process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY;
 	if (forced === "gone" || forced === "not-found") return forced;
 	if (!isInstantFinishEnabledForOwner(input.ownerId)) return "allow";
+	if (input.purpose === "raw-preview") return "not-found";
+	const eligible =
+		input.eligibleLegacy ??
+		(await loadEligibleLegacy({
+			videoId: input.videoId,
+			ownerId: input.ownerId,
+		}));
+	if (eligible && (input.kind === "mp4" || input.kind === "raw-or-segments")) {
+		return "allow";
+	}
 	if (input.kind === "raw-or-segments" || input.kind === "mp4") {
 		return "not-found";
 	}
@@ -432,9 +445,26 @@ export function denyFlaggedPresign(input: {
 	videoId: string;
 	key?: string;
 	videoType?: string;
+	eligibleLegacy?: boolean;
 }): { deny: false } | { deny: true; status: 404 } {
 	if (!isInstantFinishEnabledForOwner(input.ownerId)) return { deny: false };
 	const videoType = input.videoType ?? "";
+	if (
+		videoType === "raw-preview" ||
+		videoType === "transcription" ||
+		videoType === "enhanced-audio"
+	) {
+		return { deny: true, status: 404 };
+	}
+	if (
+		input.eligibleLegacy &&
+		(videoType === "mp4" ||
+			videoType === "video" ||
+			videoType.startsWith("segments")) &&
+		!(input.key && isViewerPrivateKey(input.key))
+	) {
+		return { deny: false };
+	}
 	if (
 		videoType === "raw-preview" ||
 		videoType === "mp4" ||

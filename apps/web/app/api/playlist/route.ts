@@ -17,6 +17,7 @@ import {
 } from "@effect/platform";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Option, Schema } from "effect";
+import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import {
 	resolveMobileRequestOrigin,
 	resolveMobileWebResourceUrl,
@@ -190,6 +191,13 @@ const getPlaylistResponse = (
 	publicOrigin: string,
 ) =>
 	Effect.gen(function* () {
+		const eligibleLegacy = yield* Effect.promise(
+			async (): Promise<boolean> =>
+				loadEligibleLegacy({
+					videoId: video.id,
+					ownerId: video.ownerId,
+				}),
+		);
 		const gate = flaggedPlaylistGate({
 			ownerId: video.ownerId,
 			videoType: urlParams.videoType,
@@ -197,6 +205,7 @@ const getPlaylistResponse = (
 				? urlParams.fileType.value
 				: undefined,
 			sourceType: video.source.type,
+			eligibleLegacy,
 		});
 		if (gate === "unavailable") {
 			return HttpServerResponse.text("", {
@@ -246,6 +255,9 @@ const getPlaylistResponse = (
 					videoId: video.id,
 					ownerId: video.ownerId,
 					kind: "raw-or-segments",
+					purpose:
+						urlParams.videoType === "raw-preview" ? "raw-preview" : "segments",
+					eligibleLegacy,
 				}),
 			);
 			if (decision === "not-found") {
@@ -265,6 +277,8 @@ const getPlaylistResponse = (
 					videoId: video.id,
 					ownerId: video.ownerId,
 					kind: "mp4",
+					purpose: "mp4",
+					eligibleLegacy,
 				}),
 			);
 			if (decision === "not-found") {
@@ -472,6 +486,9 @@ const getPlaylistResponse = (
 			else if (video.source.type === "MediaConvert")
 				redirect = `${video.ownerId}/${video.id}/output/video_recording_000.m3u8`;
 
+			if (isViewerPrivateKey(redirect)) {
+				return yield* Effect.fail(new HttpApiError.NotFound());
+			}
 			return HttpServerResponse.redirect(
 				yield* bucket.getSignedObjectUrl(redirect),
 			);

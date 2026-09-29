@@ -1,5 +1,6 @@
 import "server-only";
 
+import { loadEligibleLegacy } from "./flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "./instant-finish-flag";
 import { mintRevisionMediaGrant } from "./revision-media-grant";
 import {
@@ -30,6 +31,7 @@ export async function loadRevisionPlayback(input: {
 	isScreenshot: boolean;
 	hasActiveUpload: boolean;
 	sourceType: string;
+	env?: Record<string, string | undefined>;
 }): Promise<LoadedRevisionPlayback> {
 	let publication = disabledInstantFinishPublication();
 	try {
@@ -42,14 +44,23 @@ export async function loadRevisionPlayback(input: {
 			enabled: isInstantFinishEnabledForOwner(input.ownerId),
 		});
 	}
+	const eligibleLegacy =
+		publication.enabled && !publication.currentRevisionId
+			? await loadEligibleLegacy({
+					videoId: input.videoId,
+					ownerId: input.ownerId,
+					env: input.env,
+				})
+			: false;
 	const plan = planSharePlayback({
 		enabled: publication.enabled,
 		currentRevisionId: publication.currentRevisionId,
 		isScreenshot: input.isScreenshot,
 		hasActiveUpload: input.hasActiveUpload,
 		sourceType: input.sourceType,
+		eligibleLegacy,
 	});
-	if (!publication.enabled) {
+	if (!publication.enabled || eligibleLegacy) {
 		return {
 			publication,
 			plan,
@@ -68,6 +79,7 @@ export async function loadRevisionPlayback(input: {
 		videoId: input.videoId,
 		origin: input.origin,
 		grant: grant && "grant" in grant ? grant.grant : null,
+		eligibleLegacy,
 	});
 	return {
 		publication,

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+const playlistRows = vi.hoisted(() => ({
+	intent: [] as unknown[],
+}));
+
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/env", () => ({
 	buildEnv: { NEXT_PUBLIC_WEB_URL: "http://127.0.0.1:3000" },
@@ -8,7 +12,25 @@ vi.mock("@cap/env", () => ({
 vi.mock("@/lib/server", () => ({
 	runPromise: async (effect: unknown) => effect,
 }));
-vi.mock("@cap/database", () => ({ db: () => ({}) }));
+vi.mock("@cap/database", async () => {
+	const schema = await import("@cap/database/schema");
+	return {
+		db: () => ({
+			select: () => ({
+				from: (table: unknown) => ({
+					where: () => {
+						const answer =
+							table === schema.editIntent ? playlistRows.intent : [];
+						const result = Promise.resolve(answer);
+						return Object.assign(result, {
+							limit: () => Promise.resolve(answer),
+						});
+					},
+				}),
+			}),
+		}),
+	};
+});
 vi.mock("@cap/web-backend", () => ({
 	VideosPolicy: class VideosPolicy {},
 	provideOptionalAuth: <T>(effect: T) => effect,
@@ -16,6 +38,7 @@ vi.mock("@cap/web-backend", () => ({
 
 import {
 	classifyLiveGrant,
+	decidePlaylistPresign,
 	denyFlaggedPresign,
 	evaluateGrantIssue,
 	issueGrantForPublication,
@@ -271,6 +294,36 @@ describe("revision media grants", () => {
 		});
 		expect(issued.playbackUrl).toContain("download.mp4?t=");
 		expect(issued.playbackUrl).not.toContain("result.mp4");
+		process.env.CAP_INSTANT_FINISH_OWNERS = previous;
+	});
+
+	it("allows an unedited flagged mp4 and still hides raw-or-segments after an intent", async () => {
+		const previous = process.env.CAP_INSTANT_FINISH_OWNERS;
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner-flagged";
+		delete process.env.CAP_INSTANT_FINISH_PLAYLIST_DENY;
+		await expect(
+			decidePlaylistPresign({
+				videoId: "video1",
+				ownerId: "owner-flagged",
+				kind: "mp4",
+			}),
+		).resolves.toBe("allow");
+		playlistRows.intent = [{ videoId: "video1" }];
+		await expect(
+			decidePlaylistPresign({
+				videoId: "video1",
+				ownerId: "owner-flagged",
+				kind: "raw-or-segments",
+			}),
+		).resolves.toBe("not-found");
+		playlistRows.intent = [];
+		await expect(
+			decidePlaylistPresign({
+				videoId: "video1",
+				ownerId: "other-owner",
+				kind: "mp4",
+			}),
+		).resolves.toBe("allow");
 		process.env.CAP_INSTANT_FINISH_OWNERS = previous;
 	});
 });
