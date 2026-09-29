@@ -27,6 +27,7 @@ CLICK_T = 1.0
 DURATION = 1.5
 FRAME_RATE = 30
 OFFSET_LIMIT_MS = 33.3
+AAC_OFFSET_LIMIT_MS = 2.0
 SUPPORTED = (
     8000,
     11025,
@@ -98,6 +99,104 @@ def _audio_codec(path: Path) -> str:
     if result.returncode:
         raise AssertionError(result.stderr.decode()[-400:])
     return result.stdout.decode().strip()
+
+
+def _iter_boxes(data: bytes, start: int, end: int):
+    pos = start
+    while pos + 8 <= end:
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        header = 8
+        if size == 1 and pos + 16 <= end:
+            size = int.from_bytes(data[pos + 8:pos + 16], "big")
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            break
+        yield kind, pos, header, pos + size
+        pos += size
+
+
+def _child_boxes(data: bytes, start: int, end: int) -> list[tuple[bytes, int, int, int]]:
+    return list(_iter_boxes(data, start, end))
+
+
+def _handler_type(data: bytes, start: int, end: int) -> bytes | None:
+    for kind, off, header, stop in _child_boxes(data, start, end):
+        if kind == b"hdlr":
+            body = data[off + header:stop]
+            if len(body) >= 12:
+                return body[8:12]
+        if kind in (b"mdia", b"minf", b"stbl"):
+            found = _handler_type(data, off + header, stop)
+            if found is not None:
+                return found
+    return None
+
+
+def _elst_media_times(data: bytes, start: int, end: int) -> list[int]:
+    times: list[int] = []
+    for kind, off, header, stop in _child_boxes(data, start, end):
+        if kind == b"elst":
+            body = data[off + header:stop]
+            if len(body) < 8:
+                continue
+            version = body[0]
+            count = int.from_bytes(body[4:8], "big")
+            cursor = 8
+            for _ in range(count):
+                if version == 1:
+                    if cursor + 16 > len(body):
+                        break
+                    times.append(int.from_bytes(body[cursor + 8:cursor + 16], "big", signed=True))
+                    cursor += 20
+                else:
+                    if cursor + 8 > len(body):
+                        break
+                    times.append(int.from_bytes(body[cursor + 4:cursor + 8], "big", signed=True))
+                    cursor += 12
+        elif kind == b"edts":
+            times.extend(_elst_media_times(data, off + header, stop))
+    return times
+
+
+def _audio_elst_media_time(blob: bytes) -> int:
+    for kind, off, header, stop in _child_boxes(blob, 0, len(blob)):
+        if kind != b"moov":
+            continue
+        if b"elst" not in blob[off:stop]:
+            raise AssertionError("moov has no elst box")
+        for child, coff, cheader, cstop in _child_boxes(blob, off + header, stop):
+            if child != b"trak" or _handler_type(blob, coff + cheader, cstop) != b"soun":
+                continue
+            times = _elst_media_times(blob, coff + cheader, cstop)
+            if not times:
+                raise AssertionError("audio trak has no elst inside moov")
+            return times[0]
+    raise AssertionError("mp4 has no moov box")
+
+
+def _aac_skip_samples(path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_packets", "-show_entries", "packet=pts_time:packet_side_data",
+            "-read_intervals", "%+#1", "-of", "json", str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr.decode()[-400:])
+    packets = json.loads(result.stdout).get("packets") or []
+    if not packets:
+        raise AssertionError(f"no audio packets in {path.name}")
+    for item in packets[0].get("side_data_list") or []:
+        if item.get("side_data_type") == "Skip Samples":
+            return int(item["skip_samples"])
+    raise AssertionError(f"aac stream has no skip_samples side data in {path.name}")
 
 
 def _video_span(path: Path) -> tuple[float, float]:
@@ -199,30 +298,18 @@ class ClickTests(unittest.TestCase):
                     blob = source.read_bytes()
                     self.assertLess(blob.find(b"moov"), blob.find(b"mdat"))
                     self.assertEqual(_audio_codec(source), "aac")
-                    offset_ms, amp, drift_s, frame_s = _click_stats(source, rate)
-                    prepared = np.fromfile(lib_audio.presentation_pcm_path(source), dtype="<f4").reshape(-1, 2)
-                    prepared_ms = int(abs(prepared).max(axis=1).argmax()) / lib_audio.SR * 1000
-                    with tempfile.TemporaryDirectory() as side:
-                        reference = Path(side) / "source.pcm"
-                        _ffmpeg(
-                            [
-                                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                                "-i", str(source),
-                                "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(lib_audio.SR),
-                                "-f", "f32le", str(reference),
-                            ]
-                        )
-                        source_pcm = np.fromfile(reference, dtype="<f4").reshape(-1, 2)
-                    source_ms = int(abs(source_pcm).max(axis=1).argmax()) / lib_audio.SR * 1000
-                    source_offset_ms = abs(prepared_ms - source_ms)
+                    media_time = _audio_elst_media_time(blob)
+                    skip_samples = _aac_skip_samples(source)
                     print(
-                        f"AAC_MP4_OFFSET rate={rate} offset_ms={offset_ms:.3f} "
-                        f"source_offset_ms={source_offset_ms:.3f} prepared_ms={prepared_ms:.3f} "
-                        f"source_ms={source_ms:.3f}"
+                        f"AAC_PRIMING rate={rate} elst_media_time={media_time} "
+                        f"skip_samples={skip_samples}"
                     )
+                    self.assertIn(b"elst", blob[blob.find(b"moov"):blob.find(b"mdat")])
+                    self.assertGreater(media_time, 0)
+                    self.assertGreater(skip_samples, 0)
+                    offset_ms, amp, drift_s, frame_s = _click_stats(source, rate)
                     self.assertGreater(amp, 0.2)
-                    self.assertLessEqual(offset_ms, OFFSET_LIMIT_MS)
-                    self.assertLessEqual(source_offset_ms, OFFSET_LIMIT_MS)
+                    self.assertLessEqual(offset_ms, AAC_OFFSET_LIMIT_MS)
                     self.assertLessEqual(drift_s, frame_s)
                     record = json.loads(lib_audio.presentation_meta_path(source).read_text())
                     self.assertEqual(record["audio_stream"], "0:a:0")
@@ -275,6 +362,8 @@ class ReuseTests(unittest.TestCase):
             self.assertFalse(first.get("reused"))
             self.assertEqual(first["resampled_from"], 44100)
             self.assertEqual(first["audio_stream"], "0:a:0")
+            with self.subTest(check="stored_input_rate"):
+                self.assertEqual(first.get("input_rate"), 44100)
             calls: list[list[str]] = []
             real_run = subprocess.run
 
@@ -287,8 +376,11 @@ class ReuseTests(unittest.TestCase):
             self.assertTrue(second["reused"])
             self.assertEqual(second["resampled_from"], 44100)
             self.assertEqual(second["audio_stream"], "0:a:0")
-            self.assertFalse(any(cmd and cmd[0] == "ffmpeg" for cmd in calls))
-            self.assertTrue(any(cmd and cmd[0] == "ffprobe" for cmd in calls))
+            with self.subTest(check="no_probe"):
+                self.assertFalse(any(cmd and cmd[0] == "ffmpeg" for cmd in calls))
+                self.assertFalse(any(cmd and cmd[0] == "ffprobe" for cmd in calls))
+            with self.subTest(check="reused_input_rate"):
+                self.assertEqual(second.get("input_rate"), 44100)
 
     def test_old_resampled_from_16000_is_reused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -321,6 +413,56 @@ class ReuseTests(unittest.TestCase):
                     self.assertEqual(second["audio_stream"], "0:a:0")
                     self.assertIsNone(second["resampled_from"])
                     self.assertTrue(any(pcm.read_bytes()))
+
+    def test_new_style_record_reuses_when_probe_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "tone48000.mp4"
+            self._write_sine(source, 48000)
+            _prepare(source)
+            meta = lib_audio.presentation_meta_path(source)
+            pcm = lib_audio.presentation_pcm_path(source)
+            record = json.loads(meta.read_text())
+            record["audio_stream"] = "0:a:0"
+            record["input_rate"] = 48000
+            record["resampled_from"] = None
+            meta.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+            original = pcm.read_bytes()
+            cases = (
+                ("rejected", lib_audio.AudioRejected("probe down")),
+                ("timeout", subprocess.TimeoutExpired(["ffprobe", str(source)], 1)),
+            )
+            for name, exc in cases:
+                with self.subTest(case=name):
+                    with patch("lib_audio.probe_audio_rate", side_effect=exc):
+                        try:
+                            second = lib_audio.prepare_presentation(source)
+                        except Exception as got:
+                            self.fail(f"reuse called probe and raised {type(got).__name__}: {got}")
+                    self.assertTrue(second["reused"])
+                    self.assertEqual(second["input_rate"], 48000)
+                    self.assertIsNone(second["resampled_from"])
+                    self.assertEqual(second["audio_stream"], "0:a:0")
+                    self.assertEqual(pcm.read_bytes(), original)
+
+    def test_inconsistent_input_rate_is_rebuilt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "tone48000.mp4"
+            self._write_sine(source, 48000)
+            _prepare(source)
+            meta = lib_audio.presentation_meta_path(source)
+            pcm = lib_audio.presentation_pcm_path(source)
+            record = json.loads(meta.read_text())
+            record["audio_stream"] = "0:a:0"
+            record["input_rate"] = 44100
+            record["resampled_from"] = None
+            meta.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+            pcm.write_bytes(b"\x00" * (int(record["samples"]) * 8))
+            second = lib_audio.prepare_presentation(source)
+            self.assertFalse(second.get("reused"))
+            self.assertEqual(second["input_rate"], 48000)
+            self.assertIsNone(second["resampled_from"])
+            self.assertEqual(second["audio_stream"], "0:a:0")
+            self.assertTrue(any(pcm.read_bytes()))
 
 
 class RejectionTests(unittest.TestCase):

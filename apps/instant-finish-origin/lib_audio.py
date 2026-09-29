@@ -290,7 +290,7 @@ def probe_audio_rate(source: Path) -> int:
     return int(text[0].strip())
 
 
-def _reusable_presentation(dest: Path, meta: Path, source_sha: str, source: Path) -> dict | None:
+def _reusable_presentation(dest: Path, meta: Path, source_sha: str, _source: Path) -> dict | None:
     if not dest.is_file() or not meta.is_file():
         return None
     try:
@@ -309,9 +309,11 @@ def _reusable_presentation(dest: Path, meta: Path, source_sha: str, source: Path
         return None
     if record.get("audio_stream") != _PRESENTATION_AUDIO_STREAM:
         return None
-    rate = probe_audio_rate(source)
-    expected = None if rate == SR else rate
-    if record.get("resampled_from") != expected:
+    # Source sha already binds the file, so the stored rate cannot change. A probe failure must not turn that record into an error.
+    input_rate = record.get("input_rate")
+    if not _supported_input_rate(input_rate):
+        return None
+    if record.get("resampled_from") != (None if input_rate == SR else input_rate):
         return None
     return record
 
@@ -357,6 +359,7 @@ def prepare_presentation(source: Path) -> dict:
         "pcm": dest.name,
         "pcm_sha256": _sha256(dest),
         "prepare_ms": round((time.perf_counter() - started) * 1000, 3),
+        "input_rate": rate,
         "resampled_from": None if policy == "native" else rate,
         "samples": nbytes // 8,
         "source": source.name,
