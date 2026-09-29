@@ -8,6 +8,7 @@ import {
 } from "@/lib/video-edits";
 
 const EPSILON = 0.0005;
+export const MIN_CHAPTER_SECONDS = 10;
 
 function sortedUnique(chapters: readonly VideoChapter[]): VideoChapter[] {
 	const sorted = [...chapters].sort((a, b) => a.start - b.start);
@@ -27,10 +28,16 @@ function firstKeptTimeAtOrAfter(time: number, spec: VideoEditSpec) {
 	return null;
 }
 
+type ProjectedChapter = {
+	chapter: VideoChapter;
+	source: VideoChapter;
+	startShifted: boolean;
+};
+
 function projectWithSource(
 	sourceChapters: readonly VideoChapter[],
 	spec: VideoEditSpec,
-): { chapter: VideoChapter; source: VideoChapter }[] {
+): ProjectedChapter[] {
 	const sorted = sortedUnique(sourceChapters);
 	const outputEnd = getEditSpecOutputDuration(spec);
 	const projected = sorted.flatMap((source, index) => {
@@ -41,12 +48,49 @@ function projectWithSource(
 		if (start === null || start >= outputEnd - EPSILON) return [];
 		return [{ chapter: { ...source, start }, source }];
 	});
-	return projected.filter(
+	const deduped = projected.filter(
 		(entry, index) =>
 			projected[index + 1] === undefined ||
 			(projected[index + 1]?.chapter.start ?? 0) - entry.chapter.start >
 				EPSILON,
 	);
+	return hideShortChapters(deduped, outputEnd);
+}
+
+function hideShortChapters(
+	projected: { chapter: VideoChapter; source: VideoChapter }[],
+	outputEnd: number,
+): ProjectedChapter[] {
+	const entries = projected.map((entry) => ({
+		chapter: { ...entry.chapter },
+		source: entry.source,
+		startShifted: false,
+	}));
+	while (entries.length > 1) {
+		let shortestIndex = -1;
+		let shortestLength = Number.POSITIVE_INFINITY;
+		for (const [index, entry] of entries.entries()) {
+			const nextStart = entries[index + 1]?.chapter.start ?? outputEnd;
+			const length = nextStart - entry.chapter.start;
+			if (length >= MIN_CHAPTER_SECONDS - EPSILON || length >= shortestLength) {
+				continue;
+			}
+			shortestLength = length;
+			shortestIndex = index;
+		}
+		if (shortestIndex < 0) break;
+		if (shortestIndex === 0) {
+			const removed = entries.shift();
+			const next = entries[0];
+			if (removed && next) {
+				next.chapter = { ...next.chapter, start: removed.chapter.start };
+				next.startShifted = true;
+			}
+		} else {
+			entries.splice(shortestIndex, 1);
+		}
+	}
+	return entries;
 }
 
 export function projectSourceChapters(
@@ -104,7 +148,7 @@ export function mergeOwnerChapterEdit(input: {
 		const unchangedStart = visible.find(
 			(entry) => Math.abs(entry.chapter.start - chapter.start) <= EPSILON,
 		);
-		if (unchangedStart && chapter.start > 0) {
+		if (unchangedStart && (chapter.start > 0 || unchangedStart.startShifted)) {
 			return [{ ...chapter, start: unchangedStart.source.start }];
 		}
 		return outputChaptersToSource([chapter], input.currentSpec);
