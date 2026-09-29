@@ -758,6 +758,67 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(after?.currentRevisionId).toBe(retried.revisionId);
 	});
 
+	it("hides a chapter inside a cut and brings it back when the section is restored", async () => {
+		const publish = async (
+			end: number,
+			chapters?: { title: string; start: number }[],
+			sourceChapters?: { title: string; start: number }[],
+		) => {
+			const [before] = await database
+				.select()
+				.from(videoPublication)
+				.where(eq(videoPublication.videoId, videoId as never));
+			const result = await publishInstantFinishRevision(
+				database,
+				{
+					videoId,
+					editSpec: spec(end),
+					baseGeneration: before?.generation ?? 0,
+					draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+					draftSession: "editor",
+					...(chapters ? { chapters } : {}),
+					...(sourceChapters ? { sourceChapters } : {}),
+				},
+				{ origin: origin.client() },
+			);
+			expect(result.success).toBe(true);
+			await sweepRevisionReadbacks(database, { origin: origin.client() });
+			const [row] = await database
+				.select({ metadata: videos.metadata })
+				.from(videos)
+				.where(eq(videos.id, videoId as never));
+			return row?.metadata;
+		};
+		const readChaptersInput = async () => {
+			const [row] = await database
+				.select({ metadata: videos.metadata })
+				.from(videos)
+				.where(eq(videos.id, videoId as never));
+			return row?.metadata;
+		};
+		await publish(9);
+		await publish(8, [
+			{ title: "Start", start: 0 },
+			{ title: "Late", start: 6 },
+		]);
+		const full = await readChaptersInput();
+		expect(full?.chapters).toEqual([
+			{ title: "Start", start: 0 },
+			{ title: "Late", start: 6 },
+		]);
+		const cut = await publish(4, full?.chapters, full?.sourceChapters);
+		expect(cut?.chapters).toEqual([{ title: "Start", start: 0 }]);
+		expect(cut?.sourceChapters).toEqual([
+			{ title: "Start", start: 0 },
+			{ title: "Late", start: 6 },
+		]);
+		const restored = await publish(9, cut?.chapters, cut?.sourceChapters);
+		expect(restored?.chapters).toEqual([
+			{ title: "Start", start: 0 },
+			{ title: "Late", start: 6 },
+		]);
+	});
+
 	it("does not let a stale S0 become current after a newer generation flips", async () => {
 		const [before] = await database
 			.select()

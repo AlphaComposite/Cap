@@ -2,6 +2,7 @@
 
 import type { VideoEditSpec } from "@cap/database/types";
 import { createElement, Fragment, useEffect, useMemo, useState } from "react";
+import { projectSourceChapters } from "@/lib/revision-chapter-source";
 import {
 	mapOutputChaptersToSource,
 	mapOutputChapterTimeToSourceTime,
@@ -12,20 +13,28 @@ import { formatChaptersAsVTT } from "../_components/utils/transcript-utils";
 
 export function useEditorChapterPreview({
 	chapters,
+	sourceChapters: storedSourceChapters,
 	initialEditSpec,
 	editSpec,
 }: {
 	chapters: readonly VideoChapter[];
+	sourceChapters?: readonly VideoChapter[] | null;
 	initialEditSpec: VideoEditSpec;
 	editSpec: VideoEditSpec;
 }) {
 	const sourceChapters = useMemo(
-		() => mapOutputChaptersToSource(chapters, initialEditSpec),
-		[chapters, initialEditSpec],
+		() =>
+			storedSourceChapters
+				? [...storedSourceChapters]
+				: mapOutputChaptersToSource(chapters, initialEditSpec),
+		[chapters, initialEditSpec, storedSourceChapters],
 	);
 	const projectedChapters = useMemo(
-		() => projectSourceChaptersToOutput(sourceChapters, editSpec),
-		[editSpec, sourceChapters],
+		() =>
+			storedSourceChapters
+				? projectSourceChapters(sourceChapters, editSpec)
+				: projectSourceChaptersToOutput(sourceChapters, editSpec),
+		[editSpec, sourceChapters, storedSourceChapters],
 	);
 	const playbackChapters = useMemo(
 		() =>

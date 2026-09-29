@@ -2,7 +2,12 @@
 
 import { db } from "@cap/database";
 import { getCurrentUser } from "@cap/database/auth/session";
-import { editRevision, videoPublication, videos } from "@cap/database/schema";
+import {
+	editIntent,
+	editRevision,
+	videoPublication,
+	videos,
+} from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
@@ -18,7 +23,12 @@ import {
 } from "@/lib/ai-content";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
+import { mergeOwnerChapterEdit } from "@/lib/revision-chapter-source";
 import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
+import {
+	mapOutputChaptersToSource,
+	parseVideoEditSpec,
+} from "@/lib/video-edits";
 
 const chapterSchema = z.object({
 	title: z.string().max(MAX_CHAPTER_TITLE_LENGTH),
@@ -140,7 +150,17 @@ export async function editAiContent(
 				updatedMetadata = sql`JSON_REMOVE(JSON_SET(${updatedMetadata}, '$.chapters', CAST(${JSON.stringify(next.chapters)} AS JSON), '$.chaptersManuallyEdited', CAST('true' AS JSON)), '$.aiChapterBackfillGenerationId')`;
 			}
 			if (chaptersChanged && revision) {
-				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.chaptersRevisionId', ${revision.revisionId})`;
+				const previousSource =
+					metadata.chaptersRevisionId === revision.revisionId &&
+					metadata.sourceChapters
+						? metadata.sourceChapters
+						: mapOutputChaptersToSource(current.chapters, revision.spec);
+				const sourceChapters = mergeOwnerChapterEdit({
+					previousSourceChapters: previousSource,
+					currentSpec: revision.spec,
+					editedChapters: next.chapters,
+				});
+				updatedMetadata = sql`JSON_SET(${updatedMetadata}, '$.chaptersRevisionId', ${revision.revisionId}, '$.sourceChapters', CAST(${JSON.stringify(sourceChapters)} AS JSON))`;
 			}
 			if (summaryChanged || chaptersChanged) {
 				await tx
@@ -169,17 +189,20 @@ async function currentRevisionTimeline(
 		.select({
 			revisionId: editRevision.revisionId,
 			metadataSnapshot: editRevision.metadataSnapshot,
+			canonicalSpec: editIntent.canonicalSpec,
 		})
 		.from(videoPublication)
 		.innerJoin(
 			editRevision,
 			eq(editRevision.revisionId, videoPublication.currentRevisionId),
 		)
+		.innerJoin(editIntent, eq(editIntent.intentId, editRevision.intentId))
 		.where(eq(videoPublication.videoId, videoId));
 	if (!row?.metadataSnapshot) return null;
 	return {
 		revisionId: row.revisionId,
 		durationSeconds: row.metadataSnapshot.durationSeconds,
 		chapters: row.metadataSnapshot.chapters,
+		spec: parseVideoEditSpec(row.canonicalSpec),
 	};
 }

@@ -83,6 +83,7 @@ export interface VideoMetadata {
 	chapters?: { title: string; start: number }[];
 	chaptersManuallyEdited?: boolean;
 	chaptersRevisionId?: string;
+	sourceChapters?: { title: string; start: number }[];
 	aiGenerationStatus?:
 		| "QUEUED"
 		| "PROCESSING"
