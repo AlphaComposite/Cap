@@ -22,6 +22,10 @@ import {
 	isInternalRecordingKey,
 } from "../Storage/recording-output.ts";
 import { Tinybird } from "../Tinybird/index.ts";
+import {
+	currentEditedDownloadUrlLookup,
+	editedDownloadFromLookup,
+} from "./editedDownload.ts";
 import { isInstantFinishEnabledForOwner } from "./instantFinishFlag.ts";
 import { bumpPolicyEpochIfFlagged } from "./policyEpoch.ts";
 import { VideosPolicy } from "./VideosPolicy.ts";
@@ -720,7 +724,41 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 							ownerId: video.ownerId,
 						}),
 					);
-					if (!eligible) return Option.none();
+					if (!eligible) {
+						const maybeUser = yield* Effect.serviceOption(CurrentUser);
+						const userId = Option.match(maybeUser, {
+							onNone: () => null,
+							onSome: (user) => user.id,
+						});
+						const lookup = currentEditedDownloadUrlLookup();
+						const lookedUp = lookup
+							? yield* Effect.promise(() =>
+									lookup({
+										videoId: video.id,
+										ownerId: video.ownerId,
+										userId,
+									}),
+								)
+							: null;
+						const outcome = editedDownloadFromLookup({
+							name: video.name,
+							lookup: lookedUp,
+						});
+						if (outcome.status === "forbidden") {
+							return yield* new Policy.PolicyDeniedError();
+						}
+						if (outcome.status === "preparing") {
+							return yield* new Video.DownloadPreparingError({
+								message: outcome.message,
+							});
+						}
+						if (outcome.status === "ready") {
+							return Option.some({
+								fileName: outcome.fileName,
+								downloadUrl: outcome.downloadUrl,
+							});
+						}
+					}
 				}
 
 				const [bucket] = yield* storage.getAccessForVideo(video);

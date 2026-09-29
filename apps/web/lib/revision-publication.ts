@@ -28,6 +28,7 @@ import {
 	deriveRevisionChapterState,
 	projectSourceChapters,
 } from "@/lib/revision-chapter-source";
+import { sweepRevisionDownloads } from "@/lib/revision-download-job";
 import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
 	snappedDurationError,
@@ -65,6 +66,7 @@ import {
 	type OriginClient,
 	type RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
+import { writeRevisionThumbnailSha } from "@/lib/revision-snapshot-patch";
 import {
 	isVerifiedJpeg,
 	thumbnailRetryDelayMs,
@@ -1553,12 +1555,20 @@ export async function flipCurrent(
 							failedSpec: spec,
 							previousSpec: allocated.previousSpec,
 						}
-					: {
-							job,
-							revisionId: allocated.revisionId,
-							durationSeconds: prepared.durationSeconds,
-							downloadReady: false,
-						},
+					: job === "download"
+						? {
+								job,
+								revisionId: allocated.revisionId,
+								videoId: input.videoId,
+								durationSeconds: prepared.durationSeconds,
+								downloadReady: false,
+							}
+						: {
+								job,
+								revisionId: allocated.revisionId,
+								durationSeconds: prepared.durationSeconds,
+								downloadReady: false,
+							},
 			createdAt: stamp,
 		});
 	}
@@ -1790,6 +1800,10 @@ export function startRevisionReadbackWorker(input: {
 			origin: input.origin,
 			now: input.now?.(),
 		}).then(async () => {
+			await sweepRevisionDownloads(input.database, {
+				origin: input.origin,
+				now: input.now?.(),
+			});
 			await input.onTick?.();
 		});
 		readbackInFlight = run;
@@ -2449,18 +2463,5 @@ async function recordThumbnailStatus(
 		);
 	if (!verified || !status) return;
 	const digest = thumbnailSha256(thumb.body);
-	const [revision] = await database
-		.select({ metadataSnapshot: editRevision.metadataSnapshot })
-		.from(editRevision)
-		.where(eq(editRevision.revisionId, payload.revisionId));
-	if (!revision?.metadataSnapshot) return;
-	await database
-		.update(editRevision)
-		.set({
-			metadataSnapshot: {
-				...revision.metadataSnapshot,
-				thumbnailSha256: digest,
-			},
-		})
-		.where(eq(editRevision.revisionId, payload.revisionId));
+	await writeRevisionThumbnailSha(database, payload.revisionId, digest);
 }

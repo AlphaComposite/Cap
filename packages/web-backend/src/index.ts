@@ -37,6 +37,12 @@ export {
 	type ViewerSettingKey,
 	type ViewerSettings,
 } from "./Videos/EffectiveVideoRules.ts";
+export {
+	currentEditedDownloadUrlLookup,
+	DOWNLOAD_PREPARING_MESSAGE,
+	registerEditedDownloadUrlLookup,
+	revisionDownloadOutcome,
+} from "./Videos/editedDownload.ts";
 export { findScreenshotObjectKey, Videos } from "./Videos/index.ts";
 export {
 	buildCanView,

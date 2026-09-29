@@ -174,6 +174,15 @@ export type GrantRefreshPlan =
 	| "hold"
 	| "fail-closed";
 
+export function shareCanDownload(input: {
+	playback: { mode: RevisionPlaybackMode } | null;
+	permitted: boolean;
+}): boolean {
+	if (!input.permitted) return false;
+	if (!input.playback) return true;
+	return input.playback.mode === "hls";
+}
+
 export function hlsResumePosition(currentTime: number): number {
 	if (!Number.isFinite(currentTime) || currentTime <= 0) return -1;
 	return currentTime;

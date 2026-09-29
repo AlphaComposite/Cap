@@ -3,7 +3,10 @@ import { Rpcs } from "@cap/web-domain";
 import { HttpServer } from "@effect/platform";
 import { RpcSerialization, RpcServer } from "@effect/rpc";
 import { Layer } from "effect";
+import { ensureEditedDownloadLookup } from "@/lib/register-edited-download";
 import { Dependencies } from "@/lib/server";
+
+ensureEditedDownloadLookup();
 
 const rpcLayer = Layer.mergeAll(
 	RpcAuthMiddlewareLive,

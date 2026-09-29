@@ -16,6 +16,10 @@ import {
 import { runPromise } from "@/lib/server";
 import { canUserDownloadVideo } from "@/lib/video-download-permissions";
 import { decodeStorageVideo } from "@/lib/video-storage";
+import {
+	DOWNLOAD_PREPARING_MESSAGE,
+	revisionDownloadOutcome,
+} from "../../../../packages/web-backend/src/Videos/editedDownload";
 
 export type VideoDownloadVariant = "current" | "original";
 export type VideoDownloadInfo =
@@ -26,8 +30,54 @@ export type VideoDownloadInfo =
 	  }
 	| {
 			success: false;
+			pending: true;
+			message: typeof DOWNLOAD_PREPARING_MESSAGE;
+	  }
+	| {
+			success: false;
 			error: string;
 	  };
+
+function downloadPreparing(): Extract<VideoDownloadInfo, { pending: true }> {
+	return {
+		success: false,
+		pending: true,
+		message: DOWNLOAD_PREPARING_MESSAGE,
+	};
+}
+
+async function currentEditedDownload(video: {
+	id: Video.VideoId;
+	ownerId: string;
+	name: string;
+}) {
+	if (!isInstantFinishEnabledForOwner(video.ownerId)) return null;
+	const eligible = await loadEligibleLegacy({
+		videoId: video.id,
+		ownerId: video.ownerId,
+	});
+	const downloadUrl = eligible
+		? null
+		: await revisionArtifactUrl({
+				videoId: video.id,
+				ownerId: video.ownerId,
+				artifact: "download",
+				child: "download.mp4",
+			});
+	const outcome = revisionDownloadOutcome({
+		flagged: true,
+		eligible,
+		name: video.name,
+		downloadUrl,
+	});
+	if (outcome.status === "legacy") return null;
+	if (outcome.status === "preparing") return downloadPreparing();
+	return {
+		success: true as const,
+		downloadUrl: outcome.downloadUrl,
+		filename: outcome.fileName,
+	};
+}
 
 export async function downloadVideo(videoId: Video.VideoId) {
 	const user = await getCurrentUser();
@@ -52,31 +102,8 @@ export async function downloadVideo(videoId: Video.VideoId) {
 		throw new Error("You don't have permission to download this video");
 	}
 
-	if (isInstantFinishEnabledForOwner(video.ownerId)) {
-		const eligible = await loadEligibleLegacy({
-			videoId,
-			ownerId: video.ownerId,
-		});
-		if (!eligible) {
-			const downloadUrl = await revisionArtifactUrl({
-				videoId,
-				ownerId: video.ownerId,
-				artifact: "download",
-				child: "download.mp4",
-			});
-			if (!downloadUrl) {
-				return {
-					success: false as const,
-					error: "Preparing download...",
-				};
-			}
-			return {
-				success: true as const,
-				downloadUrl,
-				filename: `${video.name}.mp4`,
-			};
-		}
-	}
+	const edited = await currentEditedDownload(video);
+	if (edited) return edited;
 
 	try {
 		const videoKey = `${video.ownerId}/${videoId}/result.mp4`;
@@ -139,29 +166,8 @@ export async function getVideoDownloadInfo(
 				filename: `${video.name} (original).mp4`,
 			};
 		}
-		const eligible = await loadEligibleLegacy({
-			videoId,
-			ownerId: video.ownerId,
-		});
-		if (!eligible) {
-			const downloadUrl = await revisionArtifactUrl({
-				videoId,
-				ownerId: video.ownerId,
-				artifact: "download",
-				child: "download.mp4",
-			});
-			if (!downloadUrl) {
-				return {
-					success: false,
-					error: "Preparing download...",
-				};
-			}
-			return {
-				success: true as const,
-				downloadUrl,
-				filename: `${video.name}.mp4`,
-			};
-		}
+		const edited = await currentEditedDownload(video);
+		if (edited) return edited;
 	}
 
 	if (variant === "current") {
