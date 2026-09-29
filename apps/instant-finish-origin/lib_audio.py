@@ -290,7 +290,7 @@ def probe_audio_rate(source: Path) -> int:
     return int(text[0].strip())
 
 
-def _reusable_presentation(dest: Path, meta: Path, source_sha: str, _source: Path) -> dict | None:
+def _reusable_presentation(dest: Path, meta: Path, source_sha: str) -> dict | None:
     if not dest.is_file() or not meta.is_file():
         return None
     try:
@@ -309,7 +309,6 @@ def _reusable_presentation(dest: Path, meta: Path, source_sha: str, _source: Pat
         return None
     if record.get("audio_stream") != _PRESENTATION_AUDIO_STREAM:
         return None
-    # Source sha already binds the file, so the stored rate cannot change. A probe failure must not turn that record into an error.
     input_rate = record.get("input_rate")
     if not _supported_input_rate(input_rate):
         return None
@@ -328,7 +327,7 @@ def prepare_presentation(source: Path) -> dict:
     dest = presentation_pcm_path(source)
     meta = presentation_meta_path(source)
     source_sha = _sha256(source)
-    reused = _reusable_presentation(dest, meta, source_sha, source)
+    reused = _reusable_presentation(dest, meta, source_sha)
     if reused is not None:
         reused = dict(reused)
         reused["reused"] = True
