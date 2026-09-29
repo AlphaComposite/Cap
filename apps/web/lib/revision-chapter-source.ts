@@ -56,7 +56,7 @@ export function projectSourceChapters(
 	return projectWithSource(sourceChapters, spec).map((entry) => entry.chapter);
 }
 
-function outputChaptersToSource(
+export function outputChaptersToSource(
 	chapters: readonly VideoChapter[],
 	spec: VideoEditSpec,
 ): VideoChapter[] {
@@ -104,7 +104,7 @@ export function mergeOwnerChapterEdit(input: {
 		const unchangedStart = visible.find(
 			(entry) => Math.abs(entry.chapter.start - chapter.start) <= EPSILON,
 		);
-		if (unchangedStart) {
+		if (unchangedStart && chapter.start > 0) {
 			return [{ ...chapter, start: unchangedStart.source.start }];
 		}
 		return outputChaptersToSource([chapter], input.currentSpec);

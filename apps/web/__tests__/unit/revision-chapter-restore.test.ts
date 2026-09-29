@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	deriveRevisionChapterState,
 	mergeOwnerChapterEdit,
+	outputChaptersToSource,
 } from "@/lib/revision-chapter-source";
 import {
 	createIdentityEditSpec,
@@ -190,5 +191,27 @@ describe("chapters come back when a cut section is restored", () => {
 			"B",
 		]);
 		expect(state.sourceChapters[0]).toEqual({ title: "A", start: 0 });
+	});
+
+	it("keeps the opening chapter at 0:00 through an owner rename when the start is cut", () => {
+		const cutStart = cut([{ start: 15, end: 100 }]);
+		const renamed = mergeOwnerChapterEdit({
+			previousSourceChapters: outputChaptersToSource(
+				[
+					{ title: "A", start: 0 },
+					{ title: "B", start: 10 },
+				],
+				cutStart,
+			),
+			currentSpec: cutStart,
+			editedChapters: [
+				{ title: "A renamed", start: 0 },
+				{ title: "B", start: 10 },
+			],
+		});
+		expect(renamed).toEqual([
+			{ title: "A renamed", start: 0 },
+			{ title: "B", start: 25 },
+		]);
 	});
 });
