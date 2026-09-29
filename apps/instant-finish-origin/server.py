@@ -646,7 +646,10 @@ class OriginApp:
             size = path.stat().st_size
         except OSError:
             return self._text(500, b"unavailable")
-        range_header = headers.get("Range")
+        range_header = next(
+            (value for key, value in headers.items() if key.lower() == "range"),
+            None,
+        )
         if range_header:
             parsed_range = parse_byte_range(range_header, size)
             if parsed_range is None:

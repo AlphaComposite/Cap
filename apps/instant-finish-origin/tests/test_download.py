@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import subprocess
@@ -308,6 +309,36 @@ class DownloadTests(unittest.TestCase):
                 return
             time.sleep(0.25)
         self.fail(body)
+
+    def test_download_range_header_is_case_insensitive_over_http(self) -> None:
+        self._write_source()
+        self._prepare_source(f"owner/{VIDEO}/source/original.mp4")
+        self._prepare_revision()
+        payload = bytes(range(256)) * 16
+        (self._namespace() / "download.mp4").write_bytes(payload)
+        token = grant_mod.mint(GRANT, claims(artifact="download"))
+        path = f"/media/{VIDEO}/r/{REV}/download.mp4?t={token}"
+        cases = [
+            ("GET", "range", "bytes=2-17", 206, payload[2:18]),
+            ("GET", "rAnGe", "bytes=2-17", 206, payload[2:18]),
+            ("HEAD", "range", "bytes=2-17", 206, b""),
+            ("GET", "range", "bytes=9999-10000", 416, b"range"),
+            ("GET", None, None, 200, payload),
+        ]
+        for method, name, value, expected_status, expected_body in cases:
+            with self.subTest(method=method, header=name, value=value):
+                conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=30)
+                try:
+                    conn.request(method, path, headers={name: value} if name else {})
+                    response = conn.getresponse()
+                    body = response.read()
+                    self.assertEqual(response.status, expected_status)
+                    self.assertEqual(body, expected_body)
+                    if expected_status == 206:
+                        self.assertEqual(response.getheader("Content-Range"), f"bytes 2-17/{len(payload)}")
+                        self.assertEqual(response.getheader("Content-Length"), "16")
+                finally:
+                    conn.close()
 
     def test_download_streams_in_bounded_chunks(self) -> None:
         self._write_source()
