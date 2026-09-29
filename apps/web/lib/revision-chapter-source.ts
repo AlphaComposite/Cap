@@ -10,6 +10,40 @@ import {
 const EPSILON = 0.0005;
 export const MIN_CHAPTER_SECONDS = 10;
 
+function overlaps(left: number, right: number) {
+	return Math.abs(left - right) <= EPSILON;
+}
+
+function nextFreeSourceStart(start: number, taken: readonly number[]) {
+	let steps = 1;
+	let candidate = Math.round(start * 1000 + steps) / 1000;
+	while (taken.some((time) => overlaps(time, candidate))) {
+		steps += 1;
+		candidate = Math.round(start * 1000 + steps) / 1000;
+	}
+	return candidate;
+}
+
+function preserveHiddenChapters(
+	hidden: readonly VideoChapter[],
+	edited: readonly VideoChapter[],
+): VideoChapter[] {
+	const editedStarts = edited.map((chapter) => chapter.start);
+	const collided = (chapter: VideoChapter) =>
+		editedStarts.some((start) => overlaps(start, chapter.start));
+	if (!hidden.some(collided)) return [...hidden];
+	const staying = hidden
+		.filter((chapter) => !collided(chapter))
+		.map((chapter) => chapter.start);
+	const taken = [...editedStarts, ...staying];
+	return hidden.map((chapter) => {
+		if (!collided(chapter)) return chapter;
+		const start = nextFreeSourceStart(chapter.start, taken);
+		taken.push(start);
+		return { ...chapter, start };
+	});
+}
+
 function sortedUnique(chapters: readonly VideoChapter[]): VideoChapter[] {
 	const sorted = [...chapters].sort((a, b) => a.start - b.start);
 	return sorted.filter(
@@ -153,5 +187,5 @@ export function mergeOwnerChapterEdit(input: {
 		}
 		return outputChaptersToSource([chapter], input.currentSpec);
 	});
-	return sortedUnique([...hidden, ...edited]);
+	return sortedUnique([...preserveHiddenChapters(hidden, edited), ...edited]);
 }
