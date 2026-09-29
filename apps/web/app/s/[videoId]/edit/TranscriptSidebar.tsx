@@ -612,12 +612,17 @@ export function TranscriptSidebar({
 				toast.info("No safe filler words were detected.");
 				return;
 			}
+			const keepsOwnerRestores = autoCuts.fillers.ranges.length > 0;
 			onSetAutoCutLayer("fillers", {
 				...autoCuts.fillers,
 				enabled,
-				ranges: toVideoRanges(fillerPlan.ranges),
-				removedCount,
-				skippedCount: fillerPlan.skippedCount,
+				...(keepsOwnerRestores
+					? {}
+					: {
+							ranges: toVideoRanges(fillerPlan.ranges),
+							removedCount,
+							skippedCount: fillerPlan.skippedCount,
+						}),
 			});
 			clearSelection();
 		},
@@ -630,12 +635,17 @@ export function TranscriptSidebar({
 				toast.info("No extended no-speech pauses were detected.");
 				return;
 			}
+			const keepsOwnerRestores = autoCuts.silence.ranges.length > 0;
 			onSetAutoCutLayer("silence", {
 				...autoCuts.silence,
 				enabled,
-				ranges: toVideoRanges(silencePlan.ranges),
-				removedMs: silencePlan.removedMs,
-				gapCount: silencePlan.gapCount,
+				...(keepsOwnerRestores
+					? {}
+					: {
+							ranges: toVideoRanges(silencePlan.ranges),
+							removedMs: silencePlan.removedMs,
+							gapCount: silencePlan.gapCount,
+						}),
 			});
 			clearSelection();
 		},

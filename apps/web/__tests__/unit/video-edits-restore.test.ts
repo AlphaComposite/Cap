@@ -66,13 +66,48 @@ describe("restoreTimelineRanges", () => {
 		expect(restored.autoCuts?.fillers.enabled).toBe(true);
 	});
 
+	it("keeps auto-cut counts consistent when whole cuts are restored", () => {
+		const withSilence = setTimelineAutoCutLayer(
+			createTimelineState(10),
+			"silence",
+			{
+				enabled: true,
+				ranges: [
+					{ start: 1, end: 2 },
+					{ start: 7, end: 8 },
+				],
+				removedMs: 2_000,
+				gapCount: 2,
+			},
+		);
+		const withBoth = setTimelineAutoCutLayer(withSilence, "fillers", {
+			enabled: true,
+			ranges: [
+				{ start: 3, end: 3.5 },
+				{ start: 5, end: 5.5 },
+			],
+			removedCount: 2,
+			skippedCount: 0,
+		});
+		const restored = restoreTimelineRanges(withBoth, [{ start: 0.5, end: 4 }]);
+
+		expect(restored.autoCuts?.silence.ranges).toEqual([{ start: 7, end: 8 }]);
+		expect(restored.autoCuts?.silence.gapCount).toBe(1);
+		expect(restored.autoCuts?.silence.removedMs).toBe(1_000);
+		expect(restored.autoCuts?.fillers.ranges).toEqual([{ start: 5, end: 5.5 }]);
+		expect(restored.autoCuts?.fillers.removedCount).toBe(1);
+	});
+
 	it("widens the trim when a restored range lies outside it", () => {
 		const trimmed = setTimelineTrim(createTimelineState(10), 2, 8);
 		const restored = restoreTimelineRanges(trimmed, [{ start: 0.5, end: 1.5 }]);
 
 		expect(restored.trimStart).toBe(0.5);
 		expect(restored.trimEnd).toBe(8);
-		expect(getTimelineKeepRanges(restored)).toEqual([{ start: 0.5, end: 8 }]);
+		expect(getTimelineKeepRanges(restored)).toEqual([
+			{ start: 0.5, end: 1.5 },
+			{ start: 2, end: 8 },
+		]);
 	});
 
 	it("is a no-op when nothing overlaps", () => {
