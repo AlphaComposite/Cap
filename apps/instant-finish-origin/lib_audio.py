@@ -24,6 +24,7 @@ import numpy as np
 import limits
 
 SR = 48000
+_PRESENTATION_AUDIO_STREAM = "0:a:0"
 FRAME = 1024
 PRE_FRAMES = 2
 POST_FRAMES = 2
@@ -289,7 +290,7 @@ def probe_audio_rate(source: Path) -> int:
     return int(text[0].strip())
 
 
-def _reusable_presentation(dest: Path, meta: Path, source_sha: str) -> dict | None:
+def _reusable_presentation(dest: Path, meta: Path, source_sha: str, source: Path) -> dict | None:
     if not dest.is_file() or not meta.is_file():
         return None
     try:
@@ -306,7 +307,11 @@ def _reusable_presentation(dest: Path, meta: Path, source_sha: str) -> dict | No
         return None
     if dest.stat().st_size != samples * 8:
         return None
-    if not _reusable_resampled_from(record.get("resampled_from")):
+    if record.get("audio_stream") != _PRESENTATION_AUDIO_STREAM:
+        return None
+    rate = probe_audio_rate(source)
+    expected = None if rate == SR else rate
+    if record.get("resampled_from") != expected:
         return None
     return record
 
@@ -321,7 +326,7 @@ def prepare_presentation(source: Path) -> dict:
     dest = presentation_pcm_path(source)
     meta = presentation_meta_path(source)
     source_sha = _sha256(source)
-    reused = _reusable_presentation(dest, meta, source_sha)
+    reused = _reusable_presentation(dest, meta, source_sha, source)
     if reused is not None:
         reused = dict(reused)
         reused["reused"] = True
@@ -356,6 +361,7 @@ def prepare_presentation(source: Path) -> dict:
         "samples": nbytes // 8,
         "source": source.name,
         "source_sha256": source_sha,
+        "audio_stream": _PRESENTATION_AUDIO_STREAM,
     }
     meta = presentation_meta_path(source)
     meta.write_bytes((json.dumps(record, indent=2, sort_keys=True) + "\n").encode())
@@ -421,10 +427,6 @@ _AAC_RATES = frozenset({
 
 def _supported_input_rate(sample_rate: object) -> bool:
     return isinstance(sample_rate, int) and not isinstance(sample_rate, bool) and sample_rate in _AAC_RATES
-
-
-def _reusable_resampled_from(value: object) -> bool:
-    return value is None or _supported_input_rate(value)
 
 
 def audio_rate_policy(sample_rate: object) -> str:

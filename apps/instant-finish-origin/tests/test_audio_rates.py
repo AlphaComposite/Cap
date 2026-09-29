@@ -71,6 +71,35 @@ def _write_click(path: Path, rate: int) -> None:
     )
 
 
+def _write_aac_click(path: Path, rate: int) -> None:
+    _ffmpeg(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", f"testsrc=size=320x180:rate={FRAME_RATE}:duration={DURATION}",
+            "-f", "lavfi", "-i", _click_expr(rate),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30",
+            "-c:a", "aac", "-ar", str(rate), "-ac", "1",
+            "-movflags", "+faststart",
+            "-shortest", str(path),
+        ]
+    )
+
+
+def _audio_codec(path: Path) -> str:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr.decode()[-400:])
+    return result.stdout.decode().strip()
+
+
 def _video_span(path: Path) -> tuple[float, float]:
     result = subprocess.run(
         [
@@ -161,12 +190,48 @@ class ClickTests(unittest.TestCase):
                     self.assertLessEqual(offset_ms, OFFSET_LIMIT_MS)
                     self.assertLessEqual(drift_s, frame_s)
 
+    def test_aac_mp4_faststart_click_matches_source(self) -> None:
+        for rate in (44100, 48000, 32000):
+            with self.subTest(rate=rate):
+                with tempfile.TemporaryDirectory() as tmp:
+                    source = Path(tmp) / f"click{rate}.mp4"
+                    _write_aac_click(source, rate)
+                    blob = source.read_bytes()
+                    self.assertLess(blob.find(b"moov"), blob.find(b"mdat"))
+                    self.assertEqual(_audio_codec(source), "aac")
+                    offset_ms, amp, drift_s, frame_s = _click_stats(source, rate)
+                    prepared = np.fromfile(lib_audio.presentation_pcm_path(source), dtype="<f4").reshape(-1, 2)
+                    prepared_ms = int(abs(prepared).max(axis=1).argmax()) / lib_audio.SR * 1000
+                    with tempfile.TemporaryDirectory() as side:
+                        reference = Path(side) / "source.pcm"
+                        _ffmpeg(
+                            [
+                                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                                "-i", str(source),
+                                "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(lib_audio.SR),
+                                "-f", "f32le", str(reference),
+                            ]
+                        )
+                        source_pcm = np.fromfile(reference, dtype="<f4").reshape(-1, 2)
+                    source_ms = int(abs(source_pcm).max(axis=1).argmax()) / lib_audio.SR * 1000
+                    source_offset_ms = abs(prepared_ms - source_ms)
+                    print(
+                        f"AAC_MP4_OFFSET rate={rate} offset_ms={offset_ms:.3f} "
+                        f"source_offset_ms={source_offset_ms:.3f} prepared_ms={prepared_ms:.3f} "
+                        f"source_ms={source_ms:.3f}"
+                    )
+                    self.assertGreater(amp, 0.2)
+                    self.assertLessEqual(offset_ms, OFFSET_LIMIT_MS)
+                    self.assertLessEqual(source_offset_ms, OFFSET_LIMIT_MS)
+                    self.assertLessEqual(drift_s, frame_s)
+                    record = json.loads(lib_audio.presentation_meta_path(source).read_text())
+                    self.assertEqual(record["audio_stream"], "0:a:0")
+
 
 class MultiTrackTests(unittest.TestCase):
     def test_prepare_decodes_a0_click_not_surround(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "multi.mkv"
-            # Neither audio stream is default, so an unmapped decode picks the 5.1 stream.
             _ffmpeg(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -209,11 +274,21 @@ class ReuseTests(unittest.TestCase):
             first = _prepare(source)
             self.assertFalse(first.get("reused"))
             self.assertEqual(first["resampled_from"], 44100)
-            with patch("lib_audio.subprocess.run") as run:
+            self.assertEqual(first["audio_stream"], "0:a:0")
+            calls: list[list[str]] = []
+            real_run = subprocess.run
+
+            def spy(cmd, *args, **kwargs):
+                calls.append([str(part) for part in cmd])
+                return real_run(cmd, *args, **kwargs)
+
+            with patch("lib_audio.subprocess.run", side_effect=spy):
                 second = lib_audio.prepare_presentation(source)
             self.assertTrue(second["reused"])
             self.assertEqual(second["resampled_from"], 44100)
-            self.assertEqual(run.call_count, 0)
+            self.assertEqual(second["audio_stream"], "0:a:0")
+            self.assertFalse(any(cmd and cmd[0] == "ffmpeg" for cmd in calls))
+            self.assertTrue(any(cmd and cmd[0] == "ffprobe" for cmd in calls))
 
     def test_old_resampled_from_16000_is_reused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -222,14 +297,30 @@ class ReuseTests(unittest.TestCase):
             first = _prepare(source)
             self.assertIsNone(first["resampled_from"])
             meta = lib_audio.presentation_meta_path(source)
-            record = json.loads(meta.read_text())
-            record["resampled_from"] = 16000
-            meta.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-            with patch("lib_audio.subprocess.run") as run:
-                second = lib_audio.prepare_presentation(source)
-            self.assertTrue(second["reused"])
-            self.assertEqual(second["resampled_from"], 16000)
-            self.assertEqual(run.call_count, 0)
+            pcm = lib_audio.presentation_pcm_path(source)
+            base = json.loads(meta.read_text())
+            stale = {
+                "no_marker": {key: value for key, value in base.items() if key != "audio_stream"},
+                "rate_mismatch": {**base, "audio_stream": "0:a:0", "resampled_from": 16000},
+            }
+            for name, record in stale.items():
+                with self.subTest(case=name):
+                    meta.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+                    pcm.write_bytes(b"\x00" * (int(record["samples"]) * 8))
+                    calls: list[list[str]] = []
+                    real_run = subprocess.run
+
+                    def spy(cmd, *args, **kwargs):
+                        calls.append([str(part) for part in cmd])
+                        return real_run(cmd, *args, **kwargs)
+
+                    with patch("lib_audio.subprocess.run", side_effect=spy):
+                        second = lib_audio.prepare_presentation(source)
+                    self.assertFalse(second.get("reused"))
+                    self.assertTrue(any(cmd and cmd[0] == "ffmpeg" for cmd in calls))
+                    self.assertEqual(second["audio_stream"], "0:a:0")
+                    self.assertIsNone(second["resampled_from"])
+                    self.assertTrue(any(pcm.read_bytes()))
 
 
 class RejectionTests(unittest.TestCase):
