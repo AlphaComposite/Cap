@@ -115,10 +115,14 @@ function recordedInput(
 		draftSession: string;
 	},
 	video: {
-		metadata?: { chapters?: VideoChapter[] } | null;
+		metadata?: {
+			chapters?: VideoChapter[];
+			sourceChapters?: VideoChapter[];
+			chaptersRevisionId?: string;
+		} | null;
 		duration: number | null;
 	},
-	currentChapters: VideoChapter[] | null,
+	current: { revisionId: string; chapters: VideoChapter[] } | null,
 ) {
 	return {
 		videoId: input.videoId,
@@ -128,7 +132,13 @@ function recordedInput(
 		draftVersion: recorded.draftVersion,
 		draftSession: recorded.draftSession,
 		chapters:
-			input.chapters ?? currentChapters ?? video.metadata?.chapters ?? [],
+			input.chapters ?? current?.chapters ?? video.metadata?.chapters ?? [],
+		sourceChapters:
+			!input.chapters &&
+			current &&
+			video.metadata?.chaptersRevisionId === current.revisionId
+				? (video.metadata?.sourceChapters ?? null)
+				: null,
 		transcript: input.transcript ?? null,
 		sourceDuration: video.duration,
 	};
@@ -228,11 +238,14 @@ export function parseRevisionRouteBody(
 async function currentRevisionChapters(
 	videoId: string,
 	ownerId: string,
-): Promise<VideoChapter[] | null> {
+): Promise<{ revisionId: string; chapters: VideoChapter[] } | null> {
 	const publication = await getInstantFinishPublicationDto({
 		videoId,
 		ownerId,
 	});
 	if (!publication.currentRevisionId) return null;
-	return publication.revisionMetadata.chapters;
+	return {
+		revisionId: publication.currentRevisionId,
+		chapters: publication.revisionMetadata.chapters,
+	};
 }

@@ -660,6 +660,7 @@ function useLazyTimelineThumbnails({
 export function EditVideoClient({
 	video,
 	chapters,
+	sourceChapters,
 	hasExistingEdits,
 	initialEditSpec,
 	playbackSrc,
@@ -667,6 +668,7 @@ export function EditVideoClient({
 }: {
 	video: EditableVideo;
 	chapters: { title: string; start: number }[];
+	sourceChapters?: { title: string; start: number }[] | null;
 	hasExistingEdits: boolean;
 	initialEditSpec: VideoEditSpec;
 	playbackSrc: string;
@@ -877,6 +879,7 @@ export function EditVideoClient({
 	const hasOutputEdits = outputDuration < state.duration;
 	const { chaptersUrl, projectedChapters } = useEditorChapterPreview({
 		chapters,
+		sourceChapters,
 		initialEditSpec,
 		editSpec,
 	});

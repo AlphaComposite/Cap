@@ -6,13 +6,12 @@ import {
 	type EditTranscript,
 	remapEditTranscriptThroughSpec,
 } from "@/lib/edit-transcript";
+import { deriveRevisionChapterState } from "@/lib/revision-chapter-source";
 import { formatToWebVTT } from "@/lib/transcribe-utils";
 import {
 	createIdentityEditSpec,
 	getEditSpecOutputDuration,
-	mapOutputChaptersToSource,
 	normalizeVideoEditSpec,
-	projectSourceChaptersToOutput,
 	remapCurrentOutputTimeThroughEdit,
 	type VideoChapter,
 } from "@/lib/video-edits";
@@ -175,23 +174,16 @@ export function previousEditionSpec(input: {
 
 export function deriveRevisionChapters(input: {
 	storedChapters: readonly VideoChapter[];
+	storedSourceChapters?: readonly VideoChapter[] | null;
 	previousSpec: VideoEditSpec;
 	nextSpec: VideoEditSpec;
 }): VideoChapter[] {
-	const sourceChapters = mapOutputChaptersToSource(
-		[...input.storedChapters],
-		input.previousSpec,
-	);
-	const outputEnd = getEditSpecOutputDuration(input.nextSpec);
-	const projected = projectSourceChaptersToOutput(
-		sourceChapters,
-		input.nextSpec,
-	).filter((chapter) => chapter.start < outputEnd);
-	return projected.filter(
-		(chapter, index) =>
-			projected[index + 1] === undefined ||
-			(projected[index + 1] as VideoChapter).start > chapter.start,
-	);
+	return deriveRevisionChapterState({
+		storedChapters: input.storedChapters,
+		storedSourceChapters: input.storedSourceChapters ?? null,
+		previousSpec: input.previousSpec,
+		nextSpec: input.nextSpec,
+	}).chapters;
 }
 
 function sameChapters(

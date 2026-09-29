@@ -25,6 +25,10 @@ import {
 import { decryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
 import { runtimeObjectStore } from "@/lib/instant-finish-source-relocate";
 import {
+	deriveRevisionChapterState,
+	projectSourceChapters,
+} from "@/lib/revision-chapter-source";
+import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
 	snappedDurationError,
 } from "@/lib/revision-duration-check";
@@ -44,7 +48,6 @@ import {
 	chaptersAfterRevert,
 	chaptersDocument,
 	deriveRevisionCaptions,
-	deriveRevisionChapters,
 	ENCODER_PROFILE,
 	intentIdFor,
 	MAPPING_VERSION,
@@ -108,6 +111,7 @@ export type PublishRevisionInput = {
 	draftVersion: number;
 	draftSession: string;
 	chapters?: readonly VideoChapter[];
+	sourceChapters?: readonly VideoChapter[] | null;
 	transcript?: EditTranscript | null;
 	sourceDuration?: number | null;
 };
@@ -165,6 +169,7 @@ type PreparedMedia = {
 	captionsVtt: string;
 	chaptersJson: string;
 	chapters: { title: string; start: number }[];
+	sourceChapters?: { title: string; start: number }[];
 	attestedDurationSeconds: number;
 	keepRanges: { start: number; end: number }[];
 	sourceDuration?: number;
@@ -349,11 +354,14 @@ async function reuseVerifiedReady(
 	if (!found) return null;
 	const mediaDuration = found.attested.playlistDurationSeconds;
 	const captionsVtt = found.captionsVtt ?? "";
-	const chapters = deriveRevisionChapters({
+	const chapterState = deriveRevisionChapterState({
 		storedChapters: input.chapters ?? [],
+		storedSourceChapters: input.sourceChapters ?? null,
 		previousSpec: found.allocated.previousSpec,
 		nextSpec: spec,
 	});
+	const chapters = chapterState.chapters;
+	const sourceChapters = chapterState.sourceChapters;
 	await transition(app, found.allocated.revisionId, "PUBLISHING", now());
 	await app.transaction(async (tx) => {
 		await flipCurrent(
@@ -371,6 +379,7 @@ async function reuseVerifiedReady(
 					sourceId: found.allocated.sourceId,
 				}),
 				chapters,
+				sourceChapters,
 				attestedDurationSeconds: mediaDuration,
 				keepRanges: spec.keepRanges,
 				sourceDuration: spec.sourceDuration,
@@ -1188,11 +1197,14 @@ async function produceAndVerify(
 		transcript: await loadStoredEditTranscript(app, input.videoId, spec),
 		nextSpec: spec,
 	});
-	const chapters = deriveRevisionChapters({
+	const chapterState = deriveRevisionChapterState({
 		storedChapters: input.chapters ?? [],
+		storedSourceChapters: input.sourceChapters ?? null,
 		previousSpec: allocated.previousSpec,
 		nextSpec: spec,
 	});
+	const chapters = chapterState.chapters;
+	const sourceChapters = chapterState.sourceChapters;
 	const thumbnailPolicy =
 		spec.keepRanges[0]?.start === 0 ? "source-zero" : "seg0-first-frame";
 	const chaptersJson = chaptersDocument({
@@ -1225,6 +1237,7 @@ async function produceAndVerify(
 		captionsVtt: captions.vtt,
 		chaptersJson,
 		chapters,
+		sourceChapters,
 		attestedDurationSeconds: mediaDuration,
 		keepRanges: spec.keepRanges,
 		sourceDuration: spec.sourceDuration,
@@ -1476,7 +1489,7 @@ export async function flipCurrent(
 	await tx
 		.update(videos)
 		.set({
-			metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters', CAST(${JSON.stringify(prepared.chapters)} AS JSON), '$.chaptersRevisionId', ${allocated.revisionId})`,
+			metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters', CAST(${JSON.stringify(prepared.chapters)} AS JSON), '$.sourceChapters', CAST(${JSON.stringify(prepared.sourceChapters ?? prepared.chapters)} AS JSON), '$.chaptersRevisionId', ${allocated.revisionId})`,
 		})
 		.where(eq(videos.id, videoId(input.videoId)));
 	await bumpPolicyEpoch(input.videoId, tx);
@@ -1533,6 +1546,8 @@ export async function flipCurrent(
 							chaptersJson: prepared.chaptersJson,
 							publishedChapters: prepared.chapters,
 							previousChapters: videoRow?.metadata?.chapters ?? null,
+							previousSourceChapters:
+								videoRow?.metadata?.sourceChapters ?? null,
 							previousChaptersRevisionId:
 								videoRow?.metadata?.chaptersRevisionId ?? null,
 							failedSpec: spec,
@@ -1709,6 +1724,7 @@ type ReadbackPayload = {
 	chaptersJson: string;
 	publishedChapters?: VideoChapter[];
 	previousChapters?: VideoChapter[] | null;
+	previousSourceChapters?: VideoChapter[] | null;
 	previousChaptersRevisionId?: string | null;
 	failedSpec?: VideoEditSpec;
 	previousSpec?: VideoEditSpec;
@@ -2041,23 +2057,37 @@ async function restoreChaptersAfterRevert(
 		.where(eq(videos.id, videoId(payload.videoId)));
 	if (!video || video.metadata?.chaptersRevisionId !== payload.revisionId)
 		return;
-	const chapters = chaptersAfterRevert({
-		rowChapters: video.metadata?.chapters,
-		publishedChapters: payload.publishedChapters,
-		previousChapters: payload.previousChapters,
-		failedSpec: payload.failedSpec,
-		previousSpec: payload.previousSpec,
-	});
-	const chaptersSql = chapters
-		? sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters', CAST(${JSON.stringify(chapters)} AS JSON))`
-		: sql`JSON_REMOVE(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters')`;
+	const untouched =
+		JSON.stringify(video.metadata?.chapters ?? []) ===
+		JSON.stringify(payload.publishedChapters);
+	const rowSource = video.metadata?.sourceChapters ?? null;
+	const chapters = untouched
+		? (payload.previousChapters ?? null)
+		: rowSource
+			? projectSourceChapters(rowSource, payload.previousSpec)
+			: chaptersAfterRevert({
+					rowChapters: video.metadata?.chapters,
+					publishedChapters: payload.publishedChapters,
+					previousChapters: payload.previousChapters,
+					failedSpec: payload.failedSpec,
+					previousSpec: payload.previousSpec,
+				});
+	const sourceChapters = untouched
+		? (payload.previousSourceChapters ?? null)
+		: rowSource;
+	let next = sql`COALESCE(${videos.metadata}, JSON_OBJECT())`;
+	next = chapters
+		? sql`JSON_SET(${next}, '$.chapters', CAST(${JSON.stringify(chapters)} AS JSON))`
+		: sql`JSON_REMOVE(${next}, '$.chapters')`;
+	next = sourceChapters
+		? sql`JSON_SET(${next}, '$.sourceChapters', CAST(${JSON.stringify(sourceChapters)} AS JSON))`
+		: sql`JSON_REMOVE(${next}, '$.sourceChapters')`;
+	next = payload.previousChaptersRevisionId
+		? sql`JSON_SET(${next}, '$.chaptersRevisionId', ${payload.previousChaptersRevisionId})`
+		: sql`JSON_REMOVE(${next}, '$.chaptersRevisionId')`;
 	await tx
 		.update(videos)
-		.set({
-			metadata: payload.previousChaptersRevisionId
-				? sql`JSON_SET(${chaptersSql}, '$.chaptersRevisionId', ${payload.previousChaptersRevisionId})`
-				: sql`JSON_REMOVE(${chaptersSql}, '$.chaptersRevisionId')`,
-		})
+		.set({ metadata: next })
 		.where(eq(videos.id, videoId(payload.videoId)));
 }
 
