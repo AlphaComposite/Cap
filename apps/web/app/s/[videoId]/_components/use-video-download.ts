@@ -26,7 +26,7 @@ export function useVideoDownload(videoId: Video.VideoId) {
 			const run = async () => {
 				const result = await getVideoDownloadInfo(videoId, variant);
 				if (!result.success) {
-					if ("pending" in result && result.pending) {
+					if ("pending" in result) {
 						toast.message(result.message);
 						return;
 					}

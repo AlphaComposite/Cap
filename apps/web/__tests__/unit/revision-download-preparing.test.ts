@@ -197,12 +197,7 @@ describe("revision download is not a header status", () => {
 		).toBe(true);
 		expect(
 			shareCanDownload({
-				playback: {
-					mode: "unavailable",
-					videoId: "video-id",
-					generation: 1,
-					downloadReady: false,
-				},
+				playback: { mode: "unavailable" },
 				permitted: true,
 			}),
 		).toBe(false);
