@@ -483,6 +483,36 @@ class DownloadTests(unittest.TestCase):
         for prev, nxt in zip(pts, pts[1:]):
             self.assertGreaterEqual(nxt + 1e-6, prev)
 
+    def test_corrupt_cached_segment_download_regenerates(self) -> None:
+        self._write_source()
+        self._prepare_source(f"owner/{VIDEO}/source/original.mp4")
+        self._prepare_revision()
+        playback = grant_mod.mint(GRANT, claims())
+        status, _, seg = self._req(f"/media/{VIDEO}/r/{REV}/seg/0.m4s?t={playback}")
+        self.assertEqual(status, 200, seg[:80])
+        origin = next(iter(self.app._origins.values()))[0]
+        self.assertIn(0, origin._segment_bytes)
+        segment = origin.segment_path(0)
+        segment.write_bytes(b"corrupt-segment")
+        lib_origin.sidecar_path(segment).write_text("{")
+        status, _, body = self._post_download()
+        self.assertEqual(status, 202, body)
+        deadline = time.time() + 30
+        last = body
+        while time.time() < deadline:
+            status, _, last = self._post_download()
+            if status == 200:
+                break
+            if status == 500:
+                self.fail(f"download build failed on corrupt cached segment: {last!r}")
+            time.sleep(0.05)
+        self.assertEqual(status, 200, last)
+        self.assertTrue(any(row.get("integrity_retry") for row in origin.productions))
+        token = grant_mod.mint(GRANT, claims(artifact="download"))
+        status, _, media = self._req(f"/media/{VIDEO}/r/{REV}/download.mp4?t={token}")
+        self.assertEqual(status, 200, media[:80])
+        self.assertIn(b"ftyp", media)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

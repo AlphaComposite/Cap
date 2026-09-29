@@ -146,6 +146,78 @@ class StreamRemuxTests(unittest.TestCase):
             self.assertIn(1, origin._segment_bytes)
 
 
+class CachedDownloadRepairTests(unittest.TestCase):
+    def _origin(self, cache: Path) -> lib_origin.Origin:
+        origin = object.__new__(lib_origin.Origin)
+        origin.cache = cache
+        origin.segments = [0]
+        origin.encoder_hash = "enc"
+        origin.namespace = "ns"
+        origin.rev = "rev"
+        origin.mezz_sha256 = "mezz"
+        origin._segment_bytes = {}
+        origin._lock = threading.Lock()
+        origin._playback_lock = threading.Lock()
+        origin._playback_waiting = 0
+        origin._init_bytes = None
+        origin._init_avcc = None
+        origin._served_body = b""
+        origin._last_produce = {}
+        origin.productions = []
+        origin.init_path = cache / "init.mp4"
+        origin._record = lambda *_args, **_kwargs: None
+        return origin
+
+    def test_corrupt_cached_segment_is_regenerated_for_download(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = self._origin(Path(tmp))
+            produced: list[int] = []
+
+            def produce(index: int):
+                body = b"regenerated-segment"
+                path = origin.segment_path(index)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                origin._write_bound(path, body, "seg", index)
+                origin._segment_bytes[index] = body
+                origin._served_body = body
+                produced.append(index)
+                return body, 0.0
+
+            origin.produce = produce
+            path = origin.segment_path(0)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            origin._write_bound(path, b"original-segment", "seg", 0)
+            origin._segment_bytes[0] = b"original-segment"
+            path.write_bytes(b"corrupt-segment")
+            body = origin.read_segment_for_download(0)
+            self.assertEqual(body, b"regenerated-segment")
+            self.assertEqual(produced, [0])
+            self.assertEqual(path.read_bytes(), b"regenerated-segment")
+
+    def test_corrupt_cached_init_is_regenerated_for_download(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = self._origin(Path(tmp))
+            produced: list[int] = []
+
+            def produce(index: int):
+                body = b"regenerated-init"
+                origin._write_bound(origin.init_path, body, "init", None)
+                origin._init_bytes = body
+                origin._init_avcc = b"avcc"
+                origin._served_body = body
+                produced.append(index)
+                return body, 0.0
+
+            origin.produce = produce
+            origin._write_bound(origin.init_path, b"original-init", "init", None)
+            origin._init_bytes = b"original-init"
+            origin.init_path.write_bytes(b"corrupt-init")
+            body = origin.read_init_for_download()
+            self.assertEqual(body, b"regenerated-init")
+            self.assertEqual(produced, [0])
+            self.assertEqual(origin.init_path.read_bytes(), b"regenerated-init")
+
+
 class GrantTtlTests(unittest.TestCase):
     def test_download_grant_lasts_thirty_minutes_and_playback_stays_sixty(self) -> None:
         secret = b"grant-secret-grant-secret-grant-01"
