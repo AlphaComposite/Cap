@@ -163,19 +163,21 @@ def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> No
     dest = origin.cache / "download.mp4"
     if dest.is_file() and dest.stat().st_size > 0:
         return
-    _yield_to_playback(origin, slot)
-    parts = [origin.ensure_init()]
-    for index in range(len(origin.segments)):
-        _yield_to_playback(origin, slot)
-        parts.append(_without_styp(origin.ensure(index)))
-    _slot_cancelled(slot)
     ident = f"{os.getpid()}-{threading.get_ident()}"
     tmp_in = dest.with_name(f".download-in-{ident}.mp4")
     tmp_out = dest.with_name(f".download-out-{ident}.mp4")
     try:
         with tmp_in.open("wb") as stream:
-            for part in parts:
-                stream.write(part)
+            _yield_to_playback(origin, slot)
+            init = origin.ensure_init()
+            stream.write(init)
+            del init
+            for index in range(len(origin.segments)):
+                _yield_to_playback(origin, slot)
+                segment = _without_styp(origin.ensure(index))
+                stream.write(segment)
+                del segment
+            _slot_cancelled(slot)
         os.chmod(tmp_in, 0o600)
         result = limits.run_cmd(
             [

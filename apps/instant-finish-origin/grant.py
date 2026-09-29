@@ -1,7 +1,8 @@
 """Revision media grant. Matches apps/web/lib/revision-media-token.ts.
 
 token = kid + "." + base64url(canonical UTF-8 JSON) + "." + base64url(HMAC-SHA256(secret, encoded payload))
-Canonical JSON uses D's fixed claim order, not sorted keys. TTL is 60s. iat skew is 5s.
+Canonical JSON uses D's fixed claim order, not sorted keys. Playback TTL is 60s.
+Download artifact TTL is 1800s. iat skew is 5s.
 The key id is the token header. Verification uses REVISION_MEDIA_GRANT_KEYS, never NEXTAUTH_SECRET.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ import re
 from dataclasses import dataclass
 
 GRANT_TTL_S = 60
+DOWNLOAD_GRANT_TTL_S = 30 * 60
 GRANT_SKEW_S = 5
 MIN_SECRET_BYTES = 32
 SAFE_INT_MAX = 9_007_199_254_740_991
@@ -91,6 +93,10 @@ def canonical_grant_json(claims: dict) -> str:
     return body + "}"
 
 
+def ttl_for(artifact: str | None) -> int:
+    return DOWNLOAD_GRANT_TTL_S if artifact == "download" else GRANT_TTL_S
+
+
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -131,7 +137,10 @@ def mint(secret: bytes | list[tuple[str, bytes]], claims: dict, kid: str = "k1")
         raise GrantError(401, "key")
     key_id, key = chosen
     payload = canonical_grant_json(claims).encode("utf-8")
-    if _safe_int(claims["exp"]) - _safe_int(claims["iat"]) != GRANT_TTL_S:
+    artifact = claims.get("artifact")
+    if _safe_int(claims["exp"]) - _safe_int(claims["iat"]) != ttl_for(
+        artifact if isinstance(artifact, str) else None
+    ):
         raise GrantError(401, "ttl")
     encoded = b64url_encode(payload)
     sig = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).digest()
@@ -194,7 +203,7 @@ def verify(
         )
     except (TypeError, ValueError) as exc:
         raise GrantError(401, "claims") from exc
-    if grant.exp - grant.iat != GRANT_TTL_S:
+    if grant.exp - grant.iat != ttl_for(grant.artifact):
         raise GrantError(401, "ttl")
     if not ID_RE.fullmatch(grant.video_id) or not ID_RE.fullmatch(grant.revision_id):
         raise GrantError(401, "claims")

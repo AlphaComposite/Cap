@@ -31,7 +31,7 @@ const readyUrl = "https://origin.test/media/video/r/rev/download.mp4?t=grant";
 
 describe("dashboard download RPC", () => {
 	it("resolves an edited video through the revision download instead of a missing URL", () => {
-		expect(downloadInfoSource).toContain("revisionDownloadOutcome");
+		expect(downloadInfoSource).toContain("editedDownloadFromLookup");
 		expect(downloadInfoSource).toContain("DownloadPreparingError");
 		expect(downloadInfoSource).toContain("outcome.downloadUrl");
 		expect(downloadInfoSource).not.toContain(

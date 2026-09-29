@@ -133,6 +133,7 @@ import { normalizePlaybackSpeed } from "@/lib/playback-speed";
 import { isRateLimited, RATE_LIMIT_IDS } from "@/lib/rate-limit";
 import { ensureEditedDownloadLookup } from "@/lib/register-edited-download";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
+import { REVISION_MEDIA_DOWNLOAD_GRANT_TTL_SECONDS } from "@/lib/revision-media-token";
 import { transcribeVideo } from "@/lib/transcribe";
 import { startVideoProcessingWorkflow } from "@/lib/video-processing";
 import { isAiGenerationEnabled } from "@/utils/flags";
@@ -2632,7 +2633,9 @@ const AgentHandlersLive = HttpApiBuilder.group(
 						return {
 							fileName: result.value.fileName,
 							url: result.value.downloadUrl,
-							expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+							expiresAt: new Date(
+								Date.now() + REVISION_MEDIA_DOWNLOAD_GRANT_TTL_SECONDS * 1000,
+							).toISOString(),
 							requestId,
 						};
 					}),

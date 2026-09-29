@@ -10,6 +10,7 @@ import {
 	evaluatePresentedGrant,
 	type GrantDenial,
 	getRevisionPlaybackUrl,
+	revisionMediaGrantTtlSeconds,
 	signRevisionMediaGrant,
 	verifyRevisionMediaGrant,
 } from "@/lib/revision-media-token";
@@ -264,7 +265,9 @@ export function issueGrantForPublication(input: {
 			origin: input.origin,
 			child: input.child,
 		}),
-		expiresAt: (input.now ?? Math.floor(Date.now() / 1000)) + 60,
+		expiresAt:
+			(input.now ?? Math.floor(Date.now() / 1000)) +
+			revisionMediaGrantTtlSeconds(input.artifact),
 	};
 }
 

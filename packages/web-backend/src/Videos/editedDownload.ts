@@ -1,10 +1,15 @@
 export const DOWNLOAD_PREPARING_MESSAGE =
 	"Preparing your download. Try again in a minute.";
 
+export type EditedDownloadLookupResult =
+	| { status: "forbidden" }
+	| { status: "allowed"; downloadUrl: string | null };
+
 export type EditedDownloadUrlLookup = (input: {
 	videoId: string;
 	ownerId: string;
-}) => Promise<string | null>;
+	userId: string | null;
+}) => Promise<EditedDownloadLookupResult>;
 
 export type RevisionDownloadOutcome =
 	| { status: "legacy" }
@@ -22,6 +27,21 @@ export function registerEditedDownloadUrlLookup(next: EditedDownloadUrlLookup) {
 
 export function currentEditedDownloadUrlLookup() {
 	return editedDownloadUrlLookup;
+}
+
+export function editedDownloadFromLookup(input: {
+	name: string;
+	lookup: EditedDownloadLookupResult | null;
+}): { status: "forbidden" } | RevisionDownloadOutcome {
+	if (!input.lookup || input.lookup.status === "forbidden") {
+		return { status: "forbidden" };
+	}
+	return revisionDownloadOutcome({
+		flagged: true,
+		eligible: false,
+		name: input.name,
+		downloadUrl: input.lookup.downloadUrl,
+	});
 }
 
 export function revisionDownloadOutcome(input: {
