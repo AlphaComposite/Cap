@@ -145,4 +145,32 @@ describe("chapters come back when a cut section is restored", () => {
 			{ title: "B", start: 1.001 },
 		]);
 	});
+
+	it("keeps the first chapter at 0:00 when the start of the video was cut and is restored", () => {
+		const cutStart = cut([{ start: 15, end: 100 }]);
+		const afterCut = deriveRevisionChapterState({
+			storedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "B", start: 10 },
+			],
+			storedSourceChapters: null,
+			previousSpec: cutStart,
+			nextSpec: cutStart,
+		});
+		expect(afterCut.sourceChapters).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "B", start: 25 },
+		]);
+		expect(afterCut.chapters).toEqual([
+			{ title: "A", start: 0 },
+			{ title: "B", start: 10 },
+		]);
+		const restored = deriveRevisionChapterState({
+			storedChapters: afterCut.chapters,
+			storedSourceChapters: afterCut.sourceChapters,
+			previousSpec: cutStart,
+			nextSpec: full,
+		});
+		expect(restored.chapters[0]).toEqual({ title: "A", start: 0 });
+	});
 });

@@ -56,6 +56,17 @@ export function projectSourceChapters(
 	return projectWithSource(sourceChapters, spec).map((entry) => entry.chapter);
 }
 
+function outputChaptersToSource(
+	chapters: readonly VideoChapter[],
+	spec: VideoEditSpec,
+): VideoChapter[] {
+	return chapters.flatMap((chapter) =>
+		chapter.start <= EPSILON
+			? [{ ...chapter, start: 0 }]
+			: mapOutputChaptersToSource([chapter], spec),
+	);
+}
+
 export function deriveRevisionChapterState(input: {
 	storedChapters: readonly VideoChapter[];
 	storedSourceChapters: readonly VideoChapter[] | null | undefined;
@@ -64,7 +75,7 @@ export function deriveRevisionChapterState(input: {
 }): { sourceChapters: VideoChapter[]; chapters: VideoChapter[] } {
 	const sourceChapters = sortedUnique(
 		input.storedSourceChapters ??
-			mapOutputChaptersToSource([...input.storedChapters], input.previousSpec),
+			outputChaptersToSource(input.storedChapters, input.previousSpec),
 	);
 	return {
 		sourceChapters,
@@ -96,7 +107,7 @@ export function mergeOwnerChapterEdit(input: {
 		if (unchangedStart) {
 			return [{ ...chapter, start: unchangedStart.source.start }];
 		}
-		return mapOutputChaptersToSource([chapter], input.currentSpec);
+		return outputChaptersToSource([chapter], input.currentSpec);
 	});
 	return sortedUnique([...hidden, ...edited]);
 }
