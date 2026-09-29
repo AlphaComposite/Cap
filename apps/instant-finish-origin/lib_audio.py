@@ -67,7 +67,7 @@ class RemovedRangeError(RuntimeError):
 
 
 class AudioRejected(RuntimeError):
-    """Source audio is not 48 kHz and is not a 16 kHz stream we resample."""
+    """Source audio is missing or its sample rate is not one we present at 48 kHz."""
 
 
 @dataclass(frozen=True)
@@ -306,8 +306,7 @@ def _reusable_presentation(dest: Path, meta: Path, source_sha: str) -> dict | No
         return None
     if dest.stat().st_size != samples * 8:
         return None
-    resampled = record.get("resampled_from")
-    if resampled not in {None, 16000}:
+    if not _reusable_resampled_from(record.get("resampled_from")):
         return None
     return record
 
@@ -327,7 +326,8 @@ def prepare_presentation(source: Path) -> dict:
         reused = dict(reused)
         reused["reused"] = True
         return reused
-    policy = audio_rate_policy(probe_audio_rate(source))
+    rate = probe_audio_rate(source)
+    policy = audio_rate_policy(rate)
     started = time.perf_counter()
     dest = presentation_pcm_path(source)
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -336,6 +336,7 @@ def prepare_presentation(source: Path) -> dict:
     result = subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+            "-map", "0:a:0",
             "-vn", "-ac", "2", "-ar", str(SR), "-f", "f32le", str(dest),
         ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=limits.timeout_for_source(source),
@@ -351,7 +352,7 @@ def prepare_presentation(source: Path) -> dict:
         "pcm": dest.name,
         "pcm_sha256": _sha256(dest),
         "prepare_ms": round((time.perf_counter() - started) * 1000, 3),
-        "resampled_from": 16000 if policy == "resample-16k" else None,
+        "resampled_from": None if policy == "native" else rate,
         "samples": nbytes // 8,
         "source": source.name,
         "source_sha256": source_sha,
@@ -402,15 +403,39 @@ def _samples_at(tick: int, video_tb: int = TB) -> int:
     return int(round(tick / video_tb * SR))
 
 
-def audio_rate_policy(sample_rate: int) -> str:
-    """48 kHz stays on the gated presentation path. 16 kHz is resampled. Anything else is refused."""
+_AAC_RATES = frozenset({
+    8000,
+    11025,
+    12000,
+    16000,
+    22050,
+    24000,
+    32000,
+    44100,
+    48000,
+    64000,
+    88200,
+    96000,
+})
+
+
+def _supported_input_rate(sample_rate: object) -> bool:
+    return isinstance(sample_rate, int) and not isinstance(sample_rate, bool) and sample_rate in _AAC_RATES
+
+
+def _reusable_resampled_from(value: object) -> bool:
+    return value is None or _supported_input_rate(value)
+
+
+def audio_rate_policy(sample_rate: object) -> str:
+    """48 kHz stays native. Any other supported rate is resampled to 48 kHz. Anything else is refused."""
+    if not _supported_input_rate(sample_rate):
+        raise AudioRejected(
+            f"refusing audio sample rate {sample_rate}; resample a supported rate to {SR} or supply {SR}"
+        )
     if sample_rate == SR:
         return "native"
-    if sample_rate == 16000:
-        return "resample-16k"
-    raise AudioRejected(
-        f"refusing audio sample rate {sample_rate}; resample 16000 to {SR} or supply {SR}"
-    )
+    return "resample"
 
 
 def range_index_for_time(t: float, ranges: list[dict]) -> int | None:
