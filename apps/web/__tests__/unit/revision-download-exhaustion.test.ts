@@ -1,4 +1,4 @@
-import { getTableName } from "drizzle-orm";
+import { getTableName, type Table } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -88,7 +88,7 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 		select() {
 			return chain((state) => executeSelect(state));
 		},
-		insert(table: object) {
+		insert(table: Table) {
 			return {
 				values: async (row: {
 					revisionId: string;
@@ -109,12 +109,12 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 				},
 			};
 		},
-		update(table: object) {
+		update(table: Table) {
 			return chain((state) => {
 				applyUpdate(table, state);
 			});
 		},
-		delete(table: object) {
+		delete(table: Table) {
 			return chain((state) => {
 				applyDelete(table, state);
 			});
@@ -127,8 +127,7 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 			const row = artifacts.find((item) => item.revisionId === revisionId);
 			return [{ state: row?.state ?? "PENDING" }];
 		},
-		transaction: async <T>(fn: (tx: typeof database) => Promise<T>) =>
-			fn(database),
+		transaction: async <T>(fn: (tx: unknown) => Promise<T>) => fn(database),
 	};
 
 	function chain(run: (state: QueryState) => unknown) {
@@ -139,7 +138,7 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 			return pending;
 		};
 		const methods = {
-			from(table: object) {
+			from(table: Table) {
 				state.table = table;
 				return proxy;
 			},
@@ -268,7 +267,7 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 		return [];
 	}
 
-	function applyUpdate(table: object, state: QueryState) {
+	function applyUpdate(table: Table, state: QueryState) {
 		const name = getTableName(table);
 		const { params } = queryText(state.where);
 		const set = state.set ?? {};
@@ -297,7 +296,7 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 		if (set.heartbeatAt instanceof Date) row.heartbeatAt = set.heartbeatAt;
 	}
 
-	function applyDelete(table: object, state: QueryState) {
+	function applyDelete(table: Table, state: QueryState) {
 		if (getTableName(table) !== getTableName(revisionOutbox)) return;
 		const { params } = queryText(state.where);
 		const id = params.find((value) => typeof value === "number");
@@ -319,7 +318,7 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 }
 
 type QueryState = {
-	table?: object;
+	table?: Table;
 	where?: unknown;
 	limit?: number;
 	set?: Record<string, unknown>;
@@ -358,6 +357,12 @@ describe("revision download exhaustion", () => {
 		let calls = 0;
 		const database = workerDb([artifact], jobs, inserted);
 		const origin = {
+			prepareRevision: async () => {
+				throw new Error("Unexpected prepare");
+			},
+			fetchArtifact: async () => {
+				throw new Error("Unexpected artifact fetch");
+			},
 			requestDownload: async () => {
 				calls += 1;
 				return { status: 202, body: "" };
@@ -417,6 +422,12 @@ describe("revision download exhaustion", () => {
 		const database = workerDb([artifact], jobs, []);
 		await sweepRevisionDownloads(database, {
 			origin: {
+				prepareRevision: async () => {
+					throw new Error("Unexpected prepare");
+				},
+				fetchArtifact: async () => {
+					throw new Error("Unexpected artifact fetch");
+				},
 				requestDownload: async () => ({ status: 500, body: "" }),
 			},
 			now: new Date(5_000),
@@ -483,6 +494,12 @@ describe("revision download exhaustion", () => {
 		const inserted: string[] = [];
 		await sweepRevisionDownloads(workerDb(artifacts, [], inserted), {
 			origin: {
+				prepareRevision: async () => {
+					throw new Error("Unexpected prepare");
+				},
+				fetchArtifact: async () => {
+					throw new Error("Unexpected artifact fetch");
+				},
 				requestDownload: async () => ({ status: 202, body: "" }),
 			},
 			now,

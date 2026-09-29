@@ -1,4 +1,4 @@
-import { getTableName } from "drizzle-orm";
+import { getTableName, type Table } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -48,12 +48,12 @@ function backfillDb(pending: Pending[], inserted: string[]) {
 	const database = {
 		select() {
 			const state: {
-				table?: object;
+				table?: Table;
 				where?: unknown;
 				limit?: number;
 			} = {};
 			const api = {
-				from(table: object) {
+				from(table: Table) {
 					state.table = table;
 					return api;
 				},
@@ -82,7 +82,7 @@ function backfillDb(pending: Pending[], inserted: string[]) {
 		transaction: async () => null,
 	};
 
-	function execute(state: { table?: object; where?: unknown; limit?: number }) {
+	function execute(state: { table?: Table; where?: unknown; limit?: number }) {
 		const name = state.table ? getTableName(state.table) : "";
 		if (name === getTableName(revisionArtifactStatus)) {
 			const sql = whereSql(state.where);
@@ -128,6 +128,12 @@ describe("revision download backfill", () => {
 		const inserted: string[] = [];
 		await sweepRevisionDownloads(backfillDb(pending, inserted), {
 			origin: {
+				prepareRevision: async () => {
+					throw new Error("Unexpected prepare");
+				},
+				fetchArtifact: async () => {
+					throw new Error("Unexpected artifact fetch");
+				},
 				requestDownload: async () => ({ status: 202, body: "" }),
 			},
 			now: new Date(1_000),

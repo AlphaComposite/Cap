@@ -147,8 +147,9 @@ export default async function EditVideoPage(props: {
 			: null;
 	if (!flagged && existingEdit && originalDownload?.success !== true) {
 		throw new Error(
-			originalDownload?.error ??
-				"The original recording is unavailable, so this edit cannot be opened safely.",
+			originalDownload && "error" in originalDownload
+				? originalDownload.error
+				: "The original recording is unavailable, so this edit cannot be opened safely.",
 		);
 	}
 	const playback = selectEditorPlayback({
