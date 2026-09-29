@@ -169,12 +169,12 @@ def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> No
     try:
         with tmp_in.open("wb") as stream:
             _yield_to_playback(origin, slot)
-            init = origin.ensure_init()
+            init = origin.read_init_for_download()
             stream.write(init)
             del init
             for index in range(len(origin.segments)):
                 _yield_to_playback(origin, slot)
-                segment = _without_styp(origin.ensure(index))
+                segment = _without_styp(origin.read_segment_for_download(index))
                 stream.write(segment)
                 del segment
             _slot_cancelled(slot)
@@ -693,6 +693,8 @@ class OriginApp:
         if isinstance(snap, tuple):
             return snap
         kind = match.group("kind")
+        if parsed.artifact == "download" and kind != "download.mp4":
+            return self._text(403, b"forbidden")
         if kind == "download.mp4" and parsed.artifact != "download":
             return self._text(403, b"forbidden")
         if kind == "download.mp4":

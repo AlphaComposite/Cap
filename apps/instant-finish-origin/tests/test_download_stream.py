@@ -4,6 +4,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import cast
@@ -50,6 +51,12 @@ class StreamRemuxTests(unittest.TestCase):
             def playback_waiting(self) -> bool:
                 return False
 
+            def read_init_for_download(self) -> bytes:
+                return Tracked(produced[0])
+
+            def read_segment_for_download(self, index: int) -> bytes:
+                return Tracked(produced[index + 1])
+
             def ensure_init(self) -> bytes:
                 return Tracked(produced[0])
 
@@ -74,6 +81,69 @@ class StreamRemuxTests(unittest.TestCase):
         self.assertEqual(captured["input"], expected)
         self.assertLessEqual(Tracked.peak, 1)
         self.assertEqual(Tracked.live, 0)
+
+    def test_download_build_does_not_grow_segment_cache(self) -> None:
+        count = 4
+        playback_kept = b"playback-kept-segment"
+
+        def fake_run(cmd, *_args, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"remuxed-ok")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            origin = object.__new__(lib_origin.Origin)
+            origin.cache = cache
+            origin.segments = list(range(count))
+            origin._segment_bytes = {}
+            origin._lock = threading.Lock()
+            origin._playback_lock = threading.Lock()
+            origin._playback_waiting = 0
+            origin._init_bytes = None
+            origin._init_avcc = None
+            origin._served_body = b""
+            origin._last_produce = None
+            origin.productions = []
+            origin.init_path = cache / "init.mp4"
+            payload = b"avcC" + b"\x01" * 8
+            origin.init_path.write_bytes((4 + len(payload)).to_bytes(4, "big") + payload)
+            seg0 = origin.segment_path(0)
+            seg0.parent.mkdir(parents=True, exist_ok=True)
+            seg0.write_bytes(playback_kept)
+            lib_origin.sidecar_path(seg0).write_text("{}\n")
+            origin._segment_bytes[0] = playback_kept
+            before = len(origin._segment_bytes)
+
+            def produce(index: int):
+                body = bytes([index + 1]) * 24
+                path = origin.segment_path(index)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(body)
+                lib_origin.sidecar_path(path).write_text("{}\n")
+                origin._segment_bytes[index] = body
+                origin._served_body = body
+                origin._last_produce = {}
+                if origin._init_bytes is None:
+                    origin._init_bytes = origin.init_path.read_bytes()
+                return body, 0.0
+
+            origin.produce = produce
+            origin._read_bound = lambda path, _artifact, _seg: path.read_bytes()
+            origin._record = lambda *_args, **_kwargs: None
+            slot = lib_origin.EncodeSlot("vidcache01", "download:rev", "revcache01")
+            lib_origin.bind_encode_slot(slot)
+            try:
+                with patch.object(server.limits, "run_cmd", fake_run):
+                    remux_download(cast(lib_origin.Origin, origin), slot)
+            finally:
+                lib_origin.bind_encode_slot(None)
+                slot.finish()
+            self.assertEqual(len(origin._segment_bytes), before)
+            self.assertIs(origin._segment_bytes.get(0), playback_kept)
+            self.assertEqual(set(origin._segment_bytes), {0})
+            played = origin.ensure(1)
+            self.assertEqual(played, bytes([2]) * 24)
+            self.assertIn(1, origin._segment_bytes)
 
 
 class GrantTtlTests(unittest.TestCase):
