@@ -512,4 +512,16 @@ describe("summary permissions", () => {
 		await act(async () => chapter?.click());
 		expect(onSeek).toHaveBeenCalledWith(60);
 	});
+
+	it("shows a short owner chapter error the same way as other chapter errors", async () => {
+		vi.useFakeTimers();
+		await render();
+		await change(chapterInputs().times[1] as HTMLInputElement, "00:05");
+		expect(container.textContent).toContain(
+			"Error: Chapter 1 must be at least 10 seconds long.",
+		);
+		expect(status()).toContain("Autosave paused");
+		await act(async () => vi.advanceTimersByTimeAsync(700));
+		expect(editAiContent).not.toHaveBeenCalled();
+	});
 });

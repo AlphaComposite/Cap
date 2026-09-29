@@ -47,7 +47,43 @@ describe("AI content validation", () => {
 		expect(validateAiContent({ summary: "", chapters: [] }, 10)).toBeNull();
 	});
 	it("allows strictly ordered chapters within duration", () => {
-		expect(validateAiContent(content([0, 10.125, 59]), 60)).toBeNull();
+		expect(validateAiContent(content([0, 10.125, 40]), 60)).toBeNull();
+	});
+	it("accepts an owner chapter of exactly 10 seconds", () => {
+		expect(validateAiContent(content([0, 10, 20]), 30)).toBeNull();
+		expect(validateAiContent(content([0, 10]), 20)).toBeNull();
+	});
+	it("accepts a single chapter shorter than 10 seconds", () => {
+		expect(validateAiContent(content([0]), 7)).toBeNull();
+		expect(validateAiContent(content([2]), 6)).toBeNull();
+	});
+	it("rejects an owner chapter shorter than 10 seconds", () => {
+		expect(validateAiContent(content([0, 30, 35]), 100)).toBe(
+			"Chapter 2 must be at least 10 seconds long.",
+		);
+		expect(validateAiContent(content([0, 9.999]), 30)).toBe(
+			"Chapter 1 must be at least 10 seconds long.",
+		);
+		expect(validateAiContent(content([0, 95]), 100)).toBe(
+			"Chapter 2 must be at least 10 seconds long.",
+		);
+	});
+	it("keeps earlier chapter errors ahead of the length rule", () => {
+		expect(validateAiContent(content([5, 1]), 60)).toContain(
+			"increasing order",
+		);
+		expect(
+			validateAiContent(
+				{
+					summary: "",
+					chapters: [
+						{ title: "  ", start: 0 },
+						{ title: "Later", start: 1 },
+					],
+				},
+				60,
+			),
+		).toContain("needs a title");
 	});
 	it.each([
 		[0, 0],
