@@ -40,40 +40,86 @@ _SAFE_LOG_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SAFE_LOG_KIND = re.compile(
     r"^(?:playlist\.m3u8|init\.mp4|seg/[0-9]+\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg|download\.mp4)$"
 )
+_SAFE_LOG_REASON = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SAFE_LOG_ROUTE = re.compile(r"[a-z]+(?:-[a-z]+)*")
 
 
-def _log_failed(route: str, exc: BaseException, **fields: str) -> None:
-    name = type(exc).__name__
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-        name = "Exception"
-    parts = [f"{route}-failed", name]
-    for key, pattern in (("video", _SAFE_LOG_ID), ("rev", _SAFE_LOG_ID), ("kind", _SAFE_LOG_KIND)):
-        value = fields.get(key)
-        if isinstance(value, str) and pattern.fullmatch(value):
-            parts.append(f"{key}={value}")
-    sys.stderr.write(" ".join(parts) + "\n")
-    sys.stderr.flush()
+def _log_failed(
+    route: str,
+    exc: BaseException | None = None,
+    *,
+    reason: str | None = None,
+    decoded: int | None = None,
+    **fields: str,
+) -> None:
+    try:
+        if isinstance(reason, str):
+            name = reason
+        elif exc is not None:
+            name = type(exc).__name__
+        else:
+            name = "Exception"
+        if not isinstance(name, str) or _SAFE_LOG_REASON.fullmatch(name) is None:
+            name = "Exception"
+        if not isinstance(route, str) or _SAFE_LOG_ROUTE.fullmatch(route) is None:
+            route = "dispatch"
+        parts = [f"{route}-failed", name]
+        for key, pattern in (("video", _SAFE_LOG_ID), ("rev", _SAFE_LOG_ID), ("kind", _SAFE_LOG_KIND)):
+            value = fields.get(key)
+            if isinstance(value, str) and pattern.fullmatch(value):
+                parts.append(f"{key}={value}")
+        if type(decoded) is int:
+            parts.append(f"decoded={decoded}")
+        sys.stderr.write(" ".join(parts) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        return
 
 
-def _log_dispatch_failure(raw_path: str, exc: BaseException) -> None:
+def _dispatch_failure_target(raw_path: str) -> tuple[str, dict[str, str]]:
     path = urlparse(raw_path).path
     media = MEDIA_RE.match(path)
     if media is not None:
-        _log_failed("media", exc, video=media.group("video"), rev=media.group("rev"), kind=media.group("kind"))
-        return
+        video, rev, kind = media.group("video"), media.group("rev"), media.group("kind")
+        if video is None or rev is None or kind is None:
+            return "dispatch", {}
+        return "media", {"video": video, "rev": rev, "kind": kind}
     source = SOURCE_PREPARE_RE.match(path)
     if source is not None:
-        _log_failed("source-prepare", exc, video=source.group("video"))
-        return
+        video = source.group("video")
+        if video is None:
+            return "dispatch", {}
+        return "source-prepare", {"video": video}
     revision = REVISION_PREPARE_RE.match(path)
     if revision is not None:
-        _log_failed("revision-prepare", exc, rev=revision.group("rev"))
-        return
+        rev = revision.group("rev")
+        if rev is None:
+            return "dispatch", {}
+        return "revision-prepare", {"rev": rev}
     artifact = ARTIFACT_RE.match(path)
     if artifact is not None:
-        _log_failed("artifact", exc, rev=artifact.group("rev"), kind=artifact.group("name"))
+        rev, kind = artifact.group("rev"), artifact.group("name")
+        if rev is None or kind is None:
+            return "dispatch", {}
+        return "artifact", {"rev": rev, "kind": kind}
+    return "dispatch", {}
+
+
+def _log_dispatch_failure(raw_path: str, exc: BaseException) -> None:
+    try:
+        try:
+            route, fields = _dispatch_failure_target(raw_path)
+        except Exception:
+            route, fields = "dispatch", {}
+        _log_failed(
+            route,
+            exc,
+            video=fields.get("video", ""),
+            rev=fields.get("rev", ""),
+            kind=fields.get("kind", ""),
+        )
+    except Exception:
         return
-    _log_failed("dispatch", exc)
 
 
 class OriginApp:
@@ -229,6 +275,7 @@ class OriginApp:
             bind_path = mezz.with_suffix(".source-bind.json")
             bind = self._bound_mezzanine(original, mezz, bind_path)
             if bind is None:
+                _log_failed("source-prepare", reason="MezzanineUnbound", video=video_id)
                 return self._text(500, b"unavailable")
             self._remember_sha(key, bind["source_sha256"])
             lib_audio.build_audio_index(original)
@@ -298,6 +345,7 @@ class OriginApp:
         try:
             if joined:
                 if not slot.done.wait(limits.FFMPEG_TIMEOUT_S):
+                    _log_failed("revision-prepare", reason="JoinTimeout", video=video_id, rev=revision_id)
                     return self._text(500, b"unavailable")
                 if slot.cancelled.is_set():
                     return self._text(499, b"superseded")
@@ -323,7 +371,13 @@ class OriginApp:
             if slot.cancelled.is_set():
                 return self._text(499, b"superseded")
             if decoded < 1 or b"#EXT-X-ENDLIST" not in origin.playlist:
-                sys.stderr.write(f"revision-prepare-failed undecoded decoded={decoded}\n")
+                _log_failed(
+                    "revision-prepare",
+                    reason="Undecoded",
+                    video=video_id,
+                    rev=revision_id,
+                    decoded=decoded,
+                )
                 return self._text(500, b"unavailable")
             sys.stderr.write(f"revision-prepare-complete revision={revision_id}\n")
             sys.stderr.flush()
@@ -386,7 +440,8 @@ class OriginApp:
                 body, content_type = prefetched[1], prefetched[2]
         except SideArtifactMissing:
             return self._text(404, b"not found")
-        except SideArtifactRejected:
+        except SideArtifactRejected as exc:
+            _log_failed("media", exc, video=video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
         except IndexError:
             return self._text(404, b"not found")
@@ -662,6 +717,13 @@ class OriginApp:
             ranges = json.loads(ranges_path.read_text())
             origin = self._origin_for(row.video_id, row.source_id, ranges)
             if origin.rev != _namespace(self.cache, revision_id):
+                _log_failed(
+                    "artifact",
+                    reason="NamespaceMismatch",
+                    video=row.video_id,
+                    rev=revision_id,
+                    kind=kind,
+                )
                 return self._text(500, b"unavailable")
             if kind == "playlist.m3u8":
                 body, content_type = origin.playlist, "application/vnd.apple.mpegurl"
@@ -1147,7 +1209,10 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             try:
                 status, body, content_type, extra = app.handle(method, self.path, hdrs)
             except Exception as exc:
-                _log_dispatch_failure(self.path, exc)
+                try:
+                    _log_dispatch_failure(self.path, exc)
+                except Exception:
+                    pass
                 status, body, content_type, extra = 500, b"unavailable", "text/plain", {"Cache-Control": NO_STORE}
             self._emit(status, body, content_type, extra)
 
