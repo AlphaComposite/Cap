@@ -79,15 +79,11 @@ import {
 	findNextPlayableTimeInRanges,
 	findPlayableRangeIndex,
 	getEditSpecOutputDuration,
-	getTimelineDisplayDuration,
-	getTimelineDisplaySegments,
 	getTimelineDisplaySplitPoints,
 	getTimelineEditSpec,
 	getTimelineKeepRanges,
 	getTimelineSegments,
 	mapSourceTimeToOutputTime,
-	mapTimelineDisplayTimeToSourceTime,
-	mapTimelineSourceTimeToDisplayTime,
 	normalizeVideoEditSpec,
 	pushTimelineHistory,
 	redoTimelineHistory,
@@ -300,11 +296,10 @@ function getTimelineSourceTimeFromClientX(
 	rect: DOMRect,
 	state: VideoTimelineState,
 ) {
-	const displayDuration = getTimelineDisplayDuration(state);
-	if (displayDuration <= 0 || rect.width <= 0) return 0;
+	const duration = state.duration;
+	if (duration <= 0 || rect.width <= 0) return 0;
 	const x = Math.min(Math.max(clientX - rect.left, 0), rect.width);
-	const displayTime = (x / rect.width) * displayDuration;
-	return mapTimelineDisplayTimeToSourceTime(state, displayTime);
+	return (x / rect.width) * duration;
 }
 
 function HeaderIconButton({
@@ -781,14 +776,6 @@ export function EditVideoClient({
 		() => segments.filter((segment) => !segment.deleted),
 		[segments],
 	);
-	const timelineDisplayDuration = useMemo(
-		() => getTimelineDisplayDuration(state),
-		[state],
-	);
-	const timelineDisplaySegments = useMemo(
-		() => getTimelineDisplaySegments(state),
-		[state],
-	);
 	const timelineDisplaySplitPoints = useMemo(
 		() => getTimelineDisplaySplitPoints(state),
 		[state],
@@ -804,18 +791,17 @@ export function EditVideoClient({
 	const thumbnailTimes = useMemo(
 		() =>
 			Array.from({ length: thumbnailCount }, (_, index) => {
-				const displayTime = getTimelineThumbnailTime(
+				const time = getTimelineThumbnailTime(
 					index,
 					thumbnailCount,
-					timelineDisplayDuration,
+					state.duration,
 				);
-				const time = mapTimelineDisplayTimeToSourceTime(state, displayTime);
 				return {
 					key: getTimelineThumbnailKey(time),
 					time,
 				};
 			}),
-		[thumbnailCount, state, timelineDisplayDuration],
+		[thumbnailCount, state.duration],
 	);
 	const timelineFrames = useLazyTimelineThumbnails({
 		videoSrc: activePlaybackSrc,
@@ -844,23 +830,9 @@ export function EditVideoClient({
 	);
 	const canUndo = history.index > 0;
 	const canRedo = history.index < history.entries.length - 1;
-	const visibleSegmentCount = timelineDisplaySegments.length;
-	const trimStartDisplayTime = mapTimelineSourceTimeToDisplayTime(
-		state,
-		state.trimStart,
-	);
-	const trimEndDisplayTime = mapTimelineSourceTimeToDisplayTime(
-		state,
-		state.trimEnd,
-	);
-	const trimStartPct = getTimePercent(
-		trimStartDisplayTime,
-		timelineDisplayDuration,
-	);
-	const trimEndPct = getTimePercent(
-		trimEndDisplayTime,
-		timelineDisplayDuration,
-	);
+	const visibleSegmentCount = visibleSegments.length;
+	const trimStartPct = getTimePercent(state.trimStart, state.duration);
+	const trimEndPct = getTimePercent(state.trimEnd, state.duration);
 	// Clamp the rendered cursor against the COMMITTED trim bounds, not the live
 	// draft: while dragging a trim edge past the paused cursor, the cursor must
 	// stay put rather than get dragged along with the moving handle.
@@ -868,17 +840,13 @@ export function EditVideoClient({
 		Math.max(playhead, committedState.trimStart),
 		committedState.trimEnd,
 	);
-	const displayPlayhead = mapTimelineSourceTimeToDisplayTime(
-		state,
-		clampedPlayhead,
-	);
 	const isTrimming = activeHandle !== null || draftState !== null;
 	const outputDuration = useMemo(
 		() => getEditSpecOutputDuration(editSpec),
 		[editSpec],
 	);
 	const hasOutputEdits = outputDuration < state.duration;
-	const { chaptersUrl, projectedChapters } = useEditorChapterPreview({
+	const { chaptersUrl, playbackChapters } = useEditorChapterPreview({
 		chapters,
 		sourceChapters,
 		initialEditSpec,
@@ -1020,13 +988,10 @@ export function EditVideoClient({
 		const container = scrollContainerRef.current;
 		const overlay = playheadOverlayRef.current;
 		if (!container || !overlay) return;
-		const fraction =
-			timelineDisplayDuration > 0
-				? displayPlayhead / timelineDisplayDuration
-				: 0;
+		const fraction = state.duration > 0 ? clampedPlayhead / state.duration : 0;
 		const x = fraction * container.scrollWidth - container.scrollLeft;
 		overlay.style.transform = `translate3d(${x}px, 0, 0) translateX(-50%)`;
-	}, [displayPlayhead, timelineDisplayDuration]);
+	}, [clampedPlayhead, state.duration]);
 
 	const commitState = useCallback((nextState: VideoTimelineState) => {
 		setDraftState(null);
@@ -1545,15 +1510,19 @@ export function EditVideoClient({
 
 	const seekTo = useCallback(
 		(time: number, immediate = false) => {
-			const { trimStart, trimEnd } = stateRef.current;
+			const current = stateRef.current;
+			const { trimStart, trimEnd } = current;
 			const trimmedTime = Math.min(Math.max(time, trimStart), trimEnd);
-			const clamped = getClampedVideoTime(
-				trimmedTime,
-				videoRef.current,
-				trimEnd,
-			);
-			setVideoTimeOnFrame(Math.max(clamped, trimStart), immediate);
-			setPlayheadOnFrame(Math.max(clamped, trimStart), immediate);
+			const spec = getTimelineEditSpec(current);
+			const playable =
+				findNextPlayableTime(trimmedTime, spec) ??
+				spec.keepRanges.at(-1)?.end ??
+				trimStart;
+			const bounded = Math.min(Math.max(playable, trimStart), trimEnd);
+			const clamped = getClampedVideoTime(bounded, videoRef.current, trimEnd);
+			const next = Math.min(Math.max(clamped, trimStart), trimEnd);
+			setVideoTimeOnFrame(next, immediate);
+			setPlayheadOnFrame(next, immediate);
 		},
 		[setPlayheadOnFrame, setVideoTimeOnFrame],
 	);
@@ -1880,9 +1849,7 @@ export function EditVideoClient({
 		const container = scrollContainerRef.current;
 		if (!container || zoom <= 1 || isTrimming) return;
 		const playheadFraction =
-			timelineDisplayDuration > 0
-				? displayPlayhead / timelineDisplayDuration
-				: 0;
+			state.duration > 0 ? clampedPlayhead / state.duration : 0;
 		const playheadX = playheadFraction * container.scrollWidth;
 		const visibleStart = container.scrollLeft;
 		const visibleEnd = visibleStart + container.clientWidth;
@@ -1896,14 +1863,7 @@ export function EditVideoClient({
 				behavior: isPlaying ? "auto" : "smooth",
 			});
 		}
-	}, [
-		displayPlayhead,
-		isSaving,
-		zoom,
-		isPlaying,
-		isTrimming,
-		timelineDisplayDuration,
-	]);
+	}, [clampedPlayhead, isSaving, zoom, isPlaying, isTrimming, state.duration]);
 
 	useEffect(() => {
 		if (isSaving) return;
@@ -2234,9 +2194,35 @@ export function EditVideoClient({
 									))}
 								</div>
 
+								{segments
+									.filter((segment) => segment.deleted)
+									.map((segment) => {
+										const startPct = getTimePercent(
+											segment.start,
+											state.duration,
+										);
+										const endPct = getTimePercent(segment.end, state.duration);
+										return (
+											<div
+												key={`deleted-${segment.id}`}
+												data-timeline-deleted=""
+												role="img"
+												aria-label={`Removed section ${formatTime(segment.start)}–${formatTime(segment.end)}`}
+												className="pointer-events-none absolute inset-y-0 z-[4] bg-black/45 backdrop-grayscale"
+												style={{
+													left: `${startPct}%`,
+													width: `${Math.max(0, endPct - startPct)}%`,
+												}}
+											>
+												<span className="absolute inset-y-0 left-0 w-px bg-white/80" />
+												<span className="absolute inset-y-0 right-0 w-px bg-white/80" />
+											</div>
+										);
+									})}
+
 								<EditorChapterMarkers
-									chapters={projectedChapters}
-									outputDuration={outputDuration}
+									chapters={playbackChapters}
+									outputDuration={state.duration}
 								/>
 
 								<div
@@ -2252,19 +2238,13 @@ export function EditVideoClient({
 									}}
 								/>
 
-								{timelineDisplaySegments.map((clip, index) => {
+								{visibleSegments.map((clip, index) => {
 									const isFirst = index === 0;
-									const isLast = index === timelineDisplaySegments.length - 1;
-									const hasMultipleClips = timelineDisplaySegments.length > 1;
+									const isLast = index === visibleSegments.length - 1;
+									const hasMultipleClips = visibleSegments.length > 1;
 									const isActive = activeSegmentAtPlayhead?.id === clip.id;
-									const startPct = getTimePercent(
-										clip.displayStart,
-										timelineDisplayDuration,
-									);
-									const endPct = getTimePercent(
-										clip.displayEnd,
-										timelineDisplayDuration,
-									);
+									const startPct = getTimePercent(clip.start, state.duration);
+									const endPct = getTimePercent(clip.end, state.duration);
 									const widthPct = Math.max(0, endPct - startPct);
 									return (
 										<Fragment key={`clip-${clip.id}`}>
@@ -2370,8 +2350,8 @@ export function EditVideoClient({
 								{timelineDisplaySplitPoints.map((splitPoint, index) => {
 									if (!splitPoint.removable) return null;
 									const positionPercent = getTimePercent(
-										splitPoint.time,
-										timelineDisplayDuration,
+										splitPoint.sourceTime,
+										state.duration,
 									);
 									return (
 										<button
