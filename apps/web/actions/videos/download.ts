@@ -208,7 +208,10 @@ export async function getVideoDownloadInfo(
 		filename = `${video.name} (original).mp4`;
 	}
 
-	if (isViewerPrivateKey(downloadKey)) {
+	if (
+		isInstantFinishEnabledForOwner(video.ownerId) &&
+		isViewerPrivateKey(downloadKey)
+	) {
 		return {
 			success: false,
 			error: "Video file is not available for download yet.",

@@ -32,6 +32,8 @@ vi.mock("@cap/database", async () => {
 	};
 });
 
+const readFails = vi.hoisted(() => ({ value: false }));
+
 const publication = {
 	enabled: true,
 	currentRevisionId: null as string | null,
@@ -64,7 +66,10 @@ vi.mock("@/lib/revision-media-grant", () => ({
 	mintRevisionMediaGrant: async () => null,
 }));
 vi.mock("@/lib/revision-publication-read", () => ({
-	getInstantFinishPublicationDto: async () => publication,
+	getInstantFinishPublicationDto: async () => {
+		if (readFails.value) throw new Error("publication read failed");
+		return publication;
+	},
 	disabledInstantFinishPublication: (
 		overrides: Record<string, unknown> = {},
 	) => ({
@@ -93,6 +98,22 @@ describe("eligible legacy playback", () => {
 		rows.edits = [];
 		rows.videos = [{ metadata: null }];
 		rows.source = [];
+		readFails.value = false;
+	});
+
+	it("stays unavailable when the publication read fails", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner-flagged";
+		readFails.value = true;
+		const loaded = await loadRevisionPlayback({
+			videoId: "video-1",
+			ownerId: "owner-flagged",
+			origin: "https://cap.test",
+			isScreenshot: false,
+			hasActiveUpload: false,
+			sourceType: "webMP4",
+			env: flaggedEnv,
+		});
+		expect(loaded.plan.player).not.toBe("legacy");
 	});
 
 	it("uses the legacy player for a flagged video with no intent and no relocation", async () => {
