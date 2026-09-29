@@ -31,6 +31,10 @@ import {
 import { bindRevisionSeek, unbindRevisionSeek } from "@/lib/revision-seek";
 import { bindCaptionTrackCueText } from "./caption-tracks";
 import { scheduleReadyRefresh } from "./deferred-ready-refresh";
+import {
+	createLiveSegmentsHlsConfig,
+	createVodHlsConfig,
+} from "./hls-playback-config";
 import { waitForSegmentPlayback } from "./segment-playback-probe";
 import {
 	canRetryFailedProcessing,
@@ -412,26 +416,15 @@ export function HLSVideoPlayer({
 		if (Hls.isSupported()) {
 			const startAt = resumeAtRef.current;
 			resumeAtRef.current = -1;
-			const hls = new Hls({
-				enableWorker: true,
-				lowLatencyMode: false,
-				backBufferLength: 90,
-				startFragPrefetch: true,
+			const hlsConfigInput = {
 				startPosition: startAt > 0 ? startAt : -1,
 				loader: createPrefetchLoader(Hls.DefaultConfig.loader),
-				...(isLiveSegments
-					? {
-							liveSyncDurationCount: 3,
-							liveMaxLatencyDurationCount: 6,
-							manifestLoadingRetryDelay: 2000,
-							manifestLoadingMaxRetry: 30,
-							levelLoadingRetryDelay: 2000,
-							levelLoadingMaxRetry: 30,
-							fragLoadingRetryDelay: 2000,
-							fragLoadingMaxRetry: 30,
-						}
-					: {}),
-			});
+			};
+			const hls = new Hls(
+				isLiveSegments
+					? createLiveSegmentsHlsConfig(hlsConfigInput)
+					: createVodHlsConfig(hlsConfigInput),
+			);
 
 			hlsInstance.current = hls;
 
