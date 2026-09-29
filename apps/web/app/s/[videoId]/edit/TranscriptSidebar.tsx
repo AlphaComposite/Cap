@@ -9,6 +9,7 @@ import {
 	ChevronUp,
 	FileText,
 	LoaderCircle,
+	RotateCcw,
 	Search,
 	Trash2,
 	X,
@@ -54,6 +55,7 @@ type TranscriptSidebarProps = {
 	autoCuts: VideoAutoCuts;
 	autoCutsInitialized?: boolean;
 	onDeleteRanges: (ranges: VideoEditRange[]) => void;
+	onRestoreRanges: (ranges: VideoEditRange[]) => void;
 	onSetAutoCutLayer: (
 		kind: keyof VideoAutoCuts,
 		layer: VideoAutoCuts[keyof VideoAutoCuts],
@@ -303,6 +305,7 @@ export function TranscriptSidebar({
 	autoCuts,
 	autoCutsInitialized,
 	onDeleteRanges,
+	onRestoreRanges,
 	onSetAutoCutLayer,
 	onInitializeAutoCuts,
 }: TranscriptSidebarProps) {
@@ -585,6 +588,23 @@ export function TranscriptSidebar({
 		[clearSelection, onDeleteRanges, seekToWord, selection, transcript],
 	);
 
+	const restoreSelection = useCallback(() => {
+		if (!transcript || !selection) return;
+		const plan = planTranscriptCut(
+			transcript.words,
+			selection.startIndex,
+			selection.endIndex,
+			transcript.durationMs,
+		);
+		const firstWord = transcript.words[selection.startIndex];
+		const lastWord = transcript.words[selection.endIndex];
+		const startMs = plan?.startMs ?? firstWord?.startMs;
+		const endMs = plan?.endMs ?? lastWord?.endMs;
+		if (startMs === undefined || endMs === undefined) return;
+		onRestoreRanges(toVideoRanges([{ startMs, endMs }]));
+		clearSelection();
+	}, [clearSelection, onRestoreRanges, selection, transcript]);
+
 	const toggleFillers = useCallback(
 		(enabled: boolean) => {
 			const removedCount = fillerPlan.fillerCount - fillerPlan.skippedCount;
@@ -765,6 +785,15 @@ export function TranscriptSidebar({
 	const selectedWordCount = selection
 		? selection.endIndex - selection.startIndex + 1
 		: 0;
+	const selectedDeletedCount =
+		selection && transcript
+			? transcript.words
+					.slice(selection.startIndex, selection.endIndex + 1)
+					.filter((word) => deletedWordIds.has(word.id)).length
+			: 0;
+	const selectedKeptCount = selectedWordCount - selectedDeletedCount;
+	const actionButtonClassName =
+		"inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-gray-12 px-4 text-xs font-semibold text-white transition hover:bg-gray-11 active:bg-gray-10";
 
 	return (
 		<aside
@@ -976,20 +1005,52 @@ export function TranscriptSidebar({
 			<div className="border-t border-gray-3 p-3">
 				{selection ? (
 					<div className="flex animate-fadeIn items-center gap-1.5">
-						<button
-							type="button"
-							onClick={() => deleteSelection()}
-							className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-gray-12 px-4 text-xs font-semibold text-white transition hover:bg-gray-11 active:bg-gray-10"
-						>
-							<Trash2 className="size-3.5" aria-hidden />
-							<span className="truncate">
-								Delete {selectedWordCount} word
-								{selectedWordCount === 1 ? "" : "s"}
-							</span>
-							<kbd className="rounded-[4px] bg-white/20 px-1 font-sans text-[10px] font-medium">
-								⌫
-							</kbd>
-						</button>
+						{selectedDeletedCount === selectedWordCount ? (
+							<button
+								type="button"
+								onClick={restoreSelection}
+								className={actionButtonClassName}
+							>
+								<RotateCcw className="size-3.5" aria-hidden />
+								<span className="truncate">
+									{`Restore ${selectedWordCount} word${selectedWordCount === 1 ? "" : "s"}`}
+								</span>
+							</button>
+						) : selectedDeletedCount > 0 ? (
+							<>
+								<button
+									type="button"
+									onClick={() => deleteSelection()}
+									className={actionButtonClassName}
+								>
+									<Trash2 className="size-3.5" aria-hidden />
+									<span className="truncate">{`Delete ${selectedKeptCount}`}</span>
+								</button>
+								<button
+									type="button"
+									onClick={restoreSelection}
+									className={actionButtonClassName}
+								>
+									<RotateCcw className="size-3.5" aria-hidden />
+									<span className="truncate">{`Restore ${selectedDeletedCount}`}</span>
+								</button>
+							</>
+						) : (
+							<button
+								type="button"
+								onClick={() => deleteSelection()}
+								className={actionButtonClassName}
+							>
+								<Trash2 className="size-3.5" aria-hidden />
+								<span className="truncate">
+									Delete {selectedWordCount} word
+									{selectedWordCount === 1 ? "" : "s"}
+								</span>
+								<kbd className="rounded-[4px] bg-white/20 px-1 font-sans text-[10px] font-medium">
+									⌫
+								</kbd>
+							</button>
+						)}
 						<button
 							type="button"
 							aria-label="Clear selection"

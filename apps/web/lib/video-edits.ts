@@ -1259,6 +1259,100 @@ export function deleteTimelineRanges(
 	return getTimelineKeepRanges(nextState).length > 0 ? nextState : normalized;
 }
 
+function rangesIntersect(
+	left: readonly VideoEditRange[],
+	right: readonly VideoEditRange[],
+) {
+	let rightIndex = 0;
+	for (const range of left) {
+		while (
+			rightIndex < right.length &&
+			(right[rightIndex]?.end ?? 0) <= range.start + EPSILON
+		) {
+			rightIndex++;
+		}
+		const other = right[rightIndex];
+		if (
+			other &&
+			other.start < range.end - EPSILON &&
+			other.end > range.start + EPSILON
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function restoreTimelineRanges(
+	state: VideoTimelineState,
+	ranges: readonly VideoEditRange[],
+): VideoTimelineState {
+	const duration = normalizeDuration(state.duration);
+	const restoreRanges = normalizeKeepRanges([...ranges], duration).keepRanges;
+	if (restoreRanges.length === 0) return state;
+
+	const deletedRanges = normalizeKeepRanges(
+		state.deletedRanges,
+		duration,
+	).keepRanges;
+	const autoCuts = normalizeAutoCuts(state.autoCuts, duration);
+	const trimStart = roundEditTime(
+		clampEditTime(Math.min(state.trimStart, state.trimEnd), 0, duration),
+	);
+	const trimEnd = roundEditTime(
+		clampEditTime(Math.max(state.trimStart, state.trimEnd), 0, duration),
+	);
+	const extendsTrim = restoreRanges.some(
+		(range) =>
+			range.start < trimStart - EPSILON || range.end > trimEnd + EPSILON,
+	);
+	if (
+		!extendsTrim &&
+		!rangesIntersect(deletedRanges, restoreRanges) &&
+		!rangesIntersect(autoCuts.silence.ranges, restoreRanges) &&
+		!rangesIntersect(autoCuts.fillers.ranges, restoreRanges)
+	) {
+		return state;
+	}
+
+	const nextSilenceRanges = subtractRanges(
+		autoCuts.silence.ranges,
+		restoreRanges,
+		duration,
+	);
+	return normalizeTimelineState({
+		...state,
+		trimStart: roundEditTime(
+			Math.min(trimStart, ...restoreRanges.map((range) => range.start)),
+		),
+		trimEnd: roundEditTime(
+			Math.max(trimEnd, ...restoreRanges.map((range) => range.end)),
+		),
+		deletedRanges: subtractRanges(deletedRanges, restoreRanges, duration),
+		autoCuts: {
+			silence: {
+				...autoCuts.silence,
+				ranges: nextSilenceRanges,
+				removedMs: Math.round(
+					nextSilenceRanges.reduce(
+						(total, range) => total + (range.end - range.start) * 1000,
+						0,
+					),
+				),
+			},
+			fillers: {
+				...autoCuts.fillers,
+				ranges: subtractRanges(
+					autoCuts.fillers.ranges,
+					restoreRanges,
+					duration,
+				),
+			},
+		},
+		selectedSegmentId: null,
+	});
+}
+
 export function setTimelineAutoCutLayer<K extends keyof VideoAutoCuts>(
 	state: VideoTimelineState,
 	kind: K,

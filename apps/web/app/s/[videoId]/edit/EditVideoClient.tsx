@@ -92,6 +92,7 @@ import {
 	pushTimelineHistory,
 	redoTimelineHistory,
 	removeTimelineDisplaySplitPoint,
+	restoreTimelineRanges,
 	selectTimelineSegment,
 	setTimelineAutoCutLayer,
 	splitTimelineAt,
@@ -1058,6 +1059,14 @@ export function EditVideoClient({
 			setVideoTimeOnFrame(nextPlayableTime, true);
 		},
 		[commitState, setPlayheadOnFrame, setVideoTimeOnFrame],
+	);
+
+	const handleTranscriptRestore = useCallback(
+		(ranges: { start: number; end: number }[]) => {
+			const nextState = restoreTimelineRanges(stateRef.current, ranges);
+			commitState(nextState);
+		},
+		[commitState],
 	);
 
 	const handleSetAutoCutLayer = useCallback(
@@ -2492,6 +2501,7 @@ export function EditVideoClient({
 					autoCuts={editSpec.autoCuts}
 					autoCutsInitialized={editSpec.autoCutsInitialized}
 					onDeleteRanges={handleTranscriptDelete}
+					onRestoreRanges={handleTranscriptRestore}
 					onSetAutoCutLayer={handleSetAutoCutLayer}
 					onInitializeAutoCuts={handleInitializeAutoCuts}
 				/>
