@@ -14,6 +14,7 @@ import {
 	findNextPlayableTime,
 	findNextPlayableTimeInRanges,
 	findPlayableRangeIndex,
+	findPreviousPlayableTime,
 	getTimelineDisplayDuration,
 	getTimelineDisplaySegments,
 	getTimelineDisplaySplitPoints,
@@ -908,5 +909,29 @@ describe("timeline editing", () => {
 		expect(findNextPlayableTimeInRanges(Number.NaN, ranges)).toBeNull();
 		expect(findPlayableRangeIndex(998.5, ranges)).toBe(499);
 		expect(findPlayableRangeIndex(999, ranges)).toBe(-1);
+	});
+});
+
+describe("findPreviousPlayableTime", () => {
+	const spec = {
+		version: 1 as const,
+		sourceDuration: 10,
+		keepRanges: [
+			{ start: 0, end: 4 },
+			{ start: 6, end: 6.03 },
+			{ start: 8, end: 10 },
+		],
+	};
+
+	it("keeps a time that is already inside a clip", () => {
+		expect(findPreviousPlayableTime(2, spec)).toBe(2);
+	});
+
+	it("lands just inside the previous clip from a removed section", () => {
+		expect(findPreviousPlayableTime(5, spec)).toBeCloseTo(3.95);
+	});
+
+	it("skips a clip too short to keep and lands in the one before it", () => {
+		expect(findPreviousPlayableTime(7, spec)).toBeCloseTo(3.95);
 	});
 });
