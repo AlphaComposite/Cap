@@ -210,7 +210,8 @@ describe("eligible legacy share surfaces", () => {
 		const preparing = await getVideoDownloadInfo(Video.VideoId.make("video"));
 		expect(preparing).toEqual({
 			success: false,
-			error: "Preparing download...",
+			pending: true,
+			message: "Preparing your download. Try again in a minute.",
 		});
 	});
 

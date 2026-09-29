@@ -18,6 +18,8 @@ import { canUserDownloadVideo } from "@/lib/video-download-permissions";
 import { decodeStorageVideo } from "@/lib/video-storage";
 
 export type VideoDownloadVariant = "current" | "original";
+const DOWNLOAD_PREPARING_MESSAGE =
+	"Preparing your download. Try again in a minute.";
 export type VideoDownloadInfo =
 	| {
 			success: true;
@@ -26,8 +28,21 @@ export type VideoDownloadInfo =
 	  }
 	| {
 			success: false;
+			pending: true;
+			message: typeof DOWNLOAD_PREPARING_MESSAGE;
+	  }
+	| {
+			success: false;
 			error: string;
 	  };
+
+function downloadPreparing(): Extract<VideoDownloadInfo, { pending: true }> {
+	return {
+		success: false,
+		pending: true,
+		message: DOWNLOAD_PREPARING_MESSAGE,
+	};
+}
 
 export async function downloadVideo(videoId: Video.VideoId) {
 	const user = await getCurrentUser();
@@ -65,10 +80,7 @@ export async function downloadVideo(videoId: Video.VideoId) {
 				child: "download.mp4",
 			});
 			if (!downloadUrl) {
-				return {
-					success: false as const,
-					error: "Preparing download...",
-				};
+				return downloadPreparing();
 			}
 			return {
 				success: true as const,
@@ -151,10 +163,7 @@ export async function getVideoDownloadInfo(
 				child: "download.mp4",
 			});
 			if (!downloadUrl) {
-				return {
-					success: false,
-					error: "Preparing download...",
-				};
+				return downloadPreparing();
 			}
 			return {
 				success: true as const,

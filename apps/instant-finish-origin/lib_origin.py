@@ -785,6 +785,22 @@ def begin_revision_encode(video_id: str, spec_key: str, revision_id: str) -> tup
         return slot, False
 
 
+def begin_download_hold(video_id: str, revision_id: str) -> EncodeSlot | None:
+    with _ENCODE_LOCK:
+        current = _ACTIVE_ENCODES.get(video_id)
+        if current is not None and not current.finished:
+            return None
+        slot = EncodeSlot(video_id, f"download:{revision_id}", revision_id)
+        _ACTIVE_ENCODES[video_id] = slot
+        return slot
+
+
+def foreign_encode_active(video_id: str, own: EncodeSlot) -> bool:
+    with _ENCODE_LOCK:
+        current = _ACTIVE_ENCODES.get(video_id)
+        return current is not None and current is not own and not current.finished
+
+
 def bind_encode_slot(slot: EncodeSlot | None) -> None:
     _ENCODE_TLS.slot = slot
 

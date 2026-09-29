@@ -26,32 +26,44 @@ export function useVideoDownload(videoId: Video.VideoId) {
 			const run = async () => {
 				const result = await getVideoDownloadInfo(videoId, variant);
 				if (!result.success) {
+					if ("pending" in result && result.pending) {
+						toast.message(result.message);
+						return;
+					}
 					throw new Error(result.error);
 				}
 
 				const { downloadUrl, filename } = result;
-				const response = await fetch(downloadUrl);
-				if (!response.ok) throw new Error("Failed to download video");
-				const blob = await response.blob();
-				const blobUrl = window.URL.createObjectURL(blob);
-				const link = document.createElement("a");
-				link.href = blobUrl;
-				link.download = filename;
-				link.style.display = "none";
-				document.body.appendChild(link);
-				link.click();
-				document.body.removeChild(link);
-				window.URL.revokeObjectURL(blobUrl);
+				const saving = (async () => {
+					const response = await fetch(downloadUrl);
+					if (!response.ok) throw new Error("Failed to download video");
+					const blob = await response.blob();
+					const blobUrl = window.URL.createObjectURL(blob);
+					const link = document.createElement("a");
+					link.href = blobUrl;
+					link.download = filename;
+					link.style.display = "none";
+					document.body.appendChild(link);
+					link.click();
+					document.body.removeChild(link);
+					window.URL.revokeObjectURL(blobUrl);
+				})();
+				toast.promise(saving, {
+					loading: "Preparing download...",
+					success: "Download started",
+					error: (error) =>
+						error instanceof Error ? error.message : "Failed to download video",
+				});
+				await saving.catch(() => undefined);
 			};
 
-			const promise = run();
-			toast.promise(promise, {
-				loading: "Preparing download...",
-				success: "Download started",
-				error: (error) =>
-					error instanceof Error ? error.message : "Failed to download video",
-			});
-			promise.catch(() => undefined).finally(() => setIsDownloading(false));
+			void run()
+				.catch((error) => {
+					toast.error(
+						error instanceof Error ? error.message : "Failed to download video",
+					);
+				})
+				.finally(() => setIsDownloading(false));
 		},
 		[videoId, isDownloading],
 	);

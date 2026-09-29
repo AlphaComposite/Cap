@@ -214,7 +214,7 @@ export async function getInstantFinishPublicationDto(input: {
 			captionsAvailable: page.captionsVtt != null,
 			commentTimestamps,
 			thumbnailAvailable: page.thumbnail !== "unavailable",
-			downloadReady: false,
+			downloadReady: revision?.metadataSnapshot?.downloadReady === true,
 			playlistPath: `/media/${input.videoId}/r/${projection.currentRevisionId}/playlist.m3u8`,
 			summaryStatus: "persisted",
 			summaryDerived: false,
