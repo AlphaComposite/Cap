@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,16 @@ from service_auth import sign_request
 
 VECTORS = json.loads((Path(__file__).parent / "vectors" / "attestation.json").read_text())
 SERVICE = b"service-token-service-token-svc01"
+
+
+def _rate_48k_source() -> bytes:
+    rate, channels, bits = 48000, 1, 16
+    payload = b"\x00\x00" * 8
+    fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * channels * bits // 8, channels * bits // 8, bits)
+    fmt_chunk = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    data_chunk = b"data" + struct.pack("<I", len(payload)) + payload
+    body = b"WAVE" + fmt_chunk + data_chunk
+    return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
 def _synthetic_moof(durations: list[int]) -> bytes:
@@ -129,17 +140,19 @@ class PresentationReuseTests(unittest.TestCase):
     def test_skips_decode_when_pcm_record_matches_source_sha(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "original.mp4"
-            source.write_bytes(b"source-bytes-not-a-real-mp4")
+            source.write_bytes(_rate_48k_source())
             dest = lib_audio.presentation_pcm_path(source)
             dest.write_bytes(b"\x00" * 16)
             record = {
                 "pcm": dest.name,
                 "pcm_sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
                 "prepare_ms": 12.5,
+                "input_rate": 48000,
                 "resampled_from": None,
                 "samples": 2,
                 "source": source.name,
                 "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "audio_stream": "0:a:0",
             }
             lib_audio.presentation_meta_path(source).write_text(json.dumps(record))
             got = lib_audio.prepare_presentation(source)
