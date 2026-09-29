@@ -758,7 +758,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		expect(after?.currentRevisionId).toBe(retried.revisionId);
 	});
 
-	it("hides a chapter inside a cut and brings it back when the section is restored", async () => {
+	it("keeps a sub-10-second chapter in the source list across a cut and restore", async () => {
 		const publish = async (
 			end: number,
 			chapters?: { title: string; start: number }[],
@@ -802,7 +802,8 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			{ title: "Late", start: 6 },
 		]);
 		const full = await readChaptersInput();
-		expect(full?.chapters).toEqual([
+		expect(full?.chapters).toEqual([{ title: "Start", start: 0 }]);
+		expect(full?.sourceChapters).toEqual([
 			{ title: "Start", start: 0 },
 			{ title: "Late", start: 6 },
 		]);
@@ -813,7 +814,8 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			{ title: "Late", start: 6 },
 		]);
 		const restored = await publish(9, cut?.chapters, cut?.sourceChapters);
-		expect(restored?.chapters).toEqual([
+		expect(restored?.chapters).toEqual([{ title: "Start", start: 0 }]);
+		expect(restored?.sourceChapters).toEqual([
 			{ title: "Start", start: 0 },
 			{ title: "Late", start: 6 },
 		]);
