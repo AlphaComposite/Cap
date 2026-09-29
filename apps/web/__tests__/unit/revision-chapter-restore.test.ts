@@ -173,4 +173,22 @@ describe("chapters come back when a cut section is restored", () => {
 		});
 		expect(restored.chapters[0]).toEqual({ title: "A", start: 0 });
 	});
+
+	it("keeps a chapter just after 0:00 separate from the opening chapter", () => {
+		const cutStart = cut([{ start: 15, end: 100 }]);
+		const state = deriveRevisionChapterState({
+			storedChapters: [
+				{ title: "A", start: 0 },
+				{ title: "B", start: 0.0004 },
+			],
+			storedSourceChapters: null,
+			previousSpec: cutStart,
+			nextSpec: cutStart,
+		});
+		expect(state.sourceChapters.map((chapter) => chapter.title)).toEqual([
+			"A",
+			"B",
+		]);
+		expect(state.sourceChapters[0]).toEqual({ title: "A", start: 0 });
+	});
 });
