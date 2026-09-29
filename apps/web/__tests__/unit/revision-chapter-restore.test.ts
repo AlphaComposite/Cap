@@ -130,4 +130,19 @@ describe("chapters come back when a cut section is restored", () => {
 		expect(state.sourceChapters).toEqual(chapters);
 		expect(state.chapters).toEqual(chapters);
 	});
+
+	it("keeps two chapters one millisecond apart as separate chapters", () => {
+		const edited = mergeOwnerChapterEdit({
+			previousSourceChapters: [{ title: "A", start: 1 }],
+			currentSpec: full,
+			editedChapters: [
+				{ title: "A", start: 1 },
+				{ title: "B", start: 1.001 },
+			],
+		});
+		expect(edited).toEqual([
+			{ title: "A", start: 1 },
+			{ title: "B", start: 1.001 },
+		]);
+	});
 });

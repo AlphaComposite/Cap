@@ -170,6 +170,15 @@ describe("editing AI content", () => {
 		expect(writeSql).not.toContain("summaryManuallyEdited");
 		expect(writeParams).toContain('[{"title":"Changed","start":20}]');
 	});
+
+	it("drops a stale source chapter list when chapters change with the flag off", async () => {
+		const result = await editAiContent(videoId, {
+			expected,
+			value: { ...expected, chapters: [{ title: "Flag off", start: 20 }] },
+		});
+		expect(result.success).toBe(true);
+		expect(writeSql).toContain("'$.sourceChapters'");
+	});
 	it("rejects stale edits without writing", async () => {
 		metadata.summary = "Newer saved summary";
 		const result = await editAiContent(videoId, {

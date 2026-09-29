@@ -7,7 +7,7 @@ import {
 	type VideoChapter,
 } from "@/lib/video-edits";
 
-const EPSILON = 0.001;
+const EPSILON = 0.0005;
 
 function sortedUnique(chapters: readonly VideoChapter[]): VideoChapter[] {
 	const sorted = [...chapters].sort((a, b) => a.start - b.start);
