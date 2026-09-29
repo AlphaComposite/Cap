@@ -61,7 +61,7 @@ function outputChaptersToSource(
 	spec: VideoEditSpec,
 ): VideoChapter[] {
 	return chapters.flatMap((chapter) =>
-		chapter.start <= EPSILON
+		chapter.start <= 0
 			? [{ ...chapter, start: 0 }]
 			: mapOutputChaptersToSource([chapter], spec),
 	);
