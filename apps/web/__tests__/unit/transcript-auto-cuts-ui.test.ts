@@ -269,6 +269,44 @@ describe("TranscriptSidebar automatic cuts", () => {
 		);
 	});
 
+	it("keeps restored words when an automatic cut layer is toggled off and on", async () => {
+		const autoCuts = createAutoCuts();
+		autoCuts.silence = {
+			...autoCuts.silence,
+			ranges: [{ start: 1.55, end: 2.25 }],
+			removedMs: 700,
+			gapCount: 1,
+		};
+		autoCuts.fillers = {
+			...autoCuts.fillers,
+			ranges: [{ start: 1.12, end: 1.3 }],
+			removedCount: 1,
+		};
+		const onSetAutoCutLayer = vi.fn();
+		await renderSidebar(root, autoCuts, onSetAutoCutLayer);
+
+		const switches = [
+			...container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'),
+		];
+		for (const button of switches) await act(async () => button.click());
+
+		expect(onSetAutoCutLayer).toHaveBeenCalledWith(
+			"silence",
+			expect.objectContaining({
+				enabled: true,
+				ranges: [{ start: 1.55, end: 2.25 }],
+				gapCount: 1,
+			}),
+		);
+		expect(onSetAutoCutLayer).toHaveBeenCalledWith(
+			"fillers",
+			expect.objectContaining({
+				enabled: true,
+				ranges: [{ start: 1.12, end: 1.3 }],
+			}),
+		);
+	});
+
 	it("enables both automatic cut layers together when transcript timing first loads", async () => {
 		const onInitializeAutoCuts = vi.fn();
 		await renderSidebar(root, createAutoCuts(), vi.fn(), onInitializeAutoCuts);

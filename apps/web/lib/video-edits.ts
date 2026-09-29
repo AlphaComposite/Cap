@@ -1320,15 +1320,37 @@ export function restoreTimelineRanges(
 		restoreRanges,
 		duration,
 	);
+	const nextFillerRanges = subtractRanges(
+		autoCuts.fillers.ranges,
+		restoreRanges,
+		duration,
+	);
+	const fullyRestoredFillers = autoCuts.fillers.ranges.filter(
+		(range) => !rangesIntersect([range], nextFillerRanges),
+	).length;
+	const nextTrimStart = roundEditTime(
+		Math.min(trimStart, ...restoreRanges.map((range) => range.start)),
+	);
+	const nextTrimEnd = roundEditTime(
+		Math.max(trimEnd, ...restoreRanges.map((range) => range.end)),
+	);
+	const uncoveredTrimRanges = subtractRanges(
+		[
+			{ start: nextTrimStart, end: trimStart },
+			{ start: trimEnd, end: nextTrimEnd },
+		].filter((range) => range.end - range.start > EPSILON),
+		restoreRanges,
+		duration,
+	);
 	return normalizeTimelineState({
 		...state,
-		trimStart: roundEditTime(
-			Math.min(trimStart, ...restoreRanges.map((range) => range.start)),
+		trimStart: nextTrimStart,
+		trimEnd: nextTrimEnd,
+		deletedRanges: subtractRanges(
+			[...deletedRanges, ...uncoveredTrimRanges],
+			restoreRanges,
+			duration,
 		),
-		trimEnd: roundEditTime(
-			Math.max(trimEnd, ...restoreRanges.map((range) => range.end)),
-		),
-		deletedRanges: subtractRanges(deletedRanges, restoreRanges, duration),
 		autoCuts: {
 			silence: {
 				...autoCuts.silence,
@@ -1339,13 +1361,14 @@ export function restoreTimelineRanges(
 						0,
 					),
 				),
+				gapCount: nextSilenceRanges.length,
 			},
 			fillers: {
 				...autoCuts.fillers,
-				ranges: subtractRanges(
-					autoCuts.fillers.ranges,
-					restoreRanges,
-					duration,
+				ranges: nextFillerRanges,
+				removedCount: Math.max(
+					0,
+					autoCuts.fillers.removedCount - fullyRestoredFillers,
 				),
 			},
 		},
