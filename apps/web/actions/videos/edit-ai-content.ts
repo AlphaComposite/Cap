@@ -149,6 +149,9 @@ export async function editAiContent(
 			if (chaptersChanged) {
 				updatedMetadata = sql`JSON_REMOVE(JSON_SET(${updatedMetadata}, '$.chapters', CAST(${JSON.stringify(next.chapters)} AS JSON), '$.chaptersManuallyEdited', CAST('true' AS JSON)), '$.aiChapterBackfillGenerationId')`;
 			}
+			if (chaptersChanged && !revision) {
+				updatedMetadata = sql`JSON_REMOVE(${updatedMetadata}, '$.sourceChapters')`;
+			}
 			if (chaptersChanged && revision) {
 				const previousSource =
 					metadata.chaptersRevisionId === revision.revisionId &&

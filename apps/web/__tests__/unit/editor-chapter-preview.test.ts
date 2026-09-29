@@ -52,9 +52,16 @@ function createSpec(silence: boolean, fillers: boolean) {
 	});
 }
 
-function Harness({ editSpec }: { editSpec: VideoEditSpec }) {
+function Harness({
+	editSpec,
+	sourceChapters,
+}: {
+	editSpec: VideoEditSpec;
+	sourceChapters?: { title: string; start: number }[] | null;
+}) {
 	const preview = useEditorChapterPreview({
 		chapters,
+		sourceChapters,
 		initialEditSpec,
 		editSpec,
 	});
@@ -186,5 +193,28 @@ describe("editor chapter preview", () => {
 				}),
 			),
 		).toEqual(originalMarkers);
+	});
+
+	it("matches publication for a flagged video without a stored source list", async () => {
+		const cutSection = normalizeVideoEditSpec({
+			version: 1,
+			sourceDuration: 10,
+			keepRanges: [
+				{ start: 0, end: 2.5 },
+				{ start: 7, end: 10 },
+			],
+		});
+		await act(async () =>
+			root.render(
+				createElement(Harness, {
+					editSpec: cutSection,
+					sourceChapters: null,
+				}),
+			),
+		);
+		const vtt = await readBlob(blobs.at(-1));
+		expect(vtt).toContain("Opening");
+		expect(vtt).not.toContain("Inside silence");
+		expect(vtt).toContain("Inside filler");
 	});
 });

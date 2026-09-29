@@ -179,10 +179,12 @@ export default async function EditVideoPage(props: {
 					: (video.metadata?.chapters ?? [])
 			}
 			sourceChapters={
-				publishedIntent &&
-				video.metadata?.chaptersRevisionId === publishedIntent.revisionId
-					? (video.metadata?.sourceChapters ?? null)
-					: null
+				flagged
+					? publishedIntent &&
+						video.metadata?.chaptersRevisionId === publishedIntent.revisionId
+						? (video.metadata?.sourceChapters ?? null)
+						: null
+					: undefined
 			}
 			hasExistingEdits={hasExistingEdits}
 			initialEditSpec={initialEditSpec}

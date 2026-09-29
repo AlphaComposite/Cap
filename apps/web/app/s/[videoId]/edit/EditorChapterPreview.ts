@@ -31,9 +31,9 @@ export function useEditorChapterPreview({
 	);
 	const projectedChapters = useMemo(
 		() =>
-			storedSourceChapters
-				? projectSourceChapters(sourceChapters, editSpec)
-				: projectSourceChaptersToOutput(sourceChapters, editSpec),
+			storedSourceChapters === undefined
+				? projectSourceChaptersToOutput(sourceChapters, editSpec)
+				: projectSourceChapters(sourceChapters, editSpec),
 		[editSpec, sourceChapters, storedSourceChapters],
 	);
 	const playbackChapters = useMemo(
