@@ -17,6 +17,7 @@ import {
 	normalizeAiContent,
 	parseChapterTime,
 	validateAiContent,
+	validateOwnerChapterLengths,
 } from "@/lib/ai-content";
 
 export type SummaryEditingState = "clean" | "dirty" | "saving";
@@ -175,10 +176,16 @@ export function SummaryEditor({
 			start: chapter.originalStart ?? parseChapterTime(chapter.time),
 		})),
 	};
-	const dirty =
-		value.summary !== normalizedExpected.summary ||
-		!chaptersEqual(value.chapters, normalizedExpected.chapters);
-	const validationError = validateAiContent(value, duration);
+	const chaptersChanged = !chaptersEqual(
+		value.chapters,
+		normalizedExpected.chapters,
+	);
+	const dirty = value.summary !== normalizedExpected.summary || chaptersChanged;
+	const validationError =
+		validateAiContent(value, duration) ??
+		(chaptersChanged
+			? validateOwnerChapterLengths(value.chapters, duration)
+			: null);
 	const autosaveValue = JSON.stringify(value);
 	const valueRef = useRef(value);
 	valueRef.current = value;
@@ -220,10 +227,18 @@ export function SummaryEditor({
 				while (true) {
 					const nextValue = valueRef.current;
 					const normalizedBaseline = normalizeAiContent(expectedRef.current);
+					const chaptersChanged = !chaptersEqual(
+						nextValue.chapters,
+						normalizedBaseline.chapters,
+					);
 					const hasChanges =
-						nextValue.summary !== normalizedBaseline.summary ||
-						!chaptersEqual(nextValue.chapters, normalizedBaseline.chapters);
-					if (validateAiContent(nextValue, duration)) return false;
+						nextValue.summary !== normalizedBaseline.summary || chaptersChanged;
+					if (
+						validateAiContent(nextValue, duration) ||
+						(chaptersChanged &&
+							validateOwnerChapterLengths(nextValue.chapters, duration))
+					)
+						return false;
 					if (!hasChanges) return true;
 
 					await queryClient.cancelQueries({ queryKey });
