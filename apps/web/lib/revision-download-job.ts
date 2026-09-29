@@ -356,6 +356,54 @@ async function finishDownload(
 	);
 }
 
+async function enqueueCurrentDownloads(
+	database: Database,
+	stamp: Date,
+	limit: number,
+) {
+	const pending = await database
+		.select({
+			revisionId: revisionArtifactStatus.revisionId,
+			videoId: videoPublication.videoId,
+		})
+		.from(revisionArtifactStatus)
+		.innerJoin(
+			videoPublication,
+			eq(videoPublication.currentRevisionId, revisionArtifactStatus.revisionId),
+		)
+		.where(
+			and(
+				eq(revisionArtifactStatus.artifact, "download"),
+				eq(revisionArtifactStatus.state, "PENDING"),
+			),
+		)
+		.limit(limit);
+	for (const row of pending) {
+		const [existing] = await database
+			.select({ id: revisionOutbox.id })
+			.from(revisionOutbox)
+			.where(
+				and(
+					eq(revisionOutbox.job, "download"),
+					eq(revisionOutbox.revisionId, row.revisionId),
+				),
+			)
+			.limit(1);
+		if (existing) continue;
+		await database.insert(revisionOutbox).values({
+			videoId: row.videoId,
+			revisionId: row.revisionId,
+			job: "download",
+			payload: {
+				job: "download",
+				revisionId: row.revisionId,
+				videoId: row.videoId,
+			},
+			createdAt: stamp,
+		});
+	}
+}
+
 export async function sweepRevisionDownloads(
 	database: unknown,
 	input: { origin: OriginClient; now?: Date; limit?: number },
@@ -363,6 +411,15 @@ export async function sweepRevisionDownloads(
 	const app = database as Database;
 	const stamp = input.now ?? new Date();
 	const limit = input.limit ?? 4;
+	try {
+		await enqueueCurrentDownloads(app, stamp, limit);
+	} catch (error) {
+		alertRevisionDownloadFailure({
+			videoId: "unknown",
+			revisionId: "unknown",
+			reason: downloadFailureClass(error),
+		});
+	}
 	for (let index = 0; index < limit; index += 1) {
 		try {
 			const claimed = await claimDueDownload(app, stamp);
