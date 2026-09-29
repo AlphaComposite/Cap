@@ -214,6 +214,38 @@ describe("eligible legacy share surfaces", () => {
 		});
 	});
 
+	it("still signs a private original for an unflagged owner", async () => {
+		rows.video.isScreenshot = false;
+		rows.edits = [{ sourceKey: "private/owner-flagged/video/source.mp4" }];
+		const original = await getVideoDownloadInfo(
+			Video.VideoId.make("video"),
+			"original",
+		);
+		expect(original).toEqual({
+			success: true,
+			downloadUrl:
+				"https://media.example/private/owner-flagged/video/source.mp4",
+			filename: "Clip (original).mp4",
+		});
+	});
+
+	it("never signs the raw upload for a flagged owner", async () => {
+		const { readFileSync } = await import("node:fs");
+		const source = readFileSync(
+			new URL(
+				"../../../../packages/web-backend/src/Videos/index.ts",
+				import.meta.url,
+			),
+			"utf8",
+		);
+		const rawSign = source.indexOf("upload.rawFileKey,\n");
+		const guard = source.lastIndexOf("upload?.rawFileKey &&", rawSign);
+		expect(rawSign).toBeGreaterThan(0);
+		expect(source.slice(guard, rawSign)).toContain(
+			"!isInstantFinishEnabledForOwner(video.ownerId)",
+		);
+	});
+
 	it("advertises the legacy stream for an eligible video and hides it after an intent or relocation", async () => {
 		process.env.CAP_INSTANT_FINISH_OWNERS = "owner-flagged";
 		const eligible = await loadRevisionPlayback({

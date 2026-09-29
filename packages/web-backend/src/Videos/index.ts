@@ -780,7 +780,11 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 							.where(Dz.eq(Db.videoUploads.videoId, video.id)),
 					);
 
-					if (upload?.rawFileKey && !isViewerPrivateKey(upload.rawFileKey)) {
+					if (
+						upload?.rawFileKey &&
+						!isInstantFinishEnabledForOwner(video.ownerId) &&
+						!isViewerPrivateKey(upload.rawFileKey)
+					) {
 						const downloadUrl = yield* bucket.getSignedObjectUrl(
 							upload.rawFileKey,
 						);

@@ -34,18 +34,20 @@ export async function loadRevisionPlayback(input: {
 	env?: Record<string, string | undefined>;
 }): Promise<LoadedRevisionPlayback> {
 	let publication = disabledInstantFinishPublication();
+	let publicationRead = true;
 	try {
 		publication = await getInstantFinishPublicationDto({
 			videoId: input.videoId,
 			ownerId: input.ownerId,
 		});
 	} catch {
+		publicationRead = false;
 		publication = disabledInstantFinishPublication({
 			enabled: isInstantFinishEnabledForOwner(input.ownerId),
 		});
 	}
 	const eligibleLegacy =
-		publication.enabled && !publication.currentRevisionId
+		publicationRead && publication.enabled && !publication.currentRevisionId
 			? await loadEligibleLegacy({
 					videoId: input.videoId,
 					ownerId: input.ownerId,

@@ -5,6 +5,7 @@ import {
 	videoEdits,
 	videos,
 } from "@cap/database/schema";
+import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "./Videos/instantFinishFlag.ts";
 
@@ -52,22 +53,23 @@ export async function loadEligibleLegacy(input: {
 	env?: Record<string, string | undefined>;
 }): Promise<boolean> {
 	if (!isInstantFinishEnabledForOwner(input.ownerId, input.env)) return false;
+	const videoId = input.videoId as Video.VideoId;
 	try {
 		const database = db();
 		const [intent] = await database
 			.select({ videoId: editIntent.videoId })
 			.from(editIntent)
-			.where(eq(editIntent.videoId, input.videoId))
+			.where(eq(editIntent.videoId, videoId))
 			.limit(1);
 		const [edit] = await database
 			.select({ videoId: videoEdits.videoId })
 			.from(videoEdits)
-			.where(eq(videoEdits.videoId, input.videoId))
+			.where(eq(videoEdits.videoId, videoId))
 			.limit(1);
 		const [video] = await database
 			.select({ metadata: videos.metadata })
 			.from(videos)
-			.where(eq(videos.id, input.videoId))
+			.where(eq(videos.id, videoId))
 			.limit(1);
 		const [source] = await database
 			.select({
@@ -75,7 +77,7 @@ export async function loadEligibleLegacy(input: {
 				liveKey: sourceObject.liveKey,
 			})
 			.from(sourceObject)
-			.where(eq(sourceObject.videoId, input.videoId))
+			.where(eq(sourceObject.videoId, videoId))
 			.limit(1);
 		return decideEligibleLegacy({
 			flagged: true,
