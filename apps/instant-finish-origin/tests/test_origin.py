@@ -160,9 +160,10 @@ class PlanTests(unittest.TestCase):
 
     def test_audio_policy(self) -> None:
         self.assertEqual(lib_audio.audio_rate_policy(48000), "native")
-        self.assertEqual(lib_audio.audio_rate_policy(16000), "resample-16k")
+        self.assertEqual(lib_audio.audio_rate_policy(16000), "resample")
+        self.assertEqual(lib_audio.audio_rate_policy(44100), "resample")
         with self.assertRaises(lib_audio.AudioRejected):
-            lib_audio.audio_rate_policy(8000)
+            lib_audio.audio_rate_policy(7350)
 
     def test_aac_tfdt_offset_and_removed_sample(self) -> None:
         self.assertEqual(lib_audio.audio_tfdt(0, leading=True), 0)
