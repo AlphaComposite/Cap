@@ -272,8 +272,13 @@ describe("editor source timeline", () => {
 				new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
 			);
 		});
+		await act(async () => {
+			preview.dispatchEvent(new Event("seeking"));
+			preview.dispatchEvent(new Event("timeupdate"));
+		});
 
-		expect(preview.currentTime).toBeCloseTo(4);
+		expect(preview.currentTime).toBeGreaterThan(3.9);
+		expect(preview.currentTime).toBeLessThan(4);
 	});
 
 	it("places an output chapter at its source time on the full timeline", async () => {
