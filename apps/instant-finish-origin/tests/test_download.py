@@ -34,8 +34,9 @@ SOURCE = "sourcedl001"
 
 
 def claims(artifact: str | None = None) -> dict:
+    ttl = grant_mod.ttl_for(artifact)
     row = {
-        "exp": 1_060,
+        "exp": 1_000 + ttl,
         "grantId": "grant-download-01",
         "iat": 1_000,
         "policyEpoch": 3,

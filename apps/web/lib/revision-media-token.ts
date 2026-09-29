@@ -6,8 +6,14 @@ import {
 } from "node:crypto";
 
 export const REVISION_MEDIA_GRANT_TTL_SECONDS = 60;
+export const REVISION_MEDIA_DOWNLOAD_GRANT_TTL_SECONDS = 30 * 60;
 export const REVISION_MEDIA_GRANT_SKEW_SECONDS = 5;
 export const REVISION_MEDIA_GRANT_VERSION = 1 as const;
+export function revisionMediaGrantTtlSeconds(artifact?: "download"): number {
+	return artifact === "download"
+		? REVISION_MEDIA_DOWNLOAD_GRANT_TTL_SECONDS
+		: REVISION_MEDIA_GRANT_TTL_SECONDS;
+}
 
 export const REVISION_MEDIA_CACHE_CONTROL = "private, no-store";
 export const REVISION_MEDIA_REFERRER_POLICY = "no-referrer";
@@ -173,7 +179,7 @@ export function signRevisionMediaGrant(
 		publicationEpoch: input.publicationEpoch,
 		policyEpoch: input.policyEpoch,
 		iat,
-		exp: iat + REVISION_MEDIA_GRANT_TTL_SECONDS,
+		exp: iat + revisionMediaGrantTtlSeconds(input.artifact),
 		grantId: input.grantId ?? randomBytes(16).toString("base64url"),
 	};
 	if (input.artifact === "download") payload.artifact = "download";
@@ -217,7 +223,10 @@ export function verifyRevisionMediaGrant(
 	if (!constantTimeEqual(encoded, canonical)) {
 		return { ok: false, denial: "malformed" };
 	}
-	if (parsed.exp - parsed.iat !== REVISION_MEDIA_GRANT_TTL_SECONDS) {
+	if (
+		parsed.exp - parsed.iat !==
+		revisionMediaGrantTtlSeconds(parsed.artifact)
+	) {
 		return { ok: false, denial: "malformed" };
 	}
 	const now = options.now ?? Math.floor(Date.now() / 1000);
