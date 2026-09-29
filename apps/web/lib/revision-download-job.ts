@@ -376,6 +376,11 @@ async function enqueueCurrentDownloads(
 			and(
 				eq(revisionArtifactStatus.artifact, "download"),
 				eq(revisionArtifactStatus.state, "PENDING"),
+				sql`not exists (
+					select 1 from ${revisionOutbox}
+					where ${revisionOutbox.job} = 'download'
+						and ${revisionOutbox.revisionId} = ${revisionArtifactStatus.revisionId}
+				)`,
 			),
 		)
 		.limit(limit);

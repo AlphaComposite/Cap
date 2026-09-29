@@ -159,6 +159,22 @@ class DownloadTests(unittest.TestCase):
         playlist = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={token}")
         self.assertNotEqual(playlist[0], 403, playlist[2])
 
+    def test_download_grant_cannot_open_playback_artifacts(self) -> None:
+        self.store.put_video(VideoRow(VIDEO, True, False, "cap"))
+        self.store.put_revision(RevisionRow(REV, VIDEO, "intent", SOURCE, 1, "CURRENT"))
+        self.store.put_publication(PublicationRow(VIDEO, REV, 1, 2, 3, current_generation=1))
+        token = grant_mod.mint(GRANT, claims(artifact="download"))
+        for kind in (
+            "playlist.m3u8",
+            "init.mp4",
+            "seg/0.m4s",
+            "captions.vtt",
+            "chapters.json",
+            "thumbnail.jpg",
+        ):
+            status, _, body = self._req(f"/media/{VIDEO}/r/{REV}/{kind}?t={token}")
+            self.assertEqual((kind, status, body), (kind, 403, b"forbidden"))
+
     def test_unauthorized_and_absent_stay_closed(self) -> None:
         status, _, _ = self._req(f"/internal/revisions/{REV}/download", "POST", body=b"{}")
         self.assertEqual(status, 401)
@@ -228,9 +244,11 @@ class DownloadTests(unittest.TestCase):
         playlist = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={playback}")
         self.assertEqual(playlist[0], 200, playlist[2][:80])
         download_playlist = self._req(f"/media/{VIDEO}/r/{REV}/playlist.m3u8?t={token}")
-        self.assertEqual(download_playlist[0], 200, download_playlist[2][:80])
+        self.assertEqual(download_playlist[0], 403, download_playlist[2])
+        self.assertEqual(download_playlist[2], b"forbidden")
         download_segment = self._req(f"/media/{VIDEO}/r/{REV}/seg/0.m4s?t={token}")
-        self.assertEqual(download_segment[0], 200, download_segment[2][:80])
+        self.assertEqual(download_segment[0], 403, download_segment[2])
+        self.assertEqual(download_segment[2], b"forbidden")
         expected = self._playlist_duration(playlist[2])
         self.assertAlmostEqual(expected, prepared["playlistDurationSeconds"], delta=0.2)
         probed = self.root / "download.mp4"

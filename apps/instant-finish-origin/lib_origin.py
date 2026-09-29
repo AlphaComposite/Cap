@@ -1287,25 +1287,76 @@ class Origin:
 
     def _ensure_init(self) -> bytes:
         with self._lock:
-            if self._init_bytes is not None and self.init_path.is_file() and sidecar_path(self.init_path).is_file():
-                return self._init_bytes
-            self._init_bytes = None
-            if self.init_path.exists() or sidecar_path(self.init_path).exists():
-                try:
-                    data = self._read_bound(self.init_path, "init", None)
-                    self._init_bytes = data
-                    self._init_avcc = avcc_bytes(data)
-                    return data
-                except CacheIntegrityError:
-                    self._unlink_bound(self.init_path)
-                    self._init_bytes = None
-                    self._init_avcc = None
-            wall0 = time.perf_counter()
-            self.produce(0)
-            self._record(0, (time.perf_counter() - wall0) * 1000.0, hit=False, retry=False)
-            if self._init_bytes is None:
-                self._init_bytes = self._read_bound(self.init_path, "init", None)
+            return self._ensure_init_locked()
+
+    def _ensure_init_locked(self) -> bytes:
+        if self._init_bytes is not None and self.init_path.is_file() and sidecar_path(self.init_path).is_file():
             return self._init_bytes
+        self._init_bytes = None
+        if self.init_path.exists() or sidecar_path(self.init_path).exists():
+            try:
+                data = self._read_bound(self.init_path, "init", None)
+                self._init_bytes = data
+                self._init_avcc = avcc_bytes(data)
+                return data
+            except CacheIntegrityError:
+                self._unlink_bound(self.init_path)
+                self._init_bytes = None
+                self._init_avcc = None
+        wall0 = time.perf_counter()
+        self.produce(0)
+        self._record(0, (time.perf_counter() - wall0) * 1000.0, hit=False, retry=False)
+        if self._init_bytes is None:
+            self._init_bytes = self._read_bound(self.init_path, "init", None)
+        return self._init_bytes
+
+    def read_init_for_download(self) -> bytes:
+        playback = current_encode_slot() is None
+        if playback:
+            self.begin_playback()
+        try:
+            with self._lock:
+                preexisted = set(self._segment_bytes)
+                try:
+                    return self._ensure_init_locked()
+                finally:
+                    for index in list(self._segment_bytes):
+                        if index not in preexisted:
+                            self._segment_bytes.pop(index, None)
+        finally:
+            if playback:
+                self.end_playback()
+
+    def read_segment_for_download(self, index: int) -> bytes:
+        playback = current_encode_slot() is None
+        if playback:
+            self.begin_playback()
+        try:
+            return self._read_segment_for_download(index)
+        finally:
+            if playback:
+                self.end_playback()
+
+    def _read_segment_for_download(self, index: int) -> bytes:
+        if index < 0 or index >= len(self.segments):
+            raise IndexError(index)
+        wall0 = time.perf_counter()
+        with self._lock:
+            path = self.segment_path(index)
+            preexisted = index in self._segment_bytes and path.is_file() and sidecar_path(path).is_file()
+            if preexisted:
+                return self._read_bound(path, "seg", index)
+            self._segment_bytes.pop(index, None)
+            try:
+                try:
+                    self._ensure_locked(index, retry=False, wall0=wall0)
+                except CacheIntegrityError:
+                    self._segment_bytes.pop(index, None)
+                    self._unlink_bound(self.segment_path(index))
+                    self._ensure_locked(index, retry=True, wall0=wall0)
+                return self._read_bound(self.segment_path(index), "seg", index)
+            finally:
+                self._segment_bytes.pop(index, None)
 
     def _record(self, index: int, ensure_ms: float, *, hit: bool, retry: bool) -> None:
         produced = self._last_produce or {}
