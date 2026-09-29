@@ -217,4 +217,28 @@ describe("editor chapter preview", () => {
 		expect(vtt).not.toContain("Inside silence");
 		expect(vtt).toContain("Inside filler");
 	});
+
+	it("previews the opening chapter at 0:00 after the cut start is restored", async () => {
+		const cutStart = normalizeVideoEditSpec({
+			version: 1,
+			sourceDuration: 10,
+			keepRanges: [{ start: 2, end: 10 }],
+		});
+		const openingChapters = [{ title: "Opening", start: 0 }];
+		let projected: { title: string; start: number }[] = [];
+		function StartHarness({ editSpec }: { editSpec: VideoEditSpec }) {
+			const preview = useEditorChapterPreview({
+				chapters: openingChapters,
+				sourceChapters: null,
+				initialEditSpec: cutStart,
+				editSpec,
+			});
+			projected = preview.projectedChapters;
+			return null;
+		}
+		await act(async () =>
+			root.render(createElement(StartHarness, { editSpec: initialEditSpec })),
+		);
+		expect(projected).toEqual([{ title: "Opening", start: 0 }]);
+	});
 });

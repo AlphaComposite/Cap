@@ -23,12 +23,12 @@ import {
 } from "@/lib/ai-content";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
-import { mergeOwnerChapterEdit } from "@/lib/revision-chapter-source";
-import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
 import {
-	mapOutputChaptersToSource,
-	parseVideoEditSpec,
-} from "@/lib/video-edits";
+	mergeOwnerChapterEdit,
+	outputChaptersToSource,
+} from "@/lib/revision-chapter-source";
+import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
+import { parseVideoEditSpec } from "@/lib/video-edits";
 
 const chapterSchema = z.object({
 	title: z.string().max(MAX_CHAPTER_TITLE_LENGTH),
@@ -157,7 +157,7 @@ export async function editAiContent(
 					metadata.chaptersRevisionId === revision.revisionId &&
 					metadata.sourceChapters
 						? metadata.sourceChapters
-						: mapOutputChaptersToSource(current.chapters, revision.spec);
+						: outputChaptersToSource(current.chapters, revision.spec);
 				const sourceChapters = mergeOwnerChapterEdit({
 					previousSourceChapters: previousSource,
 					currentSpec: revision.spec,
