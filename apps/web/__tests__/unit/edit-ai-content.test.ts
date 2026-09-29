@@ -148,6 +148,27 @@ describe("editing AI content", () => {
 		expect(mocks.lockedRead).toHaveBeenCalledWith("update");
 		expect(mocks.write).not.toHaveBeenCalled();
 	});
+	it("saves a summary-only edit when an existing chapter is shorter than 10 seconds", async () => {
+		const chapters = [
+			{ title: "Intro", start: 0 },
+			{ title: "Beat", start: 5 },
+		];
+		metadata = {
+			summary: "Original",
+			chapters,
+			aiGenerationStatus: "COMPLETE",
+		};
+		const result = await editAiContent(videoId, {
+			expected: { summary: "Original", chapters },
+			value: { summary: "Edited", chapters },
+		});
+		expect(result).toEqual({
+			success: true,
+			data: { summary: "Edited", chapters },
+		});
+		expect(writeSql).toContain("summaryManuallyEdited");
+		expect(writeSql).not.toContain("chaptersManuallyEdited");
+	});
 	it("updates only the summary while retaining concurrently updated chapters", async () => {
 		metadata.chapters = [{ title: "Updated elsewhere", start: 10 }];
 		const result = await editAiContent(videoId, {
@@ -343,22 +364,21 @@ describe("owner chapter rules on a revision", () => {
 	it("measures the last chapter against the revision the viewer sees, not the source duration", async () => {
 		const source = [
 			{ title: "A", start: 0 },
-			{ title: "Late", start: 35 },
+			{ title: "Late", start: 20 },
 		];
 		const visible = projectSourceChapters(source, spec);
+		const submitted = [
+			{ title: "A", start: 0 },
+			{ title: "Late", start: 35 },
+		];
+		expect(visible).not.toEqual(submitted);
 		await asRevisionOwner(
 			source,
 			visible,
 			async () => {
 				const result = await editAiContent(videoId, {
 					expected: { summary: "Original", chapters: visible },
-					value: {
-						summary: "Original",
-						chapters: [
-							{ title: "A", start: 0 },
-							{ title: "Late", start: 35 },
-						],
-					},
+					value: { summary: "Original", chapters: submitted },
 				});
 				expect(result).toEqual({
 					success: false,
