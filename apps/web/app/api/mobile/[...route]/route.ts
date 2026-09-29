@@ -67,6 +67,7 @@ import {
 } from "@/lib/mobile-request-origin";
 import { createNotification } from "@/lib/Notification";
 import { isRateLimited, RATE_LIMIT_IDS } from "@/lib/rate-limit";
+import { ensureEditedDownloadLookup } from "@/lib/register-edited-download";
 import {
 	bumpPolicyEpoch,
 	issueAuthorizedRevisionPlayback,
@@ -78,6 +79,8 @@ import { startVideoProcessingWorkflow } from "@/lib/video-processing";
 import { importLoomVideoWorkflow } from "@/workflows/import-loom-video";
 
 export const dynamic = "force-dynamic";
+
+ensureEditedDownloadLookup();
 
 type CapRow = {
 	id: Video.VideoId;
@@ -3091,6 +3094,9 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 								}
 
 								return yield* videos.getDownloadInfo(path.id).pipe(
+									Effect.catchTag("DownloadPreparingError", () =>
+										Effect.fail(new HttpApiError.NotFound()),
+									),
 									Effect.flatMap(
 										Option.match({
 											onNone: () => Effect.fail(new HttpApiError.NotFound()),

@@ -22,6 +22,10 @@ import {
 	isInternalRecordingKey,
 } from "../Storage/recording-output.ts";
 import { Tinybird } from "../Tinybird/index.ts";
+import {
+	currentEditedDownloadUrlLookup,
+	revisionDownloadOutcome,
+} from "./editedDownload.ts";
 import { isInstantFinishEnabledForOwner } from "./instantFinishFlag.ts";
 import { bumpPolicyEpochIfFlagged } from "./policyEpoch.ts";
 import { VideosPolicy } from "./VideosPolicy.ts";
@@ -720,7 +724,34 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 							ownerId: video.ownerId,
 						}),
 					);
-					if (!eligible) return Option.none();
+					if (!eligible) {
+						const lookup = currentEditedDownloadUrlLookup();
+						const downloadUrl = lookup
+							? yield* Effect.promise(() =>
+									lookup({
+										videoId: video.id,
+										ownerId: video.ownerId,
+									}),
+								)
+							: null;
+						const outcome = revisionDownloadOutcome({
+							flagged: true,
+							eligible: false,
+							name: video.name,
+							downloadUrl,
+						});
+						if (outcome.status === "preparing") {
+							return yield* new Video.DownloadPreparingError({
+								message: outcome.message,
+							});
+						}
+						if (outcome.status === "ready") {
+							return Option.some({
+								fileName: outcome.fileName,
+								downloadUrl: outcome.downloadUrl,
+							});
+						}
+					}
 				}
 
 				const [bucket] = yield* storage.getAccessForVideo(video);

@@ -131,6 +131,7 @@ import {
 } from "@/lib/permissions/roles";
 import { normalizePlaybackSpeed } from "@/lib/playback-speed";
 import { isRateLimited, RATE_LIMIT_IDS } from "@/lib/rate-limit";
+import { ensureEditedDownloadLookup } from "@/lib/register-edited-download";
 import { bumpPolicyEpoch } from "@/lib/revision-media-grant";
 import { transcribeVideo } from "@/lib/transcribe";
 import { startVideoProcessingWorkflow } from "@/lib/video-processing";
@@ -196,6 +197,8 @@ type StatusRow = Pick<
 >;
 
 const makeRequestId = () => crypto.randomUUID();
+
+ensureEditedDownloadLookup();
 
 const deterministicAgentId = (namespace: string, ...parts: string[]) =>
 	createHash("sha256")
@@ -2617,11 +2620,12 @@ const AgentHandlersLive = HttpApiBuilder.group(
 						}
 						const videos = yield* Videos;
 						const principal = yield* Agent.AgentPrincipal;
-						const result = yield* videos
-							.getDownloadInfo(path.id)
-							.pipe(
-								Effect.provideService(CurrentUser, toCurrentUser(principal)),
-							);
+						const result = yield* videos.getDownloadInfo(path.id).pipe(
+							Effect.catchTag("DownloadPreparingError", (error) =>
+								Effect.fail(notReady(requestId, error.message)),
+							),
+							Effect.provideService(CurrentUser, toCurrentUser(principal)),
+						);
 						if (Option.isNone(result)) {
 							return yield* notReady(requestId, "Download is not ready");
 						}

@@ -46,6 +46,11 @@ import {
 	type ImageLoadingStatus,
 	VideoThumbnail,
 } from "@/components/VideoThumbnail";
+import {
+	isDownloadPreparingError,
+	presentRpcDownload,
+	readDashboardDownloadResult,
+} from "@/lib/dashboard-download";
 import { useEffectMutation, useRpcClient } from "@/lib/EffectRuntime";
 import type { MoveLocation } from "@/lib/move-items";
 import { ThumbnailRequest } from "@/lib/Requests/ThumbnailRequest";
@@ -186,25 +191,44 @@ export const CapCard = ({
 	const downloadMutation = useEffectMutation({
 		mutationFn: () =>
 			Effect.gen(function* () {
-				const result = yield* rpc.VideoGetDownloadInfo(cap.id);
-				const httpClient = yield* HttpClient.HttpClient;
-				if (Option.isSome(result)) {
-					const fetchResponse = yield* httpClient.get(result.value.downloadUrl);
-					const blob = yield* fetchResponse.arrayBuffer;
-
-					const blobUrl = window.URL.createObjectURL(new Blob([blob]));
-					const link = document.createElement("a");
-					link.href = blobUrl;
-					link.download = result.value.fileName;
-					link.style.display = "none";
-					document.body.appendChild(link);
-					link.click();
-					document.body.removeChild(link);
-
-					window.URL.revokeObjectURL(blobUrl);
-				} else {
-					throw new Error("Failed to get download URL");
+				const presented = yield* rpc.VideoGetDownloadInfo(cap.id).pipe(
+					Effect.map((value) =>
+						presentRpcDownload(
+							Option.isSome(value)
+								? { _tag: "Some", value: value.value }
+								: { _tag: "None" },
+						),
+					),
+					Effect.catchAll((error) =>
+						isDownloadPreparingError(error)
+							? Effect.succeed(
+									presentRpcDownload({
+										_tag: "DownloadPreparingError",
+										message: error.message,
+									}),
+								)
+							: Effect.fail(error),
+					),
+				);
+				if (presented.action === "notice") {
+					return { kind: "preparing" as const, message: presented.message };
 				}
+				if (presented.action === "error") {
+					return yield* Effect.fail(new Error(presented.message));
+				}
+				const httpClient = yield* HttpClient.HttpClient;
+				const fetchResponse = yield* httpClient.get(presented.downloadUrl);
+				const blob = yield* fetchResponse.arrayBuffer;
+				const blobUrl = window.URL.createObjectURL(new Blob([blob]));
+				const link = document.createElement("a");
+				link.href = blobUrl;
+				link.download = presented.fileName;
+				link.style.display = "none";
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+				window.URL.revokeObjectURL(blobUrl);
+				return { kind: "started" as const };
 			}),
 	});
 
@@ -343,17 +367,25 @@ export const CapCard = ({
 
 	const handleDownload = async () => {
 		if (downloadMutation.isPending) return;
-
-		toast.promise(downloadMutation.mutateAsync(), {
-			loading: "Preparing download...",
-			success: "Download started successfully",
-			error: (error) => {
-				if (error instanceof Error) {
-					return error.message;
-				}
-				return "Failed to download video - please try again.";
-			},
-		});
+		const loading = toast.loading("Preparing download...");
+		try {
+			const result = readDashboardDownloadResult(
+				await downloadMutation.mutateAsync(),
+			);
+			toast.dismiss(loading);
+			if (result.kind === "preparing") {
+				toast.message(result.message);
+				return;
+			}
+			toast.success("Download started successfully");
+		} catch (error) {
+			toast.dismiss(loading);
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Failed to download video - please try again.",
+			);
+		}
 	};
 
 	const handleSelectClick = (e: React.MouseEvent) => {
