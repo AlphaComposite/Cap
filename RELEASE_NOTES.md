@@ -33,8 +33,8 @@ CapSoftware release. Runtime configuration and credentials stay outside Git.
 ### Verification scope
 
 The owner accepted the viewing build in Chrome. The selected integration gate
-passed 529 web tests in 77 files and TypeScript checks; the final native suite
-passed with 104 tests run and one skipped. Recorded browser evidence covers
+passed 529 web tests in 77 files and TypeScript checks; the retained native gate
+ran 102 tests with one skipped. Recorded browser evidence covers
 combined removal, Done, playback, reopening, metadata saves and restoration.
 This is evidence for the accepted build, not a universal latency guarantee,
 Safari certification, an audio-listening result, or proof of every future upload.
@@ -61,13 +61,20 @@ Production deployment and post-deployment evidence are separate operational gate
    template: **never apply its placeholder password in production**. Include its
    staged `source_relocation` column privileges.
 6. Route `/media/` to the revision origin, suppress token-bearing access logs and
-   bypass edge caching. Verify GET, HEAD and Range through the public route.
+   prevent shared caching. Verify GET, HEAD, Range and expired/revoked grants
+   through the existing public route; a cache-management API permission error
+   alone does not establish a need to change domains or edge rules.
    Configure both the web and origin service secrets consistently and select
    limits that admit the deployment's real edit documents.
 7. Configure `CAP_INSTANT_FINISH_OWNERS` and the revision-origin environment for
    explicitly selected owners. Place durable preparation/readback/download work
-   in the deployment's supported server workflow; verify the required SQL objects
-   and scoped storage access before enabling the owner flag.
+   in the deployment's supported server workflow. Set
+   `CAP_REVISION_WORKER_MODE=external` on the web service when running
+   `startRevisionReadbackWorker` with policy reconciliation in a privileged host
+   worker; leave it unset to retain the existing in-process behavior. Do not mount
+   the Docker socket or add storage-admin variables to the public web runtime.
+   Verify the required SQL objects and scoped storage access before enabling
+   the owner flag.
 8. Re-publish existing edited recordings from their saved source-time intent,
    without re-editing, with a pilot and per-item source/summary/chapter checks.
    Unchanged editor Done is navigation-only and is **not** a backfill command.

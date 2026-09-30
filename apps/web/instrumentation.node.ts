@@ -39,6 +39,7 @@ export async function register() {
 	setTimeout(() => triggerMigrations(), 5000);
 	setTimeout(() => createS3Bucket(), 5000);
 	if (
+		process.env.CAP_REVISION_WORKER_MODE !== "external" &&
 		(process.env.CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL ||
 			process.env.CAP_INSTANT_FINISH_ORIGIN_URL) &&
 		process.env.DATABASE_URL
