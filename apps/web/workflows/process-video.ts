@@ -6,10 +6,12 @@ import { Video } from "@cap/web-domain";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { FatalError, sleep } from "workflow";
 import { isAiGenerationEnabledForUser } from "@/lib/ai-generation-entitlement";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	createMediaServerCapacityError,
 	isMediaServerCapacityError,
 } from "@/lib/media-server-backpressure";
+import { enqueueVerifiedReady } from "@/lib/source-prepare";
 import { transcribeVideo } from "@/lib/transcribe";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
@@ -108,6 +110,7 @@ export async function processVideoWorkflow(
 			rawFileKey,
 			recoveryClaimId,
 			metadata,
+			userId,
 		);
 
 		const outputKey = `${userId}/${videoId}/result.mp4`;
@@ -581,6 +584,7 @@ async function saveMetadataAndComplete(
 	rawFileKey: string,
 	recoveryClaimId: string | undefined,
 	metadata: { duration: number; width: number; height: number; fps: number },
+	ownerId: string,
 ): Promise<void> {
 	"use step";
 
@@ -609,6 +613,12 @@ async function saveMetadataAndComplete(
 				.update(videos)
 				.set(changes)
 				.where(eq(videos.id, videoId as Video.VideoId));
+			await enqueueVerifiedReady(tx as never, {
+				hook: "process-video",
+				videoId,
+				ownerId,
+				sourceObjectKey: `${ownerId}/${videoId}/result.mp4`,
+			});
 		});
 		return;
 	}
@@ -631,6 +641,16 @@ async function saveMetadataAndComplete(
 		);
 	if (recoveryClaimId && getAffectedRows(result) === 0) {
 		throw new FatalError(INACTIVE_RECOVERY_ERROR);
+	}
+	if (isInstantFinishEnabledForOwner(ownerId)) {
+		await db().transaction(async (tx) => {
+			await enqueueVerifiedReady(tx as never, {
+				hook: "process-video",
+				videoId,
+				ownerId,
+				sourceObjectKey: `${ownerId}/${videoId}/result.mp4`,
+			});
+		});
 	}
 }
 

@@ -78,6 +78,15 @@ RECHECK_SQL = (
 )
 
 
+@dataclass(frozen=True)
+class StagedRelocation:
+    video_id: str
+    old_key: str
+    new_key: str
+    sha256: str
+    state: str
+
+
 class PublicationStore:
     def video(self, video_id: str) -> VideoRow | None:
         raise NotImplementedError
@@ -90,6 +99,9 @@ class PublicationStore:
 
     def source(self, video_id: str) -> SourceRow | None:
         raise NotImplementedError
+
+    def staged_source(self, video_id: str, key: str) -> StagedRelocation | None:
+        return None
 
     def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
         raise NotImplementedError
@@ -104,6 +116,7 @@ class MemoryPublication(PublicationStore):
         self.pubs: dict[str, PublicationRow] = {}
         self.revs: dict[str, RevisionRow] = {}
         self.sources: dict[str, SourceRow] = {}
+        self.relocations: list[dict[str, str]] = []
 
     def video(self, video_id: str) -> VideoRow | None:
         return self.videos.get(video_id)
@@ -116,6 +129,22 @@ class MemoryPublication(PublicationStore):
 
     def source(self, video_id: str) -> SourceRow | None:
         return self.sources.get(video_id)
+
+    def staged_source(self, video_id: str, key: str) -> StagedRelocation | None:
+        for row in self.relocations:
+            if (
+                row.get("videoId") == video_id
+                and row.get("newKey") == key
+                and row.get("state") in {"COPIED", "POINTER", "PURGED"}
+            ):
+                return StagedRelocation(
+                    video_id,
+                    row.get("oldKey", ""),
+                    row.get("newKey", ""),
+                    row.get("sha256", ""),
+                    row.get("state", ""),
+                )
+        return None
 
     def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
         video = self.video(video_id)
@@ -260,6 +289,23 @@ class MySQLPublication(PublicationStore):
         if row is None:
             return None
         return SourceRow(row["videoId"], row["liveKey"], row["sha256"], row["relocationState"])
+
+    def staged_source(self, video_id: str, key: str) -> StagedRelocation | None:
+        row = self._one(
+            "SELECT videoId, oldKey, newKey, sha256, state FROM source_relocation "
+            "WHERE videoId=%s AND newKey=%s AND state IN ('COPIED','POINTER','PURGED') "
+            "ORDER BY id DESC LIMIT 1",
+            (video_id, key),
+        )
+        if row is None:
+            return None
+        return StagedRelocation(
+            row["videoId"],
+            row["oldKey"],
+            row["newKey"],
+            row["sha256"],
+            row["state"],
+        )
 
     def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
         row = self._one(AUTHORIZE_SQL, (revision_id, video_id))

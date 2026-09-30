@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import http.client
 import io
+import hashlib
 import json
 import subprocess
 import sys
@@ -22,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 import grant as grant_mod
 import lib_origin
 import server
-from publication import MemoryPublication, PublicationRow, RevisionRow, VideoRow
+from publication import MemoryPublication, PublicationRow, RevisionRow, SourceRow, VideoRow
 from server import OriginApp, serve
 from service_auth import sign_request
 from storage import LocalObjectStore
@@ -115,6 +116,8 @@ class DownloadTests(unittest.TestCase):
         return key
 
     def _prepare_source(self, key: str) -> None:
+        if self.store.source(VIDEO) is None:
+            self.store.put_source(SourceRow(VIDEO, key, hashlib.sha256((self.objects / key).read_bytes()).hexdigest(), "LIVE"))
         body = json.dumps({"sourceId": SOURCE, "sourceKey": key}).encode()
         path = f"/internal/sources/{VIDEO}/prepare"
         status, _, payload = self._req(path, "POST", self._service("POST", path, body), body)

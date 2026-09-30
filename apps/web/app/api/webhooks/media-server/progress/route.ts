@@ -15,10 +15,12 @@ import {
 } from "@/lib/desktop-recording-verification";
 import { queueDesktopSegmentsFinalization } from "@/lib/desktop-segments-finalization";
 import { invalidateGoogleDriveStorageQuotaCache } from "@/lib/google-drive-storage-quota";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	queueVideoTranscription,
 	shouldQueueTranscriptionAfterMediaComplete,
 } from "@/lib/queue-video-transcription";
+import { enqueueVerifiedReady } from "@/lib/source-prepare";
 import { isEditSourceKey } from "@/lib/video-edit-processing";
 import { applyEditProgress } from "@/lib/video-edit-progress";
 
@@ -254,9 +256,35 @@ export async function POST(request: NextRequest) {
 					})
 					.where(eq(videoUploads.videoId, payload.videoId as Video.VideoId));
 			} else {
-				await db()
-					.delete(videoUploads)
-					.where(eq(videoUploads.videoId, payload.videoId as Video.VideoId));
+				const desktopSource =
+					currentVideo?.source.type === "desktopMP4" ||
+					currentVideo?.source.type === "desktopSegments";
+				const ownerId = currentVideo?.ownerId;
+				if (
+					!desktopSource &&
+					ownerId &&
+					isInstantFinishEnabledForOwner(ownerId)
+				) {
+					await db().transaction(async (tx) => {
+						await tx
+							.delete(videoUploads)
+							.where(
+								eq(videoUploads.videoId, payload.videoId as Video.VideoId),
+							);
+						await enqueueVerifiedReady(tx as never, {
+							hook: "progress",
+							videoId: payload.videoId,
+							ownerId,
+							sourceObjectKey: `${ownerId}/${payload.videoId}/result.mp4`,
+							desktopSource: false,
+							editRender: false,
+						});
+					});
+				} else {
+					await db()
+						.delete(videoUploads)
+						.where(eq(videoUploads.videoId, payload.videoId as Video.VideoId));
+				}
 			}
 			await invalidateGoogleDriveStorageQuotaCache(
 				currentVideo?.storageIntegrationId,

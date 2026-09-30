@@ -4,6 +4,7 @@ import type {
 	VideoEditSpec,
 	VideoEditSpecV2,
 } from "@cap/database/types";
+import { defaultAutoCuts } from "../../../packages/web-backend/src/identity-edit-spec";
 
 const EPSILON = 0.001;
 const MIN_RANGE_DURATION = 0.05;
@@ -103,24 +104,7 @@ function getSegmentId(start: number, end: number) {
 }
 
 function getDefaultAutoCuts(): VideoAutoCuts {
-	return {
-		silence: {
-			enabled: false,
-			ranges: [],
-			thresholdMs: 800,
-			padMs: 150,
-			removedMs: 0,
-			gapCount: 0,
-		},
-		fillers: {
-			enabled: false,
-			ranges: [],
-			mode: "ums",
-			padMs: 80,
-			removedCount: 0,
-			skippedCount: 0,
-		},
-	};
+	return defaultAutoCuts();
 }
 
 function normalizeAutoCuts(
@@ -356,6 +340,23 @@ export function parseVideoEditSpec(value: unknown): VideoEditSpec {
 			},
 		},
 	});
+}
+
+export function expectedEditFenceMatches(
+	previous: VideoEditSpec,
+	expected: VideoEditSpec,
+) {
+	return areEditSpecDocumentsEquivalent(
+		withoutAutoCutsInitialized(previous),
+		withoutAutoCutsInitialized(expected),
+	);
+}
+
+function withoutAutoCutsInitialized(spec: VideoEditSpec): VideoEditSpec {
+	if (spec.version !== 2 || spec.autoCutsInitialized === undefined) return spec;
+	const copy = { ...spec };
+	delete copy.autoCutsInitialized;
+	return copy;
 }
 
 export function areEditSpecDocumentsEquivalent(

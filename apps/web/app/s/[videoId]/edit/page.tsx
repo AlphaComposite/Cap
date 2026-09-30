@@ -76,6 +76,7 @@ export default async function EditVideoPage(props: {
 		return <EditUpgradeGate />;
 	}
 
+	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
 	if (
 		video.uploadPhase &&
 		isEditSourceKey({
@@ -87,7 +88,9 @@ export default async function EditVideoPage(props: {
 		return (
 			<EditRecovery
 				videoId={videoId}
+				flagged={flagged}
 				canRestore={
+					!flagged &&
 					!video.metadata?.editProcessing &&
 					process.env.CAP_LEGACY_EDIT_RECOVERY === "enabled"
 				}
@@ -107,7 +110,6 @@ export default async function EditVideoPage(props: {
 		.select({ editSpec: videoEdits.editSpec })
 		.from(videoEdits)
 		.where(eq(videoEdits.videoId, videoId));
-	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
 	const [publishedIntent] = flagged
 		? await db()
 				.select({

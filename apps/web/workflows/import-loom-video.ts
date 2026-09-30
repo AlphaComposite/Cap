@@ -7,10 +7,13 @@ import { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { FatalError, sleep } from "workflow";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	createMediaServerCapacityError,
 	isMediaServerCapacityError,
 } from "@/lib/media-server-backpressure";
+import { queueVideoTranscription } from "@/lib/queue-video-transcription";
+import { enqueueVerifiedReady } from "@/lib/source-prepare";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
 import {
 	type ProcessedVideoMetadata,
@@ -234,7 +237,7 @@ export async function importLoomVideoWorkflow(
 				await sleep(15_000 * (processingAttempt + 1));
 			}
 		}
-		await saveMetadataAndComplete(payload.videoId, metadata);
+		await saveMetadataAndComplete(payload.videoId, metadata, payload.userId);
 		await completeAgentImport(payload.agentOperationId, payload.videoId);
 
 		return {
@@ -498,19 +501,47 @@ async function processVideoOnMediaServer(
 async function saveMetadataAndComplete(
 	videoId: string,
 	metadata: { duration: number; width: number; height: number; fps: number },
+	ownerId: string,
 ): Promise<void> {
 	"use step";
 
+	const changes = {
+		width: metadata.width,
+		height: metadata.height,
+		fps: metadata.fps,
+		...(getValidDuration(metadata.duration) === undefined
+			? {}
+			: { duration: metadata.duration }),
+	};
+	if (isInstantFinishEnabledForOwner(ownerId)) {
+		await db().transaction(async (tx) => {
+			await tx
+				.update(videos)
+				.set(changes)
+				.where(eq(videos.id, videoId as Video.VideoId));
+			await tx
+				.delete(videoUploads)
+				.where(eq(videoUploads.videoId, videoId as Video.VideoId));
+			await enqueueVerifiedReady(tx as never, {
+				hook: "loom",
+				videoId,
+				ownerId,
+				sourceObjectKey: `${ownerId}/${videoId}/result.mp4`,
+			});
+		});
+		try {
+			await queueVideoTranscription(videoId as Video.VideoId);
+		} catch {
+			console.warn("[import-loom] Transcription queue unavailable", {
+				videoId,
+			});
+		}
+		return;
+	}
+
 	await db()
 		.update(videos)
-		.set({
-			width: metadata.width,
-			height: metadata.height,
-			fps: metadata.fps,
-			...(getValidDuration(metadata.duration) === undefined
-				? {}
-				: { duration: metadata.duration }),
-		})
+		.set(changes)
 		.where(eq(videos.id, videoId as Video.VideoId));
 
 	await db()

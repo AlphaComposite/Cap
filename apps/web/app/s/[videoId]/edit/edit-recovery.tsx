@@ -5,16 +5,27 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { restoreVideoToOriginal } from "@/actions/videos/save-edits";
 
+export function legacyRecoveryOffered(input: {
+	flagged: boolean;
+	editProcessing: boolean;
+	recoveryEnabled: boolean;
+}) {
+	return !input.flagged && !input.editProcessing && input.recoveryEnabled;
+}
+
 export function EditRecovery({
 	videoId,
 	canRestore,
+	flagged = false,
 }: {
 	videoId: Video.VideoId;
 	canRestore: boolean;
+	flagged?: boolean;
 }) {
 	const router = useRouter();
 	const [pending, startTransition] = useTransition();
 	const [error, setError] = useState<string>();
+	const offerRestore = canRestore && !flagged;
 	return (
 		<main className="flex min-h-screen items-center justify-center bg-gray-2 p-6">
 			<div className="w-full max-w-md space-y-4 rounded-xl border border-gray-5 bg-gray-1 p-6">
@@ -22,7 +33,7 @@ export function EditRecovery({
 					Your edit is still processing
 				</h1>
 				<p className="text-sm text-gray-11">
-					{canRestore
+					{offerRestore
 						? "If this edit could not finish, you can restore the original recording. Your original source is preserved."
 						: "You can view the recording while your edit finishes. If processing does not finish, contact support for help."}
 				</p>
@@ -31,7 +42,7 @@ export function EditRecovery({
 						{error}
 					</p>
 				) : null}
-				{canRestore ? (
+				{offerRestore ? (
 					<button
 						type="button"
 						disabled={pending}

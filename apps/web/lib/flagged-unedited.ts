@@ -1,4 +1,4 @@
-export {
+import {
 	decideEligibleLegacy,
 	type EligibleLegacyFacts,
 	hasEditProcessing,
@@ -6,3 +6,12 @@ export {
 	isViewerPrivateKey,
 	loadEligibleLegacy,
 } from "../../../packages/web-backend/src/flagged-unedited";
+
+export {
+	decideEligibleLegacy,
+	type EligibleLegacyFacts,
+	hasEditProcessing,
+	isSourceRelocated,
+	isViewerPrivateKey,
+	loadEligibleLegacy,
+};

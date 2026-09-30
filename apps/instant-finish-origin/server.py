@@ -31,6 +31,7 @@ MEDIA_RE = re.compile(
 SOURCE_PREPARE_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/prepare$")
 REVISION_PREPARE_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/prepare$")
 REVISION_DOWNLOAD_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/download$")
+REVISION_CAPTION_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/captions$")
 ARTIFACT_RE = re.compile(
     r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/artifact/"
     r"(?P<name>playlist\.m3u8|init\.mp4|seg/(?P<n>\d+)\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg)$"
@@ -309,6 +310,9 @@ class OriginApp:
         download = REVISION_DOWNLOAD_RE.match(path)
         if download:
             return self._request_download(download.group("rev"))
+        caption = REVISION_CAPTION_RE.match(path)
+        if caption:
+            return self._write_captions(caption.group("rev"), headers)
         return self._text(404, b"not found")
 
     def _source_prepare_lock(self, cache_id: str) -> threading.Lock:
@@ -334,13 +338,32 @@ class OriginApp:
         except (json.JSONDecodeError, KeyError, TypeError):
             return self._text(400, b"bad request")
         cache_id = cache_source_id(source_id)
-        recorded = self._recorded_live_key(video_id)
-        if recorded and key != recorded:
+        if not self._admit_prepare_key(video_id, key):
             return self._json(409, {"error": "source_key_mismatch"})
         # Overlapping editor opens share one build temp. Publishing a mezz before its
         # bind exists made the next open treat a corrupt file as ready and return 409.
         with self._source_prepare_lock(cache_id):
             return self._prepare_source_locked(video_id, cache_id, source_id, key)
+
+    def _admit_prepare_key(self, video_id: str, key: str) -> bool:
+        row = self.store.source(video_id)
+        if row is None or not row.live_key:
+            return False
+        if key == row.live_key:
+            return True
+        if (row.relocation_state or "").upper() != "LIVE":
+            return False
+        if not key.startswith("private/source/") or ".." in key:
+            return False
+        staged = self.store.staged_source(video_id, key)
+        if staged is None or staged.state not in {"COPIED", "POINTER", "PURGED"}:
+            return False
+        return (
+            staged.new_key == key
+            and staged.old_key == row.live_key
+            and staged.sha256 == row.sha256
+            and len(staged.sha256) == 64
+        )
 
     def _recorded_live_key(self, video_id: str) -> str | None:
         row = self.store.source(video_id)
@@ -348,13 +371,13 @@ class OriginApp:
             return None
         return row.live_key
 
-    def _bound_mezzanine(self, original: Path, mezz: Path, bind_path: Path) -> dict | None:
+    def _bound_mezzanine(self, original: Path, mezz: Path, bind_path: Path, video_id: str = "") -> dict | None:
         if not mezz.is_file() or not bind_path.is_file():
-            build_mezzanine(original, mezz)
+            build_mezzanine(original, mezz, video_id)
         bind = load_source_bind(mezz)
         if bind["source_sha256"] == lib_origin.sha256_file(original):
             return bind
-        build_mezzanine(original, mezz)
+        build_mezzanine(original, mezz, video_id)
         bind = load_source_bind(mezz)
         if bind["source_sha256"] != lib_origin.sha256_file(original):
             return None
@@ -370,7 +393,7 @@ class OriginApp:
                 return self._text(400, b"bad media")
             mezz = original.with_name("mezz.mp4")
             bind_path = mezz.with_suffix(".source-bind.json")
-            bind = self._bound_mezzanine(original, mezz, bind_path)
+            bind = self._bound_mezzanine(original, mezz, bind_path, video_id)
             if bind is None:
                 _log_failed("source-prepare", reason="MezzanineUnbound", video=video_id)
                 return self._text(500, b"unavailable")
@@ -931,9 +954,93 @@ class OriginApp:
         root = self.cache / "sources" / _safe(source_id)
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         dest = root / "original.mp4"
+        if self._local_bind_matches(dest, key):
+            return dest
+        had_local = dest.is_file()
         self.objects.get_to(key, dest)
+        if had_local:
+            self.download_builds += 1
         private(dest)
+        try:
+            head = self.objects.head(key)
+        except Exception:
+            dest.unlink(missing_ok=True)
+            raise
+        atomic_write(
+            dest.with_name("original.fingerprint.json"),
+            json.dumps(
+                {"etag": head.etag, "version": head.version, "size": head.size}
+            ).encode(),
+            sync=False,
+        )
         return dest
+
+    def _write_captions(self, revision_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            body = json.loads(headers.get("_body") or b"{}")
+            vtt = body.get("captionsVtt")
+            if not isinstance(vtt, str) or "-->" not in vtt:
+                return self._text(400, b"bad request")
+        except (json.JSONDecodeError, TypeError):
+            return self._text(400, b"bad request")
+        video_id = body.get("videoId")
+        if not isinstance(video_id, str) or body.get("revisionId") != revision_id:
+            return self._text(400, b"bad request")
+        if any(type(body.get(field)) is not int for field in ("generation", "publicationEpoch", "policyEpoch")):
+            return self._text(400, b"bad request")
+
+        def matches_current():
+            snapshot = self.store.authorize(video_id, revision_id)
+            if snapshot is None or snapshot.publication is None or snapshot.revision is None:
+                return False
+            pub, rev = snapshot.publication, snapshot.revision
+            return (
+                rev.video_id == video_id and rev.revision_id == revision_id and rev.state == "CURRENT"
+                and pub.current_revision_id == revision_id and pub.current_generation == rev.generation
+                and rev.generation == body["generation"] and rev.intent_id == body.get("intentId")
+                and rev.source_id == body.get("sourceId") and pub.publication_epoch == body["publicationEpoch"]
+                and pub.policy_epoch == body["policyEpoch"] and snapshot.source_sha256 == body.get("sourceSha256")
+                and isinstance(snapshot.source_sha256, str) and len(snapshot.source_sha256) == 64
+            )
+
+        with _side_file_lock(self.cache, revision_id):
+            if not matches_current():
+                return self._text(409, b"caption target changed")
+            encoded = vtt.encode()
+            digest = write_signed_side(self.service_secret, self.cache, revision_id, "captions.vtt", encoded)
+            verified = read_verified_side(self.service_secret, self.cache, revision_id, "captions.vtt")
+            if hashlib.sha256(verified).hexdigest() != digest or b"-->" not in verified:
+                return self._text(500, b"caption readback failed")
+            if not matches_current():
+                return self._text(409, b"caption target changed")
+        return self._json(200, {"sha256": digest, "name": "captions.vtt"})
+
+    def _local_bind_matches(self, dest: Path, key: str) -> bool:
+        mezz = dest.with_name("mezz.mp4")
+        if not dest.is_file() or not mezz.with_suffix(".source-bind.json").is_file():
+            return False
+        try:
+            head = self.objects.head(key)
+            bind = load_source_bind(mezz)
+        except Exception:
+            return False
+        if head.size != dest.stat().st_size:
+            return False
+        recorded = dest.with_name("original.fingerprint.json")
+        remote = {"etag": head.etag, "version": head.version, "size": head.size}
+        if not head.etag and not head.version:
+            return False
+        if recorded.is_file():
+            previous = json.loads(recorded.read_text())
+            if (
+                previous.get("etag") != remote["etag"]
+                or previous.get("version") != remote["version"]
+                or previous.get("size") != remote["size"]
+            ):
+                return False
+        else:
+            return False
+        return bind.get("source_sha256") == lib_origin.sha256_file(dest)
 
     def _persist_ranges(self, revision_id: str, ranges: list[dict]) -> None:
         path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
@@ -1284,7 +1391,22 @@ def _side_dir(cache: Path, revision_id: str) -> Path:
     return cache / "revisions" / _safe(revision_id)
 
 
+_SIDE_FILE_LOCKS: dict[str, threading.RLock] = {}
+_SIDE_FILE_GUARD = threading.Lock()
+
+
+def _side_file_lock(cache: Path, revision_id: str):
+    key = str(_side_dir(cache, revision_id).resolve())
+    with _SIDE_FILE_GUARD:
+        return _SIDE_FILE_LOCKS.setdefault(key, threading.RLock())
+
+
 def write_signed_side(secret: bytes, cache: Path, revision_id: str, name: str, data: bytes) -> str:
+    with _side_file_lock(cache, revision_id):
+        return _write_signed_side(secret, cache, revision_id, name, data)
+
+
+def _write_signed_side(secret: bytes, cache: Path, revision_id: str, name: str, data: bytes) -> str:
     digest = hashlib.sha256(data).hexdigest()
     body = service_auth.canonical_json({
         "name": name,
@@ -1304,6 +1426,11 @@ def write_signed_side(secret: bytes, cache: Path, revision_id: str, name: str, d
 
 
 def read_verified_side(secret: bytes, cache: Path, revision_id: str, name: str) -> bytes:
+    with _side_file_lock(cache, revision_id):
+        return _read_verified_side(secret, cache, revision_id, name)
+
+
+def _read_verified_side(secret: bytes, cache: Path, revision_id: str, name: str) -> bytes:
     root = _side_dir(cache, revision_id)
     path = root / name
     attestation = root / f"{name}.attestation.json"

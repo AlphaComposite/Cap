@@ -7,6 +7,7 @@ import {
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
+import { intentBlocksOriginal } from "./identity-edit-spec.ts";
 import { isInstantFinishEnabledForOwner } from "./Videos/instantFinishFlag.ts";
 
 export type EligibleLegacyFacts = {
@@ -56,11 +57,10 @@ export async function loadEligibleLegacy(input: {
 	const videoId = input.videoId as Video.VideoId;
 	try {
 		const database = db();
-		const [intent] = await database
-			.select({ videoId: editIntent.videoId })
+		const intents = await database
+			.select({ spec: editIntent.canonicalSpec })
 			.from(editIntent)
-			.where(eq(editIntent.videoId, videoId))
-			.limit(1);
+			.where(eq(editIntent.videoId, videoId));
 		const [edit] = await database
 			.select({ videoId: videoEdits.videoId })
 			.from(videoEdits)
@@ -81,7 +81,9 @@ export async function loadEligibleLegacy(input: {
 			.limit(1);
 		return decideEligibleLegacy({
 			flagged: true,
-			hasEditIntent: intent != null,
+			hasEditIntent: intents.some((intent) =>
+				intentBlocksOriginal(intent.spec),
+			),
 			hasVideoEdits: edit != null,
 			editProcessing: hasEditProcessing(video?.metadata),
 			relocated: isSourceRelocated(source),

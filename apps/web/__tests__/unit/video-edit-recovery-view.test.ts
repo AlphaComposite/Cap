@@ -8,7 +8,10 @@ vi.mock("@/actions/videos/save-edits", () => ({
 	restoreVideoToOriginal: vi.fn(),
 }));
 
-import { EditRecovery } from "@/app/s/[videoId]/edit/edit-recovery";
+import {
+	EditRecovery,
+	legacyRecoveryOffered,
+} from "@/app/s/[videoId]/edit/edit-recovery";
 
 const videoId = Video.VideoId.make("video");
 describe("edit recovery controls", () => {
@@ -26,5 +29,26 @@ describe("edit recovery controls", () => {
 		);
 		expect(html).toContain("<button");
 		expect(html).toContain("Restore original");
+	});
+	it("does not offer recovery to a flagged owner", () => {
+		expect(
+			legacyRecoveryOffered({
+				flagged: true,
+				editProcessing: false,
+				recoveryEnabled: true,
+			}),
+		).toBe(false);
+		const html = renderToStaticMarkup(
+			createElement(EditRecovery, { videoId, canRestore: true, flagged: true }),
+		);
+		expect(html).not.toContain("<button");
+		expect(html).not.toContain("Restore original");
+		expect(
+			legacyRecoveryOffered({
+				flagged: false,
+				editProcessing: false,
+				recoveryEnabled: true,
+			}),
+		).toBe(true);
 	});
 });
