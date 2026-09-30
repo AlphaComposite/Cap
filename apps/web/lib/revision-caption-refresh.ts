@@ -3,7 +3,7 @@ import type { db } from "@cap/database";
 import { editIntent, editRevision, revisionArtifactStatus, sourceObject, videoPublication, videos } from "@cap/database/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { loadStoredEditTranscript } from "@/lib/revision-publication";
-import { deriveRevisionCaptions, requireV2Spec } from "@/lib/revision-publication-metadata";
+import { deriveRevisionCaptions, requireRenderedV2Spec } from "@/lib/revision-publication-metadata";
 import type { OriginClient } from "@/lib/revision-publication-origin";
 import { captionsHaveCues } from "@/lib/source-prepare";
 
@@ -26,7 +26,7 @@ export async function refreshCurrentRevisionCaptions(
   const [intent] = await app.select().from(editIntent).where(and(eq(editIntent.videoId, vid),
     eq(editIntent.generation, revision.generation), eq(editIntent.intentId, revision.intentId)));
   if (!intent || intent.sourceId !== revision.sourceId) return "pending";
-  const spec = requireV2Spec(intent.canonicalSpec);
+  const spec = requireRenderedV2Spec(intent.canonicalSpec);
   const existing = revision.metadataSnapshot?.captionsVtt ?? "";
   const unavailable = ["ERROR", "SKIPPED", "NO_AUDIO"].includes(video.transcriptionStatus ?? "");
   let vtt = existing;

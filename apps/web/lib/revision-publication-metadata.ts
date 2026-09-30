@@ -168,13 +168,48 @@ export function requireV2Spec(spec: VideoEditSpec): VideoEditSpecV2 {
 	return normalized;
 }
 
+export function renderedEditionSpec(spec: VideoEditSpec): VideoEditSpec {
+	const normalized = normalizeVideoEditSpec(spec);
+	if (
+		spec.version !== 2 ||
+		normalized.version !== 2 ||
+		spec.keepRanges.length === 0
+	) {
+		return normalized;
+	}
+	return {
+		...normalized,
+		keepRanges: spec.keepRanges.map((range) => ({
+			start: range.start,
+			end: range.end,
+		})),
+	};
+}
+
+export function requireRenderedV2Spec(spec: VideoEditSpec): VideoEditSpecV2 {
+	const rendered = renderedEditionSpec(spec);
+	if (rendered.version !== 2) {
+		throw new RevisionPublicationError(
+			400,
+			"Instant finish requires a committed V2 source-second spec",
+		);
+	}
+	if (getEditSpecOutputDuration(rendered) <= 0) {
+		throw new RevisionPublicationError(
+			400,
+			"Edit must keep at least one playable range",
+		);
+	}
+	return rendered;
+}
+
 export function previousEditionSpec(input: {
 	currentSpec: VideoEditSpec | null;
 	rollbackSpec: VideoEditSpec | null;
 	sourceDuration: number;
 }): VideoEditSpec {
-	if (input.currentSpec) return normalizeVideoEditSpec(input.currentSpec);
-	if (input.rollbackSpec) return normalizeVideoEditSpec(input.rollbackSpec);
+	if (input.currentSpec) return renderedEditionSpec(input.currentSpec);
+	if (input.rollbackSpec) return renderedEditionSpec(input.rollbackSpec);
 	return createIdentityEditSpec(input.sourceDuration);
 }
 

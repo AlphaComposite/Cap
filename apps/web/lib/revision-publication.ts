@@ -57,11 +57,13 @@ import {
 	previousEditionSpec,
 	RevisionPublicationError,
 	remapCommentTimestamp,
+	requireRenderedV2Spec,
 	requireV2Spec,
 	type SourceIdentity,
 	sourceIdFromIdentity,
 } from "@/lib/revision-publication-metadata";
 import {
+	assertFrameSelection,
 	digestMatches,
 	type OriginClient,
 	type RevisionPrepareResult,
@@ -338,6 +340,7 @@ async function reuseVerifiedReady(
 	spec: VideoEditSpecV2,
 	_deps: PublishRevisionDeps,
 	now: () => Date,
+	frameBinding?: FrameBinding,
 ): Promise<PublishRevisionSuccess | null> {
 	const stamp = now();
 	const found = await app.transaction(async (tx) => {
@@ -356,6 +359,16 @@ async function reuseVerifiedReady(
 		}
 		const identity = await sourceIdentityForPublish(tx, input, spec, stamp);
 		const sourceId = sourceIdFromIdentity(identity);
+		if (frameBinding) {
+			const [bound] = await tx
+				.select({
+					a1Digest: sourceObject.a1Digest,
+					indexId: sourceObject.indexId,
+				})
+				.from(sourceObject)
+				.where(eq(sourceObject.videoId, videoId(input.videoId)));
+			assertLockedFrameBinding(input, identity, sourceId, bound, frameBinding);
+		}
 		const intentId = intentIdFor({
 			sourceId,
 			spec,
@@ -520,15 +533,152 @@ async function allocateInputAfterPreclick(
 	return { ...input, baseGeneration: publication.generation };
 }
 
+type FrameBinding = {
+	sourceId: string;
+	sourceSha256: string;
+	a1Digest: string;
+	indexId: string;
+};
+
+function frameBindingsMatch(left: FrameBinding, right: FrameBinding) {
+	return (
+		left.sourceId === right.sourceId &&
+		left.sourceSha256 === right.sourceSha256 &&
+		left.a1Digest === right.a1Digest &&
+		left.indexId === right.indexId
+	);
+}
+
+async function readFrameBinding(
+	tx: PublicationTx,
+	input: PublishRevisionInput,
+	spec: VideoEditSpecV2,
+	stamp: Date,
+): Promise<FrameBinding> {
+	const identity = await sourceIdentityForPublish(tx, input, spec, stamp);
+	const [row] = await tx
+		.select({
+			a1Digest: sourceObject.a1Digest,
+			indexId: sourceObject.indexId,
+		})
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId(input.videoId)));
+	const a1Digest = input.baselineIdentity?.a1Digest ?? row?.a1Digest ?? "";
+	const indexId = input.baselineIdentity?.indexId ?? row?.indexId ?? "";
+	if (!a1Digest || !indexId) {
+		throw new RevisionPublicationError(
+			409,
+			"Editor-open warm is missing. Reopen the editor.",
+		);
+	}
+	return {
+		sourceId: sourceIdFromIdentity(identity),
+		sourceSha256: identity.sha256,
+		a1Digest,
+		indexId,
+	};
+}
+
+function assertLockedFrameBinding(
+	input: PublishRevisionInput,
+	identity: SourceIdentity,
+	sourceId: string,
+	row: { a1Digest: string | null; indexId: string | null } | undefined,
+	binding: FrameBinding,
+) {
+	const a1Digest = input.baselineIdentity?.a1Digest ?? row?.a1Digest ?? "";
+	const indexId = input.baselineIdentity?.indexId ?? row?.indexId ?? "";
+	if (
+		!frameBindingsMatch(binding, {
+			sourceId,
+			sourceSha256: identity.sha256,
+			a1Digest,
+			indexId,
+		})
+	) {
+		throw new RevisionPublicationError(
+			409,
+			"Source changed during frame selection",
+		);
+	}
+}
+
+async function canonicalizeKeepRanges(
+	app: Database,
+	input: PublishRevisionInput,
+	spec: VideoEditSpecV2,
+	origin: OriginClient,
+	stamp: Date,
+): Promise<{ spec: VideoEditSpecV2; binding: FrameBinding }> {
+	const binding = await app.transaction(async (tx) => {
+		await lockVideoRow(tx, videoId(input.videoId));
+		return readFrameBinding(tx, input, spec, stamp);
+	});
+	let selected: { start: number; end: number }[];
+	try {
+		const response = await origin.selectFrames({
+			videoId: input.videoId,
+			sourceId: binding.sourceId,
+			sourceSha256: binding.sourceSha256,
+			a1Digest: binding.a1Digest,
+			indexId: binding.indexId,
+			keepRanges: spec.keepRanges,
+		});
+		selected = assertFrameSelection(
+			{
+				videoId: input.videoId,
+				sourceId: binding.sourceId,
+				sourceSha256: binding.sourceSha256,
+				a1Digest: binding.a1Digest,
+				indexId: binding.indexId,
+				keepRanges: spec.keepRanges,
+			},
+			response,
+		);
+	} catch (error) {
+		if (error instanceof RevisionPublicationError) throw error;
+		const message =
+			error instanceof Error ? error.message : "Frame selection failed";
+		throw new RevisionPublicationError(
+			/empty/i.test(message) ? 400 : 409,
+			/empty/i.test(message)
+				? "Edit must keep at least one playable range"
+				: message,
+		);
+	}
+	const again = await app.transaction(async (tx) => {
+		await lockVideoRow(tx, videoId(input.videoId));
+		return readFrameBinding(tx, input, spec, stamp);
+	});
+	if (!frameBindingsMatch(binding, again)) {
+		throw new RevisionPublicationError(
+			409,
+			"Source changed during frame selection",
+		);
+	}
+	return {
+		spec: { ...spec, keepRanges: selected },
+		binding,
+	};
+}
+
 export async function prepareInstantFinishRevision(
 	database: unknown,
 	input: PublishRevisionInput,
 	deps: PublishRevisionDeps,
 ): Promise<PublishRevisionSuccess> {
 	const app = database as Database;
-	const spec = requireV2Spec(input.editSpec);
+	const authored = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
+	const sealed = await canonicalizeKeepRanges(
+		app,
+		input,
+		authored,
+		deps.origin,
+		now(),
+	);
+	const spec = sealed.spec;
 	await expireAbandonedPreparedRevisions(app, now());
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
 	const allocated = await app.transaction(async (tx) =>
@@ -538,6 +688,7 @@ export async function prepareInstantFinishRevision(
 			spec,
 			now(),
 			mintRevisionId,
+			sealed.binding,
 		),
 	);
 	if (allocated.idempotent || allocated.join) {
@@ -624,19 +775,19 @@ export async function publishInstantFinishRevision(
 	deps: PublishRevisionDeps,
 ): Promise<PublishRevisionSuccess> {
 	const app = database as Database;
-	const spec = requireV2Spec(input.editSpec);
+	const authored = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
-	const identityReuse = await reuseCurrentUntouched(app, input, spec);
+	const identityReuse = await reuseCurrentUntouched(app, input, authored);
 	if (identityReuse) return identityReuse;
 	if (
 		input.draftSession !== SOURCE_PREPARE_JOB &&
-		isRetainedIdentityRestoreSpec(spec)
+		isRetainedIdentityRestoreSpec(authored)
 	) {
 		try {
 			const restored = await restoreRetainedIdentity(app, input.videoId, {
 				origin: deps.origin,
-				nextSpec: spec,
+				nextSpec: authored,
 				baseGeneration: input.baseGeneration,
 				draftVersion: input.draftVersion,
 				draftSession: input.draftSession,
@@ -655,12 +806,34 @@ export async function publishInstantFinishRevision(
 			}
 		}
 	}
-	const reused = await reuseVerifiedReady(app, input, spec, deps, now);
+	const sealed = await canonicalizeKeepRanges(
+		app,
+		input,
+		authored,
+		deps.origin,
+		now(),
+	);
+	const spec = sealed.spec;
+	const reused = await reuseVerifiedReady(
+		app,
+		input,
+		spec,
+		deps,
+		now,
+		sealed.binding,
+	);
 	if (reused) return reused;
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
 	const publishInput = await allocateInputAfterPreclick(app, input);
 	let allocated = await app.transaction(async (tx) =>
-		allocateRevision(tx, publishInput, spec, now(), mintRevisionId),
+		allocateRevision(
+			tx,
+			publishInput,
+			spec,
+			now(),
+			mintRevisionId,
+			sealed.binding,
+		),
 	);
 	for (let joined = 0; allocated.join && joined < 2; joined++) {
 		const ready = await waitForJoinedRevision(app, allocated.revisionId);
@@ -672,11 +845,25 @@ export async function publishInstantFinishRevision(
 			};
 		}
 		if (ready === "ready") {
-			const flipped = await reuseVerifiedReady(app, input, spec, deps, now);
+			const flipped = await reuseVerifiedReady(
+				app,
+				input,
+				spec,
+				deps,
+				now,
+				sealed.binding,
+			);
 			if (flipped) return flipped;
 		}
 		allocated = await app.transaction(async (tx) =>
-			allocateRevision(tx, publishInput, spec, now(), mintRevisionId),
+			allocateRevision(
+				tx,
+				publishInput,
+				spec,
+				now(),
+				mintRevisionId,
+				sealed.binding,
+			),
 		);
 	}
 	if (allocated.join) {
@@ -760,6 +947,7 @@ export async function allocateRevision(
 	spec: VideoEditSpecV2,
 	stamp: Date,
 	mintRevisionId: (intentId: string) => string,
+	frameBinding?: FrameBinding,
 ): Promise<Allocated> {
 	await tx
 		.select({ id: videos.id })
@@ -790,6 +978,16 @@ export async function allocateRevision(
 	}
 	const identity = await sourceIdentityForPublish(tx, input, spec, stamp);
 	const sourceId = sourceIdFromIdentity(identity);
+	if (frameBinding) {
+		const [bound] = await tx
+			.select({
+				a1Digest: sourceObject.a1Digest,
+				indexId: sourceObject.indexId,
+			})
+			.from(sourceObject)
+			.where(eq(sourceObject.videoId, videoId(input.videoId)));
+		assertLockedFrameBinding(input, identity, sourceId, bound, frameBinding);
+	}
 	const intentId = intentIdFor({
 		sourceId,
 		spec,
@@ -1692,7 +1890,7 @@ export async function restoreRetainedIdentity(
 		);
 		if (!currentIntent)
 			throw new RevisionPublicationError(409, "Current spec is unavailable");
-		const previousSpec = requireV2Spec(currentIntent.canonicalSpec);
+		const previousSpec = requireRenderedV2Spec(currentIntent.canonicalSpec);
 		const chapterState = deriveRevisionChapterState({
 			storedChapters: video.metadata?.chapters ?? [],
 			storedSourceChapters: video.metadata?.sourceChapters ?? null,

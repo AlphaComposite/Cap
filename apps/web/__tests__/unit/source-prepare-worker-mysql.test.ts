@@ -145,6 +145,9 @@ const origin = {
 	prepareRevision: vi.fn(async () => {
 		throw new Error("worker must not encode a revision for captions");
 	}),
+	selectFrames: vi.fn(async () => {
+		throw new Error("worker must not select frames for captions");
+	}),
 	fetchArtifact: vi.fn(async ({ name }: { name: string }) => ({
 		status: 200,
 		body: Buffer.from(

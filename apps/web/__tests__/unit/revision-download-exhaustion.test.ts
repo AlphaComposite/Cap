@@ -360,6 +360,9 @@ describe("revision download exhaustion", () => {
 			prepareRevision: async () => {
 				throw new Error("Unexpected prepare");
 			},
+			selectFrames: async () => {
+				throw new Error("Unexpected frame selection");
+			},
 			fetchArtifact: async () => {
 				throw new Error("Unexpected artifact fetch");
 			},
@@ -424,6 +427,9 @@ describe("revision download exhaustion", () => {
 			origin: {
 				prepareRevision: async () => {
 					throw new Error("Unexpected prepare");
+				},
+				selectFrames: async () => {
+					throw new Error("Unexpected frame selection");
 				},
 				fetchArtifact: async () => {
 					throw new Error("Unexpected artifact fetch");
@@ -496,6 +502,9 @@ describe("revision download exhaustion", () => {
 			origin: {
 				prepareRevision: async () => {
 					throw new Error("Unexpected prepare");
+				},
+				selectFrames: async () => {
+					throw new Error("Unexpected frame selection");
 				},
 				fetchArtifact: async () => {
 					throw new Error("Unexpected artifact fetch");

@@ -223,6 +223,9 @@ describe("instant finish publication helpers", () => {
 					prepareRevision: async () => {
 						throw new Error("unused");
 					},
+					selectFrames: async () => {
+						throw new Error("unused");
+					},
 					fetchArtifact: async () => {
 						throw new Error("unused");
 					},

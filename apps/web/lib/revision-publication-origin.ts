@@ -67,8 +67,97 @@ export type OriginArtifact = {
 	contentType: string | null;
 };
 
+export type FrameSelectionRequest = {
+	videoId: string;
+	sourceId: string;
+	sourceSha256: string;
+	a1Digest: string;
+	indexId: string;
+	keepRanges: { start: number; end: number }[];
+};
+
+export type FrameSelectionResult = {
+	sourceId: string;
+	sourceSha256: string;
+	a1Digest: string;
+	indexId: string;
+	keepIndexes: number[];
+	keepRanges: { start: number; end: number }[];
+};
+
+const SHA64 = /^[a-f0-9]{64}$/;
+
+export function assertFrameSelection(
+	requested: FrameSelectionRequest,
+	response: unknown,
+): { start: number; end: number }[] {
+	if (!response || typeof response !== "object") {
+		throw new Error("Frame selection response is malformed");
+	}
+	const payload = response as Record<string, unknown>;
+	if (
+		typeof payload.sourceId !== "string" ||
+		typeof payload.sourceSha256 !== "string" ||
+		typeof payload.a1Digest !== "string" ||
+		typeof payload.indexId !== "string" ||
+		!Array.isArray(payload.keepIndexes) ||
+		!Array.isArray(payload.keepRanges)
+	) {
+		throw new Error("Frame selection response is malformed");
+	}
+	if (
+		payload.sourceId !== requested.sourceId ||
+		payload.sourceSha256 !== requested.sourceSha256 ||
+		payload.a1Digest !== requested.a1Digest ||
+		payload.indexId !== requested.indexId ||
+		!SHA64.test(requested.sourceSha256) ||
+		!SHA64.test(requested.a1Digest) ||
+		requested.sourceId.length === 0 ||
+		requested.indexId.length === 0
+	) {
+		throw new Error(
+			"Frame selection response is not bound to the requested source",
+		);
+	}
+	if (payload.keepIndexes.length === 0 || payload.keepRanges.length === 0) {
+		throw new Error("Frame selection response is empty");
+	}
+	if (payload.keepIndexes.length !== payload.keepRanges.length) {
+		throw new Error("Frame selection response reordered or expanded keeps");
+	}
+	const selected: { start: number; end: number }[] = [];
+	let previous = -1;
+	for (let offset = 0; offset < payload.keepIndexes.length; offset += 1) {
+		const index = payload.keepIndexes[offset];
+		const echoed = payload.keepRanges[offset];
+		if (
+			typeof index !== "number" ||
+			!Number.isInteger(index) ||
+			index <= previous ||
+			index >= requested.keepRanges.length ||
+			!echoed ||
+			typeof echoed !== "object"
+		) {
+			throw new Error("Frame selection response reordered or expanded keeps");
+		}
+		const original = requested.keepRanges[index];
+		const echoedRange = echoed as { start?: unknown; end?: unknown };
+		if (
+			!original ||
+			echoedRange.start !== original.start ||
+			echoedRange.end !== original.end
+		) {
+			throw new Error("Frame selection response reordered or expanded keeps");
+		}
+		selected.push({ start: original.start, end: original.end });
+		previous = index;
+	}
+	return selected;
+}
+
 export type OriginClient = {
 	prepareRevision(body: RevisionPrepareBody): Promise<RevisionPrepareResult>;
+	selectFrames(body: FrameSelectionRequest): Promise<FrameSelectionResult>;
 	fetchArtifact(input: {
 		videoId: string;
 		revisionId: string;
@@ -179,6 +268,25 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 				playlistDurationSeconds: payload.playlistDurationSeconds,
 				attestationMac: response.headers.get(ORIGIN_ATTESTATION_HEADER) ?? "",
 				attestationBody,
+			};
+		},
+		async selectFrames(body) {
+			const path = `/internal/sources/${body.videoId}/select-frames`;
+			const encoded = JSON.stringify(body);
+			const response = await signedFetch(path, "POST", encoded, signal);
+			if (!response.ok) {
+				throw new Error(`Frame selection failed with HTTP ${response.status}`);
+			}
+			const payload = (await response.json()) as unknown;
+			const keepRanges = assertFrameSelection(body, payload);
+			const parsed = payload as FrameSelectionResult;
+			return {
+				sourceId: parsed.sourceId,
+				sourceSha256: parsed.sourceSha256,
+				a1Digest: parsed.a1Digest,
+				indexId: parsed.indexId,
+				keepIndexes: parsed.keepIndexes,
+				keepRanges,
 			};
 		},
 		async fetchArtifact(input) {

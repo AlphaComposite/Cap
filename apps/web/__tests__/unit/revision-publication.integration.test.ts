@@ -151,6 +151,17 @@ class FakeOrigin {
 					attestationBody,
 				};
 			},
+			selectFrames: async (body) => ({
+				sourceId: body.sourceId,
+				sourceSha256: body.sourceSha256,
+				a1Digest: body.a1Digest,
+				indexId: body.indexId,
+				keepIndexes: body.keepRanges.map((_, index) => index),
+				keepRanges: body.keepRanges.map((range) => ({
+					start: range.start,
+					end: range.end,
+				})),
+			}),
 			fetchArtifact: async (input) => {
 				const response = await fetch(
 					`${this.url}/media/${input.videoId}/r/${input.revisionId}/${input.name}`,
@@ -199,6 +210,34 @@ class FakeOrigin {
 			)
 		) {
 			res.writeHead(401).end("unauthorized");
+			return;
+		}
+		if (
+			req.method === "POST" &&
+			url.pathname === `/internal/sources/${videoId}/select-frames`
+		) {
+			const chunks: Buffer[] = [];
+			req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+			req.on("end", () => {
+				const raw = Buffer.concat(chunks);
+				if (!this.authorized(req, url.pathname, raw)) {
+					res.writeHead(401).end("unauthorized");
+					return;
+				}
+				const body = JSON.parse(raw.toString("utf8"));
+				res.writeHead(200, { "content-type": "application/json" }).end(
+					JSON.stringify({
+						sourceId: body.sourceId,
+						sourceSha256: body.sourceSha256,
+						a1Digest: body.a1Digest,
+						indexId: body.indexId,
+						keepIndexes: body.keepRanges.map(
+							(_: unknown, index: number) => index,
+						),
+						keepRanges: body.keepRanges,
+					}),
+				);
+			});
 			return;
 		}
 		if (
@@ -2582,8 +2621,14 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				createdAt: new Date(),
 			});
 			const relocate = vi.fn(async () => {
-				await database.update(sourceObject).set({ relocationState: "PURGED" }).where(eq(sourceObject.videoId, openVideo as never));
-				await database.update(sourceRelocation).set({ state: "PURGED" }).where(eq(sourceRelocation.videoId, openVideo as never));
+				await database
+					.update(sourceObject)
+					.set({ relocationState: "PURGED" })
+					.where(eq(sourceObject.videoId, openVideo as never));
+				await database
+					.update(sourceRelocation)
+					.set({ state: "PURGED" })
+					.where(eq(sourceRelocation.videoId, openVideo as never));
 				return { liveKey, sha256: "b".repeat(64) };
 			});
 			const prepare = vi.fn(async () => ({
