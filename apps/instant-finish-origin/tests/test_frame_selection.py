@@ -174,6 +174,37 @@ class SelectFramesRouteTest(unittest.TestCase):
         self.assertNotIn("playlist", text)
         self.assertNotIn(b"synthetic-source-bytes".decode(), text)
 
+    def test_ready_descriptor_uses_registered_preprobe_cache(self) -> None:
+        from unittest.mock import patch
+        key = "private/source/vidselect01/original.mp4"
+        meta = {"codec": "h264", "timebase": "1/16000", "frameMode": "vfr"}
+        self.app._remember_source(VIDEO, cache_source_id(SOURCE), key)
+        ready = json.dumps({"v": 1, "key": key, "sha256": SHA, **meta}, sort_keys=True, separators=(",", ":"))
+        self.assertNotEqual(cache_source_id(ready), self.original.parent.name)
+        with patch("server._probe_source", return_value=meta):
+            status, body, _, _ = self._post(self._body(sourceId=ready))
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["sourceId"], ready)
+        self.assertEqual(json.loads(body)["keepIndexes"], [0])
+        self.assertEqual(self.constructed, 0)
+
+    def test_preprobe_alias_rejects_every_unbound_descriptor_field(self) -> None:
+        from unittest.mock import patch
+        key = "private/source/vidselect01/original.mp4"
+        meta = {"codec": "h264", "timebase": "1/16000", "frameMode": "vfr"}
+        self.app._remember_source(VIDEO, cache_source_id(SOURCE), key)
+        ready = {"v": 1, "key": key, "sha256": SHA, **meta}
+        with patch("server._probe_source", return_value=meta):
+            for field, bad in (("key", "other-video/original.mp4"), ("sha256", "ff" * 32), ("codec", "hevc"), ("timebase", "1/90000"), ("frameMode", "cfr"), ("v", 2), ("extra", "unknown")):
+                with self.subTest(field=field):
+                    claimed = json.dumps({**ready, field: bad}, sort_keys=True, separators=(",", ":"))
+                    status, _, _, _ = self._post(self._body(sourceId=claimed))
+                    self.assertEqual(status, 409)
+            canonical = json.dumps(ready, sort_keys=True, separators=(",", ":"))
+            status, _, _, _ = self._post(self._body(sourceId=canonical + " "))
+            self.assertEqual(status, 409)
+        self.assertEqual(self.constructed, 0)
+
     def test_unsigned_and_wrong_binding_fail(self) -> None:
         status, _, _, _ = self._post(self._body(), signed=False)
         self.assertEqual(status, 401)
