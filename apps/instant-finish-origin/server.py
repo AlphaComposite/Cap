@@ -361,7 +361,19 @@ class OriginApp:
         ):
             return self._text(409, b"source mismatch")
         if mezz.parent.name != cache_source_id(source_id):
-            return self._text(409, b"source mismatch")
+            key = self._remembered_key(video_id)
+            if not key:
+                return self._text(409, b"source mismatch")
+            try:
+                ready_id = json.dumps(
+                    {"v": 1, "key": key, "sha256": cached_sha,
+                     **_probe_source(_original, load_source_bind(mezz))},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                )
+            except (OSError, ValueError, TypeError, KeyError, MezzanineError):
+                return self._text(409, b"source mismatch")
+            if source_id != ready_id:
+                return self._text(409, b"source mismatch")
         try:
             mezz_sha, probed, ticks, _durs, _keyframes, _prep = lib_origin.cached_mezz_index(mezz)
         except Exception:
