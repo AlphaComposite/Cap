@@ -36,6 +36,31 @@
 > [DOWNSTREAM_MAINTENANCE.md](DOWNSTREAM_MAINTENANCE.md) for branch policy,
 > upstream synchronization, verification, and contribution guidance.
 
+## Revision-based web editing in this fork
+
+The downstream web editor now publishes an edited revision before returning to
+its share page. Playback uses the accepted edition rather than waiting for a
+full downloadable MP4; the progressive download is prepared separately.
+
+- Delete or restore selected transcript words without changing the original.
+- Combine pause and filler removal with manual cuts; reopening retains the
+  accepted cuts, including source-frame-aligned boundaries.
+- Keep removed sections visible in the editor, with Undo/Redo and local Restore.
+  **Restore original** resets the editor; **Done** publishes that reset.
+- Paste and save an owner-written summary above Chapters. This fork does not
+  automatically generate that summary.
+- Keep chapters on the correct edited clock. Chapters hidden by cuts return when
+  their source section is restored; explicit chapter deletion remains permanent.
+- Download the published edition from the share page or dashboard. A download
+  still being prepared gives a retry message rather than silently exporting the
+  original.
+
+This is a downstream, opt-in web capability, not a change to upstream desktop
+Instant Mode. Chrome was used for acceptance. Actual audio waveforms, translated
+transcript handling and video-only/no-audio support are separate follow-ups, not
+features certified by this release. See [fork release notes](RELEASE_NOTES.md)
+for operational prerequisites and known limits.
+
 ## Automatic cleanup in the web editor
 
 The editor generates two optional cut layers from transcript timing: extended
@@ -120,12 +145,16 @@ The full product docs live at [cap.so/docs](https://cap.so/docs).
 The fastest way to self-host Cap Web is Docker Compose:
 
 ```bash
-git clone https://github.com/CapSoftware/Cap.git
+git clone --branch downstream/main https://github.com/AlphaComposite/Cap.git
 cd Cap
 docker compose up -d
 ```
 
-Cap will be available at `http://localhost:3000`.
+Cap will be available at `http://localhost:3000`. The default Compose web image
+is the upstream distribution; cloning this branch alone does not enable the
+fork's revision editor. Build an immutable downstream web image and configure
+the revision origin and security prerequisites in [RELEASE_NOTES.md](RELEASE_NOTES.md)
+before enabling that capability.
 
 Login links appear in the service logs when email is not configured:
 
