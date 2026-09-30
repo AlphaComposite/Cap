@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -29,6 +30,7 @@ MEDIA_RE = re.compile(
     r"(?P<kind>playlist\.m3u8|init\.mp4|seg/(?P<n>\d+)\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg|download\.mp4)$"
 )
 SOURCE_PREPARE_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/prepare$")
+SOURCE_SELECT_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/select-frames$")
 REVISION_PREPARE_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/prepare$")
 REVISION_DOWNLOAD_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/download$")
 REVISION_CAPTION_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/captions$")
@@ -93,6 +95,12 @@ def _dispatch_failure_target(raw_path: str) -> tuple[str, dict[str, str]]:
         if video is None:
             return "dispatch", {}
         return "source-prepare", {"video": video}
+    selected = SOURCE_SELECT_RE.match(path)
+    if selected is not None:
+        video = selected.group("video")
+        if video is None:
+            return "dispatch", {}
+        return "frame-selection", {"video": video}
     revision = REVISION_PREPARE_RE.match(path)
     if revision is not None:
         rev = revision.group("rev")
@@ -304,6 +312,9 @@ class OriginApp:
         source = SOURCE_PREPARE_RE.match(path)
         if source:
             return self._prepare_source(source.group("video"), headers)
+        selected = SOURCE_SELECT_RE.match(path)
+        if selected:
+            return self._select_frames(selected.group("video"), headers)
         revision = REVISION_PREPARE_RE.match(path)
         if revision:
             return self._prepare_revision(revision.group("rev"), headers)
@@ -314,6 +325,93 @@ class OriginApp:
         if caption:
             return self._write_captions(caption.group("rev"), headers)
         return self._text(404, b"not found")
+
+    def _select_frames(self, video_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            body = json.loads(headers.get("_body") or b"{}")
+        except json.JSONDecodeError:
+            return self._text(400, b"bad request")
+        if not isinstance(body, dict) or str(body.get("videoId") or "") != video_id:
+            return self._text(400, b"bad request")
+        source_id = body.get("sourceId")
+        expected_sha = body.get("sourceSha256")
+        a1 = body.get("a1Digest")
+        index_id = body.get("indexId")
+        parsed = _bounded_keep_ranges(body.get("keepRanges"))
+        if (
+            not isinstance(source_id, str)
+            or not source_id
+            or len(source_id) > 4096
+            or not _sha64(expected_sha)
+            or not _sha64(a1)
+            or not isinstance(index_id, str)
+            or not index_id
+            or len(index_id) > 128
+            or parsed is None
+        ):
+            return self._text(400, b"bad request")
+        try:
+            mezz, _original, cached_sha = self._source_files(
+                video_id, source_id, expected_sha
+            )
+        except (
+            lib_origin.MezzanineRequired,
+            lib_origin.CacheIntegrityError,
+            MezzanineError,
+        ):
+            return self._text(409, b"source mismatch")
+        if mezz.parent.name != cache_source_id(source_id):
+            return self._text(409, b"source mismatch")
+        try:
+            mezz_sha, probed, ticks, _durs, _keyframes, _prep = lib_origin.cached_mezz_index(mezz)
+        except Exception:
+            _log_failed("frame-selection", reason="IndexUnavailable", video=video_id)
+            return self._text(409, b"source mismatch")
+        timescale = getattr(probed, "timescale", None)
+        if (
+            mezz_sha != a1
+            or index_id != mezz_sha
+            or not isinstance(timescale, int)
+            or isinstance(timescale, bool)
+            or timescale <= 0
+        ):
+            return self._text(409, b"source mismatch")
+        try:
+            selected = lib_origin.select_renderable_keeps(list(ticks), parsed, timescale)
+        except RuntimeError:
+            return self._text(400, b"selection empty")
+        indexes: list[int] = []
+        echoed: list[dict] = []
+        cursor = 0
+        for item in selected:
+            found = next(
+                (
+                    index
+                    for index in range(cursor, len(parsed))
+                    if parsed[index]["start"] == item["start"]
+                    and parsed[index]["end"] == item["end"]
+                ),
+                None,
+            )
+            if found is None:
+                return self._text(500, b"unavailable")
+            indexes.append(found)
+            echoed.append({"start": parsed[found]["start"], "end": parsed[found]["end"]})
+            cursor = found + 1
+        if not indexes:
+            return self._text(400, b"selection empty")
+        return self._json(
+            200,
+            {
+                "a1Digest": a1,
+                "indexId": index_id,
+                "keepIndexes": indexes,
+                "keepRanges": echoed,
+                "sourceId": source_id,
+                "sourceSha256": cached_sha,
+                "timescale": timescale,
+            },
+        )
 
     def _source_prepare_lock(self, cache_id: str) -> threading.Lock:
         with self._lock:
@@ -1165,6 +1263,41 @@ def cache_source_id(source_id: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", source_id):
         return source_id
     return hashlib.sha256(source_id.encode()).hexdigest()[:32]
+
+
+def _sha64(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) is not None
+
+
+def _bounded_keep_ranges(ranges: object) -> list[dict] | None:
+    if not isinstance(ranges, list) or not ranges or len(ranges) > limits.MAX_KEEP_RANGES:
+        return None
+    parsed: list[dict] = []
+    previous_end: float | None = None
+    for item in ranges:
+        if not isinstance(item, dict):
+            return None
+        start = item.get("start")
+        end = item.get("end")
+        if isinstance(start, bool) or isinstance(end, bool):
+            return None
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            return None
+        start_f = float(start)
+        end_f = float(end)
+        if (
+            not math.isfinite(start_f)
+            or not math.isfinite(end_f)
+            or start_f < 0
+            or end_f <= start_f
+            or end_f > limits.MAX_DURATION_S
+        ):
+            return None
+        if previous_end is not None and start_f < previous_end:
+            return None
+        parsed.append({"start": start_f, "end": end_f})
+        previous_end = end_f
+    return parsed
 
 
 def _namespace_path(cache: Path, revision_id: str) -> Path:

@@ -131,6 +131,9 @@ describe("revision download backfill", () => {
 				prepareRevision: async () => {
 					throw new Error("Unexpected prepare");
 				},
+				selectFrames: async () => {
+					throw new Error("Unexpected frame selection");
+				},
 				fetchArtifact: async () => {
 					throw new Error("Unexpected artifact fetch");
 				},

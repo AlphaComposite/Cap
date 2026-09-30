@@ -20,6 +20,7 @@ export type VideoTimelineState = {
 	splitPoints: number[];
 	deletedRanges: VideoEditRange[];
 	autoCuts?: VideoAutoCuts;
+	renderedKeeps?: { policyKey: string; keepRanges: VideoEditRange[] };
 	selectedSegmentId: string | null;
 };
 
@@ -132,7 +133,60 @@ function normalizeAutoCuts(
 	};
 }
 
+function timelineAuthoredPolicyKey(state: VideoTimelineState) {
+	return JSON.stringify({
+		duration: state.duration,
+		manualKeepRanges: subtractRanges(
+			[{ start: state.trimStart, end: state.trimEnd }],
+			state.deletedRanges,
+			state.duration,
+		),
+		autoCuts: normalizeAutoCuts(state.autoCuts, state.duration),
+	});
+}
+
+function selectedTimelineKeeps(state: VideoTimelineState) {
+	if (state.renderedKeeps?.policyKey !== timelineAuthoredPolicyKey(state)) {
+		return null;
+	}
+	const ranges = parseEditRanges(
+		state.renderedKeeps.keepRanges,
+		state.duration,
+	);
+	if (!ranges?.length) return null;
+	const autoCuts = normalizeAutoCuts(state.autoCuts, state.duration);
+	const authored = subtractRanges(
+		subtractRanges(
+			[{ start: state.trimStart, end: state.trimEnd }],
+			state.deletedRanges,
+			state.duration,
+		),
+		[
+			...(autoCuts.silence.enabled ? autoCuts.silence.ranges : []),
+			...(autoCuts.fillers.enabled ? autoCuts.fillers.ranges : []),
+		],
+		state.duration,
+	);
+	const selected = normalizeKeepRanges(ranges, state.duration).keepRanges;
+	return selected.length > 0 &&
+		selected.every((range) =>
+			authored.some(
+				(keep) => range.start >= keep.start && range.end <= keep.end,
+			),
+		)
+		? selected
+		: null;
+}
+
 function getEffectiveDeletedRanges(state: VideoTimelineState) {
+	const selected = selectedTimelineKeeps(state);
+	if (selected) {
+		return subtractRanges(
+			[{ start: 0, end: state.duration }],
+			selected,
+			state.duration,
+		);
+	}
 	const autoCuts = normalizeAutoCuts(state.autoCuts, state.duration);
 	return normalizeKeepRanges(
 		[
@@ -340,6 +394,27 @@ export function parseVideoEditSpec(value: unknown): VideoEditSpec {
 			},
 		},
 	});
+}
+
+export function parseRenderedCanonicalSpec(value: unknown): VideoEditSpec {
+	const authored = parseVideoEditSpec(value);
+	if (authored.version !== 2 || !isUnknownRecord(value)) return authored;
+	const ranges = parseEditRanges(value.keepRanges, authored.sourceDuration);
+	if (!ranges?.length) return authored;
+	const selected = normalizeKeepRanges(
+		ranges,
+		authored.sourceDuration,
+	).keepRanges;
+	if (
+		selected.length === 0 ||
+		!selected.every((range) =>
+			authored.keepRanges.some(
+				(keep) => range.start >= keep.start && range.end <= keep.end,
+			),
+		)
+	)
+		return authored;
+	return { ...authored, keepRanges: selected };
 }
 
 export function expectedEditFenceMatches(
@@ -737,7 +812,7 @@ export function createTimelineStateFromEditSpec(
 		manualKeepRanges,
 		duration,
 	);
-	return normalizeTimelineState({
+	const state = normalizeTimelineState({
 		duration,
 		...(editSpec.version === 2 &&
 		typeof editSpec.autoCutsInitialized === "boolean"
@@ -755,6 +830,17 @@ export function createTimelineStateFromEditSpec(
 				: getDefaultAutoCuts(),
 		selectedSegmentId: null,
 	});
+	const rendered = parseRenderedCanonicalSpec(editSpec);
+	if (
+		rendered.version === 2 &&
+		!areEditSpecsEquivalent(rendered, normalizeVideoEditSpec(rendered))
+	) {
+		state.renderedKeeps = {
+			policyKey: timelineAuthoredPolicyKey(state),
+			keepRanges: rendered.keepRanges.map((range) => ({ ...range })),
+		};
+	}
+	return state;
 }
 
 export function normalizeTimelineState(
@@ -815,6 +901,23 @@ export function normalizeTimelineState(
 		deletedRanges,
 		autoCuts,
 		selectedSegmentId,
+		...(selectedTimelineKeeps({
+			...state,
+			duration,
+			trimStart: start,
+			trimEnd: end,
+			deletedRanges,
+			autoCuts,
+		})
+			? {
+					renderedKeeps: {
+						policyKey: state.renderedKeeps!.policyKey,
+						keepRanges: state.renderedKeeps!.keepRanges.map((range) => ({
+							...range,
+						})),
+					},
+				}
+			: {}),
 	};
 }
 

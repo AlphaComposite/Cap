@@ -227,6 +227,19 @@ def kept_frame_ids(ticks: list[int], ranges: list[dict], tb: int) -> list[list[i
     return grouped
 
 
+def select_renderable_keeps(ticks: list[int], ranges: list[dict], tb: int) -> list[dict]:
+    if isinstance(tb, bool) or not isinstance(tb, int) or tb <= 0:
+        raise RuntimeError(f"bad video timescale {tb}")
+    selected = [
+        ranges[index]
+        for index, ids in enumerate(kept_frame_ids(ticks, ranges, tb))
+        if ids
+    ]
+    if not selected:
+        raise RuntimeError("selection is empty")
+    return selected
+
+
 def max_hold_ticks(durs: list[int]) -> int:
     if not durs:
         raise RuntimeError("frame table is empty")

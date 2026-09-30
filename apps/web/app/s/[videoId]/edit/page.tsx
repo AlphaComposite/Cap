@@ -24,7 +24,10 @@ import {
 	selectEditorPlayback,
 } from "@/lib/revision-publication-read";
 import { isEditSourceKey } from "@/lib/video-edit-processing";
-import { parseVideoEditSpec } from "@/lib/video-edits";
+import {
+	parseRenderedCanonicalSpec,
+	parseVideoEditSpec,
+} from "@/lib/video-edits";
 import { EditUpgradeGate } from "./EditUpgradeGate";
 import { EditVideoClient } from "./EditVideoClient";
 import { EditRecovery } from "./edit-recovery";
@@ -137,7 +140,7 @@ export default async function EditVideoPage(props: {
 	const initialEditSpec = selectEditorBaselineSpec({
 		instantFinish: flagged,
 		publishedIntentSpec: publishedIntent
-			? parseVideoEditSpec(publishedIntent.canonicalSpec)
+			? parseRenderedCanonicalSpec(publishedIntent.canonicalSpec)
 			: null,
 		legacySpec: existingEdit ? parseVideoEditSpec(existingEdit.editSpec) : null,
 		sourceDuration: video.duration ?? 0,

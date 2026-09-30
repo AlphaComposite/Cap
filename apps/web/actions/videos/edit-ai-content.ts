@@ -30,7 +30,7 @@ import {
 	projectSourceChapters,
 } from "@/lib/revision-chapter-source";
 import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
-import { parseVideoEditSpec } from "@/lib/video-edits";
+import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
 
 const chapterSchema = z.object({
 	title: z.string().max(MAX_CHAPTER_TITLE_LENGTH),
@@ -230,6 +230,6 @@ async function currentRevisionTimeline(
 		revisionId: row.revisionId,
 		durationSeconds: row.metadataSnapshot.durationSeconds,
 		chapters: row.metadataSnapshot.chapters,
-		spec: parseVideoEditSpec(row.canonicalSpec),
+		spec: parseRenderedCanonicalSpec(row.canonicalSpec),
 	};
 }
