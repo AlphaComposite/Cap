@@ -2523,7 +2523,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		}
 	}, 30_000);
 
-	it("relocates on editor open after purge and refuses Finish while a public key remains", async () => {
+	it("finishes a copied source on editor open and refuses Finish while a public key remains", async () => {
 		const openVideo = "wireaopen000001";
 		const liveKey = `private/source/${openVideo}/wireopaque`;
 		const cleanup = async () => {
@@ -2564,7 +2564,7 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				videoId: openVideo as never,
 				liveKey,
 				sha256: "b".repeat(64),
-				relocationState: "PURGED",
+				relocationState: "COPIED",
 				codec: "h264",
 				timebase: "1/15360",
 				frameMode: "vfr",
@@ -2578,18 +2578,31 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				oldKey: `${ownerId}/${openVideo}/source/original.mp4`,
 				newKey: liveKey,
 				sha256: "b".repeat(64),
-				state: "PURGED",
+				state: "COPIED",
 				createdAt: new Date(),
 			});
-			const relocate = vi.fn(async () => ({
-				liveKey,
+			const relocate = vi.fn(async () => {
+				await database.update(sourceObject).set({ relocationState: "PURGED" }).where(eq(sourceObject.videoId, openVideo as never));
+				await database.update(sourceRelocation).set({ state: "PURGED" }).where(eq(sourceRelocation.videoId, openVideo as never));
+				return { liveKey, sha256: "b".repeat(64) };
+			});
+			const prepare = vi.fn(async () => ({
+				sourceKey: liveKey,
 				sha256: "b".repeat(64),
+				codec: "h264",
+				timebase: "1/15360",
+				frameMode: "vfr" as const,
+				a1Digest: "c".repeat(64),
+				indexId: "index-open",
+				warmExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
 			}));
 			await openInstantFinishEditor(openVideo, database, {
 				actionRefresh: true,
 				relocate,
+				prepare,
 			});
-			expect(relocate).toHaveBeenCalled();
+			expect(relocate).toHaveBeenCalledOnce();
+			expect(prepare).toHaveBeenCalledOnce();
 
 			const exposed = [
 				`${ownerId}/${openVideo}/raw-upload.mp4`,

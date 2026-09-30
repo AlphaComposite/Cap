@@ -77,4 +77,13 @@ describe("flagged getTranscript", () => {
 		);
 		expect(mocks.runPromise).not.toHaveBeenCalled();
 	});
+
+	it("does not treat a header-only caption as a successful transcript", async () => {
+		mocks.db.mockReturnValue(
+			query([{ snapshot: { captionsVtt: "WEBVTT\n" } }]),
+		);
+		const result = await getTranscript("video-1" as never);
+		expect(result.success).toBe(false);
+		expect(result.content).toBeUndefined();
+	});
 });

@@ -57,17 +57,28 @@ export default defineConfig({
 	},
 	resolve: {
 		dedupe: ["react", "react-dom"],
-		alias: {
-			"@/app": join(process.cwd(), "app"),
-			"@/components": join(process.cwd(), "components"),
-			"@/pages": join(process.cwd(), "components/pages"),
-			"@/utils": join(process.cwd(), "utils"),
-			"@/lib": join(process.cwd(), "lib"),
-			"@/actions": join(process.cwd(), "actions"),
-			"@/data": join(process.cwd(), "data"),
-			"@/services": join(process.cwd(), "services"),
-			"@/workflows": join(process.cwd(), "workflows"),
-			hooks: join(process.cwd(), "hooks"),
-		},
+		alias: [
+			{
+				find: /^@cap\/web-backend$/,
+				replacement: join(
+					process.cwd(),
+					"../../packages/web-backend/src/index.ts",
+				),
+			},
+			{
+				find: /^@cap\/web-backend\/(.*)$/,
+				replacement: join(process.cwd(), "../../packages/web-backend/$1"),
+			},
+			{ find: "@/app", replacement: join(process.cwd(), "app") },
+			{ find: "@/components", replacement: join(process.cwd(), "components") },
+			{ find: "@/pages", replacement: join(process.cwd(), "components/pages") },
+			{ find: "@/utils", replacement: join(process.cwd(), "utils") },
+			{ find: "@/lib", replacement: join(process.cwd(), "lib") },
+			{ find: "@/actions", replacement: join(process.cwd(), "actions") },
+			{ find: "@/data", replacement: join(process.cwd(), "data") },
+			{ find: "@/services", replacement: join(process.cwd(), "services") },
+			{ find: "@/workflows", replacement: join(process.cwd(), "workflows") },
+			{ find: "hooks", replacement: join(process.cwd(), "hooks") },
+		],
 	},
 });

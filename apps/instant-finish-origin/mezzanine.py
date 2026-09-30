@@ -4,6 +4,7 @@ from __future__ import annotations
 import json as json_mod
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -13,6 +14,7 @@ from storage import atomic_write, private, sha256_file
 import limits
 
 MEZZ_X264 = "keyint=1000:min-keyint=1:scenecut=0:open-gop=0:b-adapt=0"
+_A1_SLOT = threading.BoundedSemaphore(1)
 
 
 class MezzanineError(RuntimeError):
@@ -23,6 +25,7 @@ def mezz_command(source: Path, dest: Path, timescale: int) -> list[str]:
     if timescale <= 0:
         raise MezzanineError(f"bad timescale {timescale}")
     return [
+        "nice", "-n", "19",
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-i", str(source),
         "-fps_mode", "passthrough",
@@ -48,7 +51,12 @@ def _duration_s(probed: Probe) -> float:
     return ticks / probed.timescale
 
 
-def build_mezzanine(source: Path, dest: Path) -> dict:
+def build_mezzanine(source: Path, dest: Path, video_id: str = "") -> dict:
+    with _A1_SLOT:
+        return _encode_mezzanine(source, dest, video_id)
+
+
+def _encode_mezzanine(source: Path, dest: Path, video_id: str = "") -> dict:
     """Build A1 beside the immutable original. Does not replace the original and is not a Finish path."""
     original = probe(source)
     if original.audio_rate is None:
@@ -59,6 +67,7 @@ def build_mezzanine(source: Path, dest: Path) -> dict:
     )
     started = time.perf_counter()
     cmd = mezz_command(source, tmp, original.timescale)
+    print(f"source-prepare-encode video={video_id}", file=sys.stderr, flush=True)
     if "-vf" in cmd or "fps=" in " ".join(cmd):
         raise MezzanineError("A1 command drifted")
     try:

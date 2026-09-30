@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import lib_origin
-from publication import MemoryPublication, RevisionRow
+from publication import MemoryPublication, RevisionRow, SourceRow
 from server import OriginApp, serve
 from service_auth import sign_request
 from storage import LocalObjectStore
@@ -92,6 +92,8 @@ class SupersededEncodeTests(unittest.TestCase):
         return key
 
     def _prepare_source(self, key: str) -> None:
+        if self.store.source(VIDEO) is None:
+            self.store.put_source(SourceRow(VIDEO, key, "0" * 64, "LIVE"))
         body = json.dumps({"sourceId": SOURCE, "sourceKey": key}).encode()
         path = f"/internal/sources/{VIDEO}/prepare"
         status, _, payload = self._req(path, "POST", self._service("POST", path, body), body)

@@ -10,6 +10,7 @@ import { Effect, Exit, Option } from "effect";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
+import { captionsHaveCues } from "@/lib/source-prepare";
 import { decodeStorageVideo } from "@/lib/video-storage";
 
 export async function getTranscript(
@@ -72,10 +73,10 @@ export async function getTranscript(
 			)
 			.limit(1);
 		const content = row?.snapshot?.captionsVtt;
-		if (typeof content !== "string") {
+		if (typeof content !== "string" || !captionsHaveCues(content)) {
 			return {
 				success: false,
-				message: "Transcript is not available for this revision",
+				message: "Transcript is not ready yet",
 			};
 		}
 		return {

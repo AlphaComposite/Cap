@@ -29,6 +29,14 @@ const published = {
 };
 
 describe("selectEditorBaselineSpec", () => {
+  it("reopens an initialized local Restore without modifying the canonical retained intent", () => {
+    const current = getTimelineEditSpec(createTimelineStateFromEditSpec(createIdentityEditSpec(20)));
+    const reset = restoredEditorSpec(20);
+    const before = JSON.stringify(current);
+    const reopened = selectEditorBaselineSpec({instantFinish:true,publishedIntentSpec:current,legacySpec:reset,sourceDuration:20});
+    expect(reopened).toMatchObject({autoCutsInitialized:true});
+    expect(JSON.stringify(current)).toBe(before);
+  });
 	it("prefers the published intent over a stale legacy row, matching the server", () => {
 		const baseline = selectEditorBaselineSpec({
 			instantFinish: true,

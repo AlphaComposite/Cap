@@ -79,6 +79,17 @@ export type OriginClient = {
 		videoId: string;
 		revisionId: string;
 	}): Promise<{ status: number }>;
+	writeCaptions?(input: {
+		videoId: string;
+		revisionId: string;
+		intentId: string;
+		sourceId: string;
+		generation: number;
+		publicationEpoch: number;
+		policyEpoch: number;
+		sourceSha256: string;
+		captionsVtt: string;
+	}): Promise<{ sha256: string }>;
 };
 
 export function originBaseUrl(): string {
@@ -188,6 +199,17 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 			const encoded = JSON.stringify({ videoId: input.videoId });
 			const response = await signedFetch(path, "POST", encoded);
 			return { status: response.status };
+		},
+		async writeCaptions(input) {
+			const path = `/internal/revisions/${input.revisionId}/captions`;
+			const encoded = JSON.stringify(input);
+			const response = await signedFetch(path, "POST", encoded, signal);
+			if (!response.ok) {
+				throw new Error(`Caption write failed with HTTP ${response.status}`);
+			}
+			const payload = (await response.json()) as { sha256?: string };
+			if (!payload.sha256) throw new Error("Caption write omitted sha256");
+			return { sha256: payload.sha256 };
 		},
 	};
 }

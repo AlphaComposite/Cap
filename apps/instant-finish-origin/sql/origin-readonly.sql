@@ -18,4 +18,6 @@ GRANT SELECT (revisionId, videoId, intentId, sourceId, generation, state)
   ON edit_revision TO 'cap_origin_ro'@'%';
 GRANT SELECT (videoId, liveKey, sha256, relocationState)
   ON source_object TO 'cap_origin_ro'@'%';
+GRANT SELECT (id, videoId, oldKey, newKey, sha256, state)
+  ON source_relocation TO 'cap_origin_ro'@'%';
 FLUSH PRIVILEGES;

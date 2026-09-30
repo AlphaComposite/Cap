@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import lib_audio
 import lib_origin
-from publication import MemoryPublication
+from publication import MemoryPublication, SourceRow
 from server import OriginApp, serve
 from service_auth import sign_request
 from storage import LocalObjectStore
@@ -502,8 +502,10 @@ class RejectionTests(unittest.TestCase):
                 ]
             )
             dest.write_bytes(encoded.read_bytes())
+            store = MemoryPublication()
+            store.put_source(SourceRow(VIDEO, key, "0" * 64, "LIVE"))
             app = OriginApp(
-                MemoryPublication(),
+                store,
                 LocalObjectStore(objects),
                 root / "cache",
                 GRANT,

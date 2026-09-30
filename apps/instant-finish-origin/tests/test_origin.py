@@ -338,6 +338,8 @@ class MediaTests(unittest.TestCase):
         }
 
     def _prepare(self, key: str) -> dict:
+        if self.store.source(VIDEO) is None:
+            self.store.put_source(SourceRow(VIDEO, key, "0" * 64, "LIVE"))
         body = json.dumps({"sourceId": SOURCE, "sourceKey": key}).encode()
         path = f"/internal/sources/{VIDEO}/prepare"
         status, _, payload = self._req(

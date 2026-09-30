@@ -196,7 +196,7 @@ export async function relocateKey(input: {
 	return { id: row.id, sha256: sha, purged: !input.crash };
 }
 
-async function continueRelocation(
+export async function continueRelocation(
 	row: RelocationRow,
 	store: ObjectStore,
 	journal: RelocationJournal,

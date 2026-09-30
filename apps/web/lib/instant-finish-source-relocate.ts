@@ -195,11 +195,101 @@ export async function relocateFlaggedSource(input: {
 	return { liveKey: proof.liveKey, sha256: live.sha256 };
 }
 
-export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
-	const rows = await app
-		.select({ liveKey: sourceObject.liveKey })
+const SHA64 = /^[a-f0-9]{64}$/;
+
+function unsafeOriginKey(key: string) {
+	return (
+		!key ||
+		key.includes("*") ||
+		key.includes("?") ||
+		key.includes("..") ||
+		key.startsWith("/")
+	);
+}
+
+function videoOwnedPrivateKey(videoId: string, key: string) {
+	return (
+		!unsafeOriginKey(key) &&
+		(key.startsWith(`private/source/${videoId}/`) ||
+			key.startsWith(`private/rollback/${videoId}/`))
+	);
+}
+
+export function resolveRecordedOriginKeys(
+	sources: Array<{
+		videoId?: string;
+		liveKey?: string;
+		sha256?: string;
+		relocationState?: string;
+	}>,
+	stages: Array<{
+		videoId?: string;
+		oldKey?: string;
+		newKey?: string;
+		sha256?: string;
+		state?: string;
+	}>,
+) {
+	const keys = new Set<string>();
+	const byVideo = new Map<string, (typeof sources)[number]>();
+	for (const source of sources) {
+		if (source.videoId) byVideo.set(source.videoId, source);
+		const liveKey = source.liveKey ?? "";
+		if (
+			liveKey.startsWith("private/source/") ||
+			liveKey.startsWith("private/rollback/")
+		) {
+			if (!unsafeOriginKey(liveKey)) keys.add(liveKey);
+		}
+	}
+	for (const stage of stages) {
+		const source = stage.videoId ? byVideo.get(stage.videoId) : undefined;
+		if (
+			!source ||
+			source.relocationState !== "LIVE" ||
+			!stage.oldKey ||
+			!stage.newKey ||
+			stage.oldKey !== source.liveKey ||
+			!stage.sha256 ||
+			!SHA64.test(stage.sha256) ||
+			stage.sha256 !== source.sha256 ||
+			!["COPIED", "POINTER", "PURGED"].includes(stage.state ?? "") ||
+			!stage.videoId ||
+			!videoOwnedPrivateKey(stage.videoId, stage.newKey)
+		) {
+			continue;
+		}
+		keys.add(stage.newKey);
+	}
+	return [...keys].sort();
+}
+
+async function recordedOriginReadKeys(app: Database) {
+	const sources = await app
+		.select({
+			videoId: sourceObject.videoId,
+			liveKey: sourceObject.liveKey,
+			sha256: sourceObject.sha256,
+			relocationState: sourceObject.relocationState,
+		})
 		.from(sourceObject);
-	const keys = [...new Set([liveKey, ...rows.map((row) => row.liveKey)])];
+	const stages = await app
+		.select({
+			videoId: sourceRelocation.videoId,
+			oldKey: sourceRelocation.oldKey,
+			newKey: sourceRelocation.newKey,
+			sha256: sourceRelocation.sha256,
+			state: sourceRelocation.state,
+		})
+		.from(sourceRelocation);
+	return resolveRecordedOriginKeys(sources, stages);
+}
+
+export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
+	const recorded = await recordedOriginReadKeys(app);
+	const keys = recorded.includes(liveKey)
+		? recorded
+		: recorded.filter((key) => key !== liveKey);
 	await publishRecordedKeys(keys);
 }
 
@@ -209,10 +299,7 @@ let missingCredentialHash: string | null = null;
 export async function reconcileOriginReadPolicy(
 	app: Database,
 ): Promise<boolean> {
-	const rows = await app
-		.select({ liveKey: sourceObject.liveKey })
-		.from(sourceObject);
-	const keys = [...new Set(rows.map((row) => row.liveKey))].sort();
+	const keys = await recordedOriginReadKeys(app);
 	const hash = createHash("sha256").update(keys.join("\n")).digest("hex");
 	if (hash === publishedKeyHash) return true;
 	try {

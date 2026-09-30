@@ -2,7 +2,9 @@ import { db } from "@cap/database";
 import {
 	comments,
 	editRevision,
+	revisionOutbox,
 	sourceObject,
+	sourceRelocation,
 	videoPublication,
 	videos,
 } from "@cap/database/schema";
@@ -18,6 +20,11 @@ import {
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import { prepareSourceOnEditorOpen } from "@/lib/revision-publication-origin";
 import { warmSourceFromRow } from "@/lib/revision-source-warm";
+import {
+	captionsHaveCues,
+	editorJoinPlan,
+	SOURCE_PREPARE_JOB,
+} from "@/lib/source-prepare";
 import { getEditSourceKey } from "@/lib/video-edit-processing";
 
 type Database = ReturnType<typeof db>;
@@ -193,6 +200,10 @@ export async function getInstantFinishPublicationDto(input: {
 		liveChapters: videoRow?.metadata?.chapters,
 		liveChaptersRevisionId: videoRow?.metadata?.chaptersRevisionId,
 	});
+	page.summaryText =
+		videoRow?.metadata && Object.hasOwn(videoRow.metadata, "summary")
+			? (videoRow.metadata.summary ?? null)
+			: page.summaryText;
 	const duration = page.durationSeconds ?? input.durationFallback ?? null;
 	const commentRows = await database
 		.select({ id: comments.id, timestamp: comments.timestamp })
@@ -204,14 +215,14 @@ export async function getInstantFinishPublicationDto(input: {
 	return {
 		enabled: true,
 		currentRevisionId: projection.currentRevisionId,
-		generation: projection.currentGeneration ?? projection.generation,
+		generation: projection.generation,
 		duration,
 		draftVersion: projection.latestDraftVersion,
 		draftSession: projection.draftSession,
 		revisionMetadata: {
 			duration,
 			chapters: page.chapters,
-			captionsAvailable: page.captionsVtt != null,
+			captionsAvailable: captionsHaveCues(page.captionsVtt ?? ""),
 			commentTimestamps,
 			thumbnailAvailable: page.thumbnail !== "unavailable",
 			downloadReady: revision?.metadataSnapshot?.downloadReady === true,
@@ -219,7 +230,9 @@ export async function getInstantFinishPublicationDto(input: {
 			summaryStatus: "persisted",
 			summaryDerived: false,
 			summaryText: page.summaryText,
-			captions: page.captionsVtt != null ? "revision" : "unavailable",
+			captions: captionsHaveCues(page.captionsVtt ?? "")
+				? "revision"
+				: "unavailable",
 			chaptersStatus: snapshot ? "revision" : "unavailable",
 			thumbnail: page.thumbnail,
 			download: "preparing",
@@ -286,6 +299,7 @@ export async function openInstantFinishEditor(
 		now?: Date;
 		prepare?: typeof prepareSourceOnEditorOpen;
 		relocate?: typeof relocateFlaggedSource;
+		stageWaitMs?: number;
 	},
 ): Promise<{ playbackSrc: string; draftSession: string; generation: number }> {
 	const app = database as Database;
@@ -311,14 +325,63 @@ export async function openInstantFinishEditor(
 	const alreadyPurged =
 		existingBeforePrepare?.relocationState === "PURGED" &&
 		existingBeforePrepare.liveKey.startsWith("private/source/");
-	const relocated = await (options?.relocate ?? relocateFlaggedSource)({
+	const pending = await openSourcePrepare(app, videoId);
+	if (pending && !pending.exhausted && !alreadyPurged) {
+		const joined = await waitForJoinedStage(
+			app,
+			videoId,
+			now,
+			options?.stageWaitMs ?? 5_000,
+		);
+		if (!joined) {
+			throw new RevisionPublicationError(
+				409,
+				"Registered source is not ready; retry",
+			);
+		}
+		const [publication] = await app
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, asVideoId(videoId)));
+		const playbackSrc = ownerOriginalPath(videoId);
+		if (playbackSrc.includes("X-Amz-") || playbackSrc.includes("amazonaws")) {
+			throw new RevisionPublicationError(
+				500,
+				"Editor open must not mint an S3 presign",
+			);
+		}
+		return {
+			playbackSrc,
+			draftSession: publication?.draftSession ?? "",
+			generation: publication?.generation ?? 0,
+		};
+	}
+	const join = editorJoinPlan({
+		pending: pending != null,
+		exhausted: pending?.exhausted === true,
+		registeredPrivateKey: alreadyPurged
+			? (existingBeforePrepare?.liveKey ?? null)
+			: null,
 		videoId,
-		ownerId: video.ownerId,
-		sourceKey,
-		database: app,
 	});
+	const relocated = alreadyPurged
+		? {
+				liveKey: existingBeforePrepare?.liveKey ?? "",
+				sha256: existingBeforePrepare?.sha256 ?? "",
+			}
+		: join.relocate === false
+			? {
+					liveKey: join.sourceKey,
+					sha256: existingBeforePrepare?.sha256 ?? "",
+				}
+			: await (options?.relocate ?? relocateFlaggedSource)({
+					videoId,
+					ownerId: video.ownerId,
+					sourceKey,
+					database: app,
+				});
 	const warm =
-		actionRefresh && alreadyPurged
+		(actionRefresh || (pending != null && !pending.exhausted)) && alreadyPurged
 			? warmSourceFromRow(existingBeforePrepare ?? null, now)
 			: null;
 	const preparedSource =
@@ -346,13 +409,27 @@ export async function openInstantFinishEditor(
 		.select()
 		.from(sourceObject)
 		.where(eq(sourceObject.videoId, asVideoId(videoId)));
-	if (existing && existing.sha256 !== prepared.sha256) {
+	if (existing?.sha256 && existing.sha256 !== prepared.sha256) {
 		throw new RevisionPublicationError(
 			409,
 			"Source identity changed after it was recorded",
 		);
 	}
-	if (!existing) {
+	if (join.relocate === false) {
+		if (existing && existing.relocationState !== "LIVE") {
+			await app
+				.update(sourceObject)
+				.set({
+					codec: prepared.codec,
+					timebase: prepared.timebase,
+					frameMode: prepared.frameMode,
+					a1Digest: prepared.a1Digest,
+					indexId: prepared.indexId,
+					warmExpiresAt,
+				})
+				.where(eq(sourceObject.videoId, asVideoId(videoId)));
+		}
+	} else if (!existing) {
 		await app.insert(sourceObject).values({
 			videoId: asVideoId(videoId),
 			liveKey: prepared.sourceKey,
@@ -411,4 +488,106 @@ export async function openInstantFinishEditor(
 		draftSession: publication?.draftSession ?? "",
 		generation: publication?.generation ?? 0,
 	};
+}
+
+async function waitForJoinedStage(
+	app: Database,
+	videoId: string,
+	now: Date,
+	waitMs: number,
+) {
+	const deadline = Date.now() + waitMs;
+	for (;;) {
+		const joined = await readJoinedStage(app, videoId, now);
+		if (joined || Date.now() >= deadline) return joined;
+		await new Promise((resolve) =>
+			setTimeout(resolve, Math.min(200, Math.max(0, deadline - Date.now()))),
+		);
+	}
+}
+
+async function readJoinedStage(app: Database, videoId: string, now: Date) {
+	let sourceRows: Array<{
+		liveKey: string;
+		sha256: string;
+		codec: string | null;
+		timebase: string | null;
+		frameMode: string | null;
+		a1Digest: string | null;
+		indexId: string | null;
+		warmExpiresAt: Date | null;
+	}>;
+	let stages: Array<{
+		oldKey: string;
+		newKey: string;
+		sha256: string;
+		state: string;
+	}>;
+	try {
+		sourceRows = await app
+			.select()
+			.from(sourceObject)
+			.where(eq(sourceObject.videoId, asVideoId(videoId)));
+		stages = await app
+			.select()
+			.from(sourceRelocation)
+			.where(eq(sourceRelocation.videoId, asVideoId(videoId)));
+	} catch (error) {
+		if (error instanceof RevisionPublicationError) throw error;
+		throw new RevisionPublicationError(
+			409,
+			"Registered source is not ready; retry",
+		);
+	}
+	const source = sourceRows[0];
+	if (
+		!source?.sha256 ||
+		!/^[a-f0-9]{64}$/.test(source.sha256) ||
+		!source.codec ||
+		!source.timebase ||
+		(source.frameMode !== "cfr" && source.frameMode !== "vfr") ||
+		!source.a1Digest ||
+		!source.indexId ||
+		!source.warmExpiresAt ||
+		new Date(source.warmExpiresAt).getTime() <= now.getTime()
+	) {
+		return null;
+	}
+	const stage = stages.find(
+		(row) =>
+			row.sha256 === source.sha256 &&
+			(row.oldKey === source.liveKey || row.newKey === source.liveKey) &&
+			row.newKey.startsWith(`private/source/${videoId}/`) &&
+			!["*", "?", ".."].some((token) => row.newKey.includes(token)) &&
+			!row.newKey.startsWith("/") &&
+			["COPIED", "POINTER", "PURGED"].includes(row.state),
+	);
+	return stage
+		? { newKey: stage.newKey, sha256: stage.sha256, liveKey: source.liveKey }
+		: null;
+}
+
+async function openSourcePrepare(
+	app: Database,
+	videoId: string,
+): Promise<{ exhausted: boolean } | null> {
+	try {
+		const rows = (await app
+			.select()
+			.from(revisionOutbox)
+			.where(eq(revisionOutbox.videoId, asVideoId(videoId)))) as Array<{
+			job?: string;
+			payload?: { finished?: boolean; exhausted?: boolean };
+		}>;
+		const open = rows.find(
+			(row) => row.job === SOURCE_PREPARE_JOB && row.payload?.finished !== true,
+		);
+		if (!open) return null;
+		return { exhausted: open.payload?.exhausted === true };
+	} catch {
+		throw new RevisionPublicationError(
+			409,
+			"Source prepare status could not be read; retry",
+		);
+	}
 }

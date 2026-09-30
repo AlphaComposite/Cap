@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import grant as grant_mod
 import lib_origin
-from publication import MemoryPublication, PublicationRow, RevisionRow, VideoRow
+from publication import MemoryPublication, PublicationRow, RevisionRow, SourceRow, VideoRow
 from server import OriginApp, SideArtifactMissing, SideArtifactRejected, serve
 from service_auth import sign_request
 from storage import LocalObjectStore
@@ -245,6 +245,7 @@ class FailureLoggingTests(unittest.TestCase):
     def test_source_prepare_unbound_logs_exact_reason(self) -> None:
         path = f"/internal/sources/{VIDEO}/prepare"
         body = json.dumps({"sourceId": SOURCE, "sourceKey": "sources/log-key"}).encode()
+        self.store.put_source(SourceRow(VIDEO, "sources/log-key", "0" * 64, "LIVE"))
         original = self.cache / "original.mp4"
         original.write_bytes(b"x")
         buf = io.StringIO()

@@ -380,9 +380,7 @@ export async function saveVideoEdits(
 export async function restoreVideoToOriginal(videoId: Video.VideoId) {
 	const { user, video, legacyUpload } = await loadEditableVideo(videoId, true);
 	if (isInstantFinishEnabledForOwner(video.ownerId)) {
-		throw new Error(
-			"Instant finish is enabled for this video. Restore through a new revision instead of the legacy renderer.",
-		);
+		throw new Error("Restore stays local until Done");
 	}
 
 	const [existingEdit] = await db()

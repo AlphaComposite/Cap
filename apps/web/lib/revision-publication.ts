@@ -16,7 +16,7 @@ import {
 import type { VideoEditSpec, VideoEditSpecV2 } from "@cap/database/types";
 import { serverEnv } from "@cap/env";
 import type { Video } from "@cap/web-domain";
-import { and, asc, eq, lt, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, ne, notInArray, sql } from "drizzle-orm";
 import {
 	type EditTranscript,
 	getEditTranscriptObjectKey,
@@ -73,6 +73,14 @@ import {
 	thumbnailSha256,
 } from "@/lib/revision-thumbnail";
 import {
+	admitBaselineSource,
+	captionsHaveCues,
+	identityFinishReuses,
+	isRetainedIdentityRestoreSpec,
+	isUntouchedEditorSpec,
+	SOURCE_PREPARE_JOB,
+} from "@/lib/source-prepare";
+import {
 	assertFinishInventoryClear,
 	assertFinishSourceKey,
 } from "@/lib/source-relocation";
@@ -84,7 +92,7 @@ export {
 } from "@/lib/revision-publication-read";
 
 import {
-	areEditSpecDocumentsEquivalent,
+	expectedEditFenceMatches,
 	getEditSpecOutputDuration,
 	type VideoChapter,
 } from "@/lib/video-edits";
@@ -116,6 +124,16 @@ export type PublishRevisionInput = {
 	sourceChapters?: readonly VideoChapter[] | null;
 	transcript?: EditTranscript | null;
 	sourceDuration?: number | null;
+	baselineIdentity?: {
+		key: string;
+		sha256: string;
+		codec: string;
+		timebase: string;
+		frameMode: "vfr" | "cfr";
+		a1Digest: string;
+		indexId: string;
+		warmExpiresAt: Date;
+	};
 };
 
 export type PublishRevisionDeps = {
@@ -217,12 +235,85 @@ export async function expireAbandonedPreparedRevisions(
 	maxAgeMs = 15 * 60 * 1000,
 ) {
 	const cutoff = new Date(now.getTime() - maxAgeMs);
+	const current = await (database as Database)
+		.select({ currentRevisionId: videoPublication.currentRevisionId })
+		.from(videoPublication);
+	const currentIds = current
+		.map((row) => row.currentRevisionId)
+		.filter((id): id is string => Boolean(id));
 	await (database as Database)
 		.update(editRevision)
 		.set({ state: "EXPIRED", error: "expired", updatedAt: now })
 		.where(
-			and(eq(editRevision.state, "READY"), lt(editRevision.updatedAt, cutoff)),
+			and(
+				eq(editRevision.state, "READY"),
+				lt(editRevision.updatedAt, cutoff),
+				currentIds.length > 0
+					? notInArray(editRevision.revisionId, currentIds)
+					: undefined,
+			),
 		);
+}
+
+async function reuseCurrentUntouched(
+	app: Database,
+	input: PublishRevisionInput,
+	spec: VideoEditSpecV2,
+): Promise<PublishRevisionSuccess | null> {
+	const [publication] = await app
+		.select()
+		.from(videoPublication)
+		.where(eq(videoPublication.videoId, videoId(input.videoId)));
+	if (
+		!publication?.currentRevisionId ||
+		publication.currentGeneration == null
+	) {
+		return null;
+	}
+	const current = await readRevision(
+		app as unknown as PublicationTx,
+		publication.currentRevisionId,
+	);
+	if (!current) return null;
+	const [intent] = await app
+		.select()
+		.from(editIntent)
+		.where(
+			and(
+				eq(editIntent.videoId, videoId(input.videoId)),
+				eq(editIntent.generation, current.generation),
+			),
+		);
+	const decision = identityFinishReuses({
+		currentIntentSpec: intent?.canonicalSpec,
+		nextSpec: spec,
+		currentRevisionId: current.revisionId,
+		currentState: current.state,
+	});
+	if (!decision.reuse || !decision.revisionId) return null;
+	const [source] = await app
+		.select()
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId(input.videoId)));
+	if (
+		!source?.codec ||
+		!source.timebase ||
+		(source.frameMode !== "vfr" && source.frameMode !== "cfr") ||
+		current.sourceId !==
+			sourceIdFromIdentity({
+				key: source.liveKey,
+				sha256: source.sha256,
+				codec: source.codec,
+				timebase: source.timebase,
+				frameMode: source.frameMode,
+			})
+	)
+		return null;
+	return {
+		success: true,
+		revisionId: decision.revisionId,
+		generation: publication.generation,
+	};
 }
 
 async function sameSessionPreclick(
@@ -263,7 +354,7 @@ async function reuseVerifiedReady(
 		if (!publication || !(await sameSessionPreclick(publication, input))) {
 			return null;
 		}
-		const identity = await readReadySource(tx, input.videoId, stamp);
+		const identity = await sourceIdentityForPublish(tx, input, spec, stamp);
 		const sourceId = sourceIdFromIdentity(identity);
 		const intentId = intentIdFor({
 			sourceId,
@@ -323,10 +414,7 @@ async function reuseVerifiedReady(
 		const previous = await readPreviousSpec(tx, input, spec);
 		if (
 			input.expectedEditSpec &&
-			!areEditSpecDocumentsEquivalent(
-				previous.previousSpec,
-				input.expectedEditSpec,
-			)
+			!expectedEditFenceMatches(previous.previousSpec, input.expectedEditSpec)
 		) {
 			throw new RevisionPublicationError(
 				409,
@@ -539,6 +627,34 @@ export async function publishInstantFinishRevision(
 	const spec = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
+	const identityReuse = await reuseCurrentUntouched(app, input, spec);
+	if (identityReuse) return identityReuse;
+	if (
+		input.draftSession !== SOURCE_PREPARE_JOB &&
+		isRetainedIdentityRestoreSpec(spec)
+	) {
+		try {
+			const restored = await restoreRetainedIdentity(app, input.videoId, {
+				origin: deps.origin,
+				nextSpec: spec,
+				baseGeneration: input.baseGeneration,
+				draftVersion: input.draftVersion,
+				draftSession: input.draftSession,
+			});
+			return {
+				success: true,
+				revisionId: restored.revisionId,
+				generation: restored.generation,
+			};
+		} catch (error) {
+			if (
+				!(error instanceof RevisionPublicationError) ||
+				error.status !== 409
+			) {
+				throw error;
+			}
+		}
+	}
 	const reused = await reuseVerifiedReady(app, input, spec, deps, now);
 	if (reused) return reused;
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
@@ -672,7 +788,7 @@ export async function allocateRevision(
 			publication.generation,
 		);
 	}
-	const identity = await readReadySource(tx, input.videoId, stamp);
+	const identity = await sourceIdentityForPublish(tx, input, spec, stamp);
 	const sourceId = sourceIdFromIdentity(identity);
 	const intentId = intentIdFor({
 		sourceId,
@@ -736,10 +852,7 @@ export async function allocateRevision(
 		input.draftVersion >= publication.latestDraftVersion;
 	if (
 		input.expectedEditSpec &&
-		!areEditSpecDocumentsEquivalent(
-			previous.previousSpec,
-			input.expectedEditSpec,
-		) &&
+		!expectedEditFenceMatches(previous.previousSpec, input.expectedEditSpec) &&
 		!(currentMatches && sameSessionRetry)
 	) {
 		throw new RevisionPublicationError(
@@ -881,6 +994,56 @@ async function advanceDraft(
 			draftSession: input.draftSession,
 		})
 		.where(eq(videoPublication.videoId, videoId(input.videoId)));
+}
+
+async function sourceIdentityForPublish(
+	tx: PublicationTx,
+	input: PublishRevisionInput,
+	spec: VideoEditSpecV2,
+	stamp: Date,
+): Promise<SourceIdentity> {
+	if (!input.baselineIdentity) return readReadySource(tx, input.videoId, stamp);
+	const [registered] = await tx
+		.select()
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId(input.videoId)));
+	const staged = await tx
+		.select({
+			oldKey: sourceRelocation.oldKey,
+			newKey: sourceRelocation.newKey,
+			sha256: sourceRelocation.sha256,
+			state: sourceRelocation.state,
+		})
+		.from(sourceRelocation)
+		.where(eq(sourceRelocation.videoId, videoId(input.videoId)));
+	const stage = staged.find(
+		(row) =>
+			row.newKey === input.baselineIdentity?.key &&
+			row.sha256 === input.baselineIdentity.sha256 &&
+			row.oldKey === registered?.liveKey &&
+			["COPIED", "POINTER", "PURGED"].includes(row.state),
+	);
+	const liveAgrees =
+		registered?.liveKey === input.baselineIdentity.key &&
+		registered.sha256 === input.baselineIdentity.sha256;
+	if (!registered?.liveKey || !registered.sha256 || (!liveAgrees && !stage)) {
+		throw new RevisionPublicationError(
+			409,
+			"Baseline source is not the registered stage",
+		);
+	}
+	try {
+		return admitBaselineSource({
+			spec,
+			source: input.baselineIdentity,
+			now: stamp,
+		});
+	} catch (error) {
+		throw new RevisionPublicationError(
+			409,
+			error instanceof Error ? error.message : "Baseline source is not ready",
+		);
+	}
 }
 
 async function readReadySource(
@@ -1143,7 +1306,7 @@ async function readTranscriptObject(key: string): Promise<string | null> {
 	}
 }
 
-async function loadStoredEditTranscript(
+export async function loadStoredEditTranscript(
 	app: Database,
 	id: string,
 	spec: VideoEditSpecV2,
@@ -1348,6 +1511,270 @@ async function readVerifiedText(
 	}
 }
 
+export async function restoreRetainedIdentity(
+	database: unknown,
+	id: string,
+	options?: {
+		origin: OriginClient;
+		nextSpec?: VideoEditSpecV2;
+		baseGeneration?: number;
+		draftVersion?: number;
+		draftSession?: string;
+	},
+): Promise<{ revisionId: string; generation: number }> {
+	const app = database as Database;
+	if (!options?.origin)
+		throw new RevisionPublicationError(
+			409,
+			"Retained media readback is unavailable",
+		);
+	const [before] = await app
+		.select()
+		.from(videoPublication)
+		.where(eq(videoPublication.videoId, videoId(id)));
+	const [sourceBefore] = await app
+		.select()
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId(id)));
+	const revisions = await app
+		.select()
+		.from(editRevision)
+		.where(eq(editRevision.videoId, videoId(id)));
+	const intents = await app
+		.select()
+		.from(editIntent)
+		.where(eq(editIntent.videoId, videoId(id)));
+	const current = revisions.find(
+		(row) => row.revisionId === before?.currentRevisionId,
+	);
+	if (
+		!before ||
+		!current ||
+		!sourceBefore?.codec ||
+		!sourceBefore.timebase ||
+		!["vfr", "cfr"].includes(sourceBefore.frameMode ?? "")
+	)
+		throw new RevisionPublicationError(409, "No registered source to restore");
+	const registeredSourceId = sourceIdFromIdentity({
+		key: sourceBefore.liveKey,
+		sha256: sourceBefore.sha256,
+		codec: sourceBefore.codec,
+		timebase: sourceBefore.timebase,
+		frameMode: sourceBefore.frameMode as "vfr" | "cfr",
+	});
+	if (current.sourceId !== registeredSourceId)
+		throw new RevisionPublicationError(
+			409,
+			"Retained source no longer matches the registered SOURCE",
+		);
+	let identity: (typeof revisions)[number] | undefined;
+	let identitySpec: VideoEditSpecV2 | undefined;
+	for (const candidate of revisions) {
+		const intent = intents.find(
+			(row) =>
+				row.intentId === candidate.intentId &&
+				row.generation === candidate.generation &&
+				row.sourceId === candidate.sourceId,
+		);
+		if (
+			!intent ||
+			!["CURRENT", "SUPERSEDED"].includes(candidate.state) ||
+			candidate.sourceId !== current.sourceId ||
+			!candidate.metadataSnapshot ||
+			!isUntouchedEditorSpec(intent.canonicalSpec)
+		)
+			continue;
+		const spec = requireV2Spec(intent.canonicalSpec);
+		if (
+			options.nextSpec &&
+			(!isRetainedIdentityRestoreSpec(options.nextSpec) ||
+				options.nextSpec.sourceDuration !== spec.sourceDuration)
+		)
+			continue;
+		const media = await Promise.all(
+			["playlist.m3u8", "init.mp4", "seg/0.m4s"].map((name) =>
+				options.origin.fetchArtifact({
+					videoId: id,
+					revisionId: candidate.revisionId,
+					name,
+					method: "GET",
+				}),
+			),
+		);
+		if (
+			!media.every(
+				(artifact) => artifact.status === 200 && artifact.body.length > 0,
+			) ||
+			!media[0]!.body.toString("utf8").startsWith("#EXTM3U")
+		)
+			continue;
+		identity = candidate;
+		identitySpec = spec;
+		break;
+	}
+	if (!identity || !identitySpec)
+		throw new RevisionPublicationError(
+			409,
+			"Readable retained identity is not available",
+		);
+	const retained = identity;
+	const retainedSpec = identitySpec;
+	return app.transaction(async (tx) => {
+		await lockVideoRow(tx, videoId(id));
+		const [publication] = await tx
+			.select()
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId(id)))
+			.for("update");
+		const [source] = await tx
+			.select()
+			.from(sourceObject)
+			.where(eq(sourceObject.videoId, videoId(id)));
+		const [target] = await tx
+			.select()
+			.from(editRevision)
+			.where(eq(editRevision.revisionId, retained.revisionId));
+		const [video] = await tx
+			.select()
+			.from(videos)
+			.where(eq(videos.id, videoId(id)));
+		if (
+			!publication ||
+			!source ||
+			!video ||
+			publication.currentRevisionId !== before.currentRevisionId ||
+			publication.publicationEpoch !== before.publicationEpoch ||
+			publication.policyEpoch !== before.policyEpoch ||
+			source.sha256 !== sourceBefore.sha256 ||
+			source.liveKey !== sourceBefore.liveKey ||
+			!target ||
+			!["CURRENT", "SUPERSEDED"].includes(target.state) ||
+			target.sourceId !== current.sourceId ||
+			target.intentId !== retained.intentId
+		) {
+			throw new RevisionPublicationError(
+				409,
+				"Restore source or CURRENT changed during readback",
+			);
+		}
+		if (
+			options.baseGeneration !== undefined &&
+			options.baseGeneration !== publication.generation &&
+			options.baseGeneration !== publication.currentGeneration
+		) {
+			throw new RevisionPublicationError(
+				409,
+				"Restore generation is stale",
+				publication.generation,
+			);
+		}
+		if (
+			options.draftSession &&
+			options.draftSession === publication.draftSession &&
+			options.draftVersion !== undefined &&
+			options.draftVersion < publication.latestDraftVersion
+		) {
+			throw new RevisionPublicationError(
+				409,
+				"Restore draft is stale",
+				publication.generation,
+			);
+		}
+		if (publication.currentRevisionId === retained.revisionId)
+			return {
+				revisionId: retained.revisionId,
+				generation: publication.generation,
+			};
+		const currentIntent = intents.find(
+			(row) =>
+				row.intentId === current.intentId &&
+				row.generation === current.generation,
+		);
+		if (!currentIntent)
+			throw new RevisionPublicationError(409, "Current spec is unavailable");
+		const previousSpec = requireV2Spec(currentIntent.canonicalSpec);
+		const chapterState = deriveRevisionChapterState({
+			storedChapters: video.metadata?.chapters ?? [],
+			storedSourceChapters: video.metadata?.sourceChapters ?? null,
+			previousSpec,
+			nextSpec: retainedSpec,
+		});
+		const commentRows = await tx
+			.select({ id: comments.id, timestamp: comments.timestamp })
+			.from(comments)
+			.where(eq(comments.videoId, video.id));
+		for (const comment of commentRows) {
+			const timestamp = remapCommentTimestamp({
+				timestamp: comment.timestamp,
+				previousSpec,
+				nextSpec: retainedSpec,
+			});
+			if (timestamp !== comment.timestamp)
+				await tx
+					.update(comments)
+					.set({ timestamp })
+					.where(eq(comments.id, comment.id));
+		}
+		const stamp = new Date();
+		await tx
+			.update(editRevision)
+			.set({
+				state: "SUPERSEDED",
+				error: "restored identity",
+				updatedAt: stamp,
+			})
+			.where(
+				and(
+					eq(editRevision.videoId, video.id),
+					ne(editRevision.revisionId, retained.revisionId),
+					inArray(editRevision.state, [
+						"CURRENT",
+						"ALLOCATED",
+						"PREPARING",
+						"PUBLISHING",
+						"READY",
+					]),
+				),
+			);
+		await tx
+			.update(editRevision)
+			.set({ state: "CURRENT", error: null, updatedAt: stamp })
+			.where(eq(editRevision.revisionId, retained.revisionId));
+		const nextGeneration = publication.generation + 1;
+		await tx
+			.update(videoPublication)
+			.set({
+				currentRevisionId: retained.revisionId,
+				currentGeneration: retained.generation,
+				generation: nextGeneration,
+				publicationEpoch: publication.publicationEpoch + 1,
+				policyEpoch: publication.policyEpoch + 1,
+				latestDraftVersion:
+					options.draftVersion ?? publication.latestDraftVersion,
+				draftSession: options.draftSession ?? publication.draftSession,
+			})
+			.where(eq(videoPublication.videoId, video.id));
+		await tx
+			.update(videos)
+			.set({
+				metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chapters', CAST(${JSON.stringify(chapterState.chapters)} AS JSON), '$.sourceChapters', CAST(${JSON.stringify(chapterState.sourceChapters)} AS JSON), '$.chaptersRevisionId', ${retained.revisionId})`,
+			})
+			.where(eq(videos.id, video.id));
+		const resetSpec = options.nextSpec ?? retainedSpec;
+		await tx
+			.insert(videoEdits)
+			.values({
+				videoId: video.id,
+				sourceKey: source.liveKey,
+				editSpec: resetSpec,
+			})
+			.onDuplicateKeyUpdate({
+				set: { sourceKey: source.liveKey, editSpec: resetSpec },
+			});
+		return { revisionId: retained.revisionId, generation: nextGeneration };
+	});
+}
+
 export async function flipCurrent(
 	tx: PublicationTx,
 	input: PublishRevisionInput,
@@ -1495,6 +1922,7 @@ export async function flipCurrent(
 		})
 		.where(eq(videos.id, videoId(input.videoId)));
 	await bumpPolicyEpoch(input.videoId, tx);
+	const captionsReady = captionsHaveCues(prepared.captionsVtt);
 	for (const artifact of [
 		"init",
 		"seg0",
@@ -1503,11 +1931,13 @@ export async function flipCurrent(
 		"chapters",
 		"thumbnail",
 	]) {
+		const pending =
+			artifact === "thumbnail" || (artifact === "captions" && !captionsReady);
 		await tx.insert(revisionArtifactStatus).values({
 			revisionId: allocated.revisionId,
 			artifact,
-			state: artifact === "thumbnail" ? "PENDING" : "READY",
-			attempts: artifact === "thumbnail" ? 0 : 1,
+			state: pending ? "PENDING" : "READY",
+			attempts: pending ? 0 : 1,
 			leaseUntil: null,
 			heartbeatAt: stamp,
 		});
@@ -1752,6 +2182,10 @@ const READBACK_LEASE_MS = 15_000;
 const READBACK_MAX_ATTEMPTS = 5;
 
 let readbackInFlight: Promise<void> | null = null;
+let sourcePrepareInFlight: Promise<{
+	claimed: number;
+	encoded: number;
+}> | null = null;
 let readbackWorker: ReturnType<typeof setInterval> | null = null;
 
 export function alertRevisionReadbackFailure(detail: {
@@ -1795,22 +2229,33 @@ export function startRevisionReadbackWorker(input: {
 	if (readbackWorker) return { stop: stopRevisionReadbackWorker };
 	const pollMs = Math.min(input.pollMs ?? READBACK_POLL_MS, 2_000);
 	const tick = () => {
-		if (readbackInFlight) return;
-		const run = sweepRevisionReadbacks(input.database, {
-			origin: input.origin,
-			now: input.now?.(),
-		}).then(async () => {
-			await sweepRevisionDownloads(input.database, {
+		if (!readbackInFlight) {
+			const run = sweepRevisionReadbacks(input.database, {
 				origin: input.origin,
 				now: input.now?.(),
+			}).then(async () => {
+				await sweepRevisionDownloads(input.database, {
+					origin: input.origin,
+					now: input.now?.(),
+				});
+				await input.onTick?.();
 			});
-			await input.onTick?.();
-		});
-		readbackInFlight = run;
-		const clear = () => {
-			if (readbackInFlight === run) readbackInFlight = null;
-		};
-		void run.then(clear, clear);
+			readbackInFlight = run;
+			const clear = () => {
+				if (readbackInFlight === run) readbackInFlight = null;
+			};
+			void run.then(clear, clear);
+		}
+		if (!sourcePrepareInFlight) {
+			const prepare = import("@/lib/source-prepare-worker").then((mod) =>
+				mod.drainSourcePrepare(input.database, input.origin),
+			);
+			sourcePrepareInFlight = prepare;
+			const clearPrepare = () => {
+				if (sourcePrepareInFlight === prepare) sourcePrepareInFlight = null;
+			};
+			void prepare.then(clearPrepare, clearPrepare);
+		}
 	};
 	tick();
 	readbackWorker = setInterval(tick, pollMs);

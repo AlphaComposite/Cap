@@ -32,6 +32,7 @@ import {
 	shouldQueueTranscriptionAfterMultipartComplete,
 } from "@/lib/queue-video-transcription";
 import { runPromise } from "@/lib/server";
+import { enqueueVerifiedReady } from "@/lib/source-prepare";
 import { startVideoProcessingWorkflow } from "@/lib/video-processing";
 import { stringOrNumberOptional } from "@/utils/zod";
 import {
@@ -647,6 +648,12 @@ app.post(
 										eq(Db.videoUploads.rawFileKey, outputKey),
 									),
 								);
+							await enqueueVerifiedReady(tx as never, {
+								hook: "multipart-replacement",
+								videoId,
+								ownerId: user.id,
+								sourceObjectKey: outputKey,
+							});
 						}),
 					);
 					yield* Effect.tryPromise(() =>
@@ -870,6 +877,10 @@ app.post(
 							);
 					}
 
+					const remuxPending =
+						bucket.provider === "s3" &&
+						video.source.type === "webMP4" &&
+						Boolean(serverEnv().MEDIA_SERVER_URL);
 					yield* db.use((db) =>
 						db.transaction(async (tx) => {
 							await tx
@@ -894,6 +905,13 @@ app.post(
 								.where(
 									eq(Db.videoUploads.videoId, Video.VideoId.make(videoId)),
 								);
+							await enqueueVerifiedReady(tx as never, {
+								hook: "multipart-final",
+								videoId,
+								ownerId: user.id,
+								sourceObjectKey: fileKey,
+								remuxPending,
+							});
 						}),
 					);
 

@@ -32,6 +32,7 @@ import {
 	recordingVerificationSchema,
 } from "@/lib/desktop-recording-verification";
 import { invalidateGoogleDriveStorageQuotaCache } from "@/lib/google-drive-storage-quota-cache";
+import { enqueueVerifiedReady } from "@/lib/source-prepare";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
 
@@ -561,6 +562,12 @@ export async function applyDesktopRecordingProgress(input: unknown): Promise<{
 			})
 			.where(eq(videoProcessingJobs.videoId, videoId));
 		await tx.delete(videoUploads).where(eq(videoUploads.videoId, videoId));
+		await enqueueVerifiedReady(tx as never, {
+			hook: "desktop",
+			videoId,
+			ownerId: job.ownerId,
+			sourceObjectKey: outputKey,
+		});
 		return true;
 	});
 	if (!published) return { handled: true, status: 503 };

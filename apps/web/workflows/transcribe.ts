@@ -978,10 +978,11 @@ async function saveTranscription(
 			.pipe(runWorkflowPromise);
 	}
 
-	await db()
-		.update(videos)
-		.set({ transcriptionStatus: "COMPLETE" })
-		.where(eq(videos.id, videoId as Video.VideoId));
+  const {enqueueSourceCaptionsAfterTranscript} = await import("@/lib/source-prepare-worker");
+  await db().transaction(async tx=>{
+    await tx.update(videos).set({transcriptionStatus:"COMPLETE"}).where(eq(videos.id,videoId as Video.VideoId));
+    await enqueueSourceCaptionsAfterTranscript(tx,videoId);
+  });
 
 	// The canonical transcript supersedes the provisional live transcript, so
 	// drop the artifact and its metadata flag. Never fatal: a leftover live

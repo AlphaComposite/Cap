@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import grant as grant_mod
 import service_auth
-from publication import MemoryPublication, PublicationRow, RevisionRow, VideoRow
+from publication import MemoryPublication, PublicationRow, RevisionRow, SourceRow, VideoRow
 from server import NO_STORE, OriginApp, serve
 from storage import LocalObjectStore
 
@@ -190,6 +190,7 @@ class HeaderAndLimitTests(unittest.TestCase):
             dest.parent.mkdir(parents=True)
             dest.write_bytes(b"\x00\x00\x00\x18ftypmp42garbage-not-a-movie")
             store = MemoryPublication()
+            store.put_source(SourceRow(VIDEO, key, "0" * 64, "LIVE"))
             app = OriginApp(store, LocalObjectStore(objects), cache, GRANT, SERVICE, now=lambda: 1_000)
             httpd = serve(app, "127.0.0.1", 0)
             base = f"http://127.0.0.1:{httpd.server_address[1]}"
