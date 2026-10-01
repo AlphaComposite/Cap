@@ -579,7 +579,7 @@ async function processVideoOnMediaServer(
 	);
 }
 
-async function saveMetadataAndComplete(
+export async function saveMetadataAndComplete(
 	videoId: string,
 	rawFileKey: string,
 	recoveryClaimId: string | undefined,
@@ -600,6 +600,14 @@ async function saveMetadataAndComplete(
 
 	if (!recoveryClaimId) {
 		await db().transaction(async (tx) => {
+			const [lockedVideo] = await tx
+				.select({ id: videos.id })
+				.from(videos)
+				.where(eq(videos.id, videoId as Video.VideoId))
+				.for("update");
+			if (!lockedVideo) {
+				throw new FatalError("Video does not exist");
+			}
 			const identityResult = await tx
 				.update(videoUploads)
 				.set({ updatedAt: now })

@@ -159,6 +159,7 @@ vi.mock("@cap/database", () => ({
 						const rows = resolve();
 						return Object.assign(Promise.resolve(rows), {
 							limit: async (count: number) => rows.slice(0, count),
+							for: () => Promise.resolve(rows),
 						});
 					},
 				};

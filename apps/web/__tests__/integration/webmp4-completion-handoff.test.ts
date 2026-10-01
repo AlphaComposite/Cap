@@ -189,7 +189,7 @@ function evaluate(row: Record<string, unknown>, condition: unknown): boolean {
 	throw new Error(`Unsupported expression ${condition.op}`);
 }
 
-function rowsFor(table: unknown) {
+function rowsFor(table: unknown): Record<string, unknown>[] {
 	if (table === videoUploads) return store.uploads;
 	if (table === videos) return store.videos;
 	if (table === users) return store.users;
@@ -204,7 +204,15 @@ function matching(table: unknown, condition: unknown) {
 	);
 }
 
-const database = {
+interface MockDatabase {
+	select: () => unknown;
+	update: (table: unknown) => unknown;
+	delete: (table: unknown) => unknown;
+	insert: (table: unknown) => unknown;
+	transaction: <T>(run: (tx: MockDatabase) => Promise<T>) => Promise<T>;
+}
+
+const database: MockDatabase = {
 	select: () => {
 		let table: unknown;
 		let joined: "inner" | "left" | null = null;
@@ -283,7 +291,7 @@ const database = {
 			return [{ affectedRows: 1 }];
 		},
 	}),
-	transaction: async <T>(run: (tx: typeof database) => Promise<T>) =>
+	transaction: async <T>(run: (tx: MockDatabase) => Promise<T>) =>
 		run(database),
 };
 

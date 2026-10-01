@@ -82,6 +82,12 @@ async function retainGenericWebMp4Completion(
 	ownerId: string,
 ) {
 	return db().transaction(async (tx) => {
+		const [lockedVideo] = await tx
+			.select({ id: videos.id })
+			.from(videos)
+			.where(eq(videos.id, payload.videoId as Video.VideoId))
+			.for("update");
+		if (!lockedVideo) return false;
 		const [locked] = await tx
 			.select({
 				phase: videoUploads.phase,
