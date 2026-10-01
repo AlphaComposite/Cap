@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-release = Path("/srv/styrir/releases/cap/d0708cd9c0")
+release = Path("/srv/styrir/releases/cap/cbe388e1c6")
 origin_file = Path("/srv/styrir/shared/env/cap-origin.env")
 origin = dict(line.split("=", 1) for line in origin_file.read_text().splitlines() if line and "=" in line)
 containers = json.loads(subprocess.check_output(["docker", "inspect", "cap-web", "cap-mysql", "cap-minio"]))
