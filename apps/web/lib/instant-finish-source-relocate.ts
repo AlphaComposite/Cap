@@ -5,12 +5,17 @@ import {
 	sourceObject,
 	sourceRelocation,
 	videoEdits,
+	videos,
 	videoUploads,
 } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
 import { and, eq } from "drizzle-orm";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import {
+	assertFinishInventoryClear,
+	continueRelocation,
+	isFinishInventoryExempt,
 	type ObjectStore,
 	type RelocationJournal,
 	type RelocationRow,
@@ -193,6 +198,119 @@ export async function relocateFlaggedSource(input: {
 		);
 	}
 	return { liveKey: proof.liveKey, sha256: live.sha256 };
+}
+
+export async function completePreparedSourceInventory(
+	app: Database,
+	videoId: string,
+	store: ObjectStore = runtimeObjectStore(),
+): Promise<void> {
+	const [video] = await app
+		.select({ ownerId: videos.ownerId })
+		.from(videos)
+		.where(eq(videos.id, videoId as never));
+	const [source] = await app
+		.select()
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId as never));
+	if (
+		!video ||
+		!source ||
+		!isInstantFinishEnabledForOwner(video.ownerId) ||
+		source.relocationState !== "PURGED" ||
+		!source.liveKey.startsWith(`private/source/${videoId}/`) ||
+		!source.a1Digest ||
+		!source.indexId ||
+		!store.list
+	)
+		throw new Error("prepared original is not ready for inventory completion");
+	const list = store.list.bind(store);
+	const prefix = `${video.ownerId}/${videoId}/`;
+	const journal = drizzleRelocationJournal(app);
+	const rows = await journal.listForVideo(videoId);
+	if (
+		!rows.some(
+			(row) =>
+				row.newKey === source.liveKey &&
+				row.sha256 === source.sha256 &&
+				row.state === "PURGED",
+		)
+	)
+		throw new Error("prepared original purge proof is missing");
+	const listed = await store.list(prefix);
+	if (
+		listed.some(
+			(key) =>
+				!isFinishInventoryExempt(key, prefix) && key.includes("/source/"),
+		)
+	)
+		throw new Error(
+			"inventory completion cannot replace the prepared original",
+		);
+	const pending = rows.filter((row) => row.state !== "PURGED");
+	if (
+		pending.some(
+			(row) =>
+				!row.oldKey.startsWith(prefix) ||
+				isFinishInventoryExempt(row.oldKey, prefix) ||
+				!row.newKey.startsWith(`private/rollback/${videoId}/`) ||
+				row.state === "ABORTED",
+		)
+	)
+		throw new Error(
+			"inventory completion encountered an unsafe relocation row",
+		);
+	for (const row of pending)
+		await continueRelocation(row, store, journal, { kind: "rollback" });
+	const scopedStore: ObjectStore = {
+		...store,
+		list: async (requested) => {
+			if (requested !== prefix) throw new Error("inventory prefix mismatch");
+			const keys = await list(requested);
+			if (
+				keys.some(
+					(key) =>
+						!isFinishInventoryExempt(key, prefix) && key.includes("/source/"),
+				)
+			)
+				throw new Error(
+					"inventory completion cannot replace the prepared original",
+				);
+			return keys.filter((key) => !isFinishInventoryExempt(key, prefix));
+		},
+	};
+	await relocateOwnerVideo({
+		ownerId: video.ownerId,
+		videoId,
+		store: scopedStore,
+		journal: {
+			...journal,
+			listOpen: async () =>
+				(await journal.listForVideo(videoId)).filter((row) =>
+					["INTENT", "COPIED", "POINTER", "DELETED"].includes(row.state),
+				),
+		},
+		sourceKey: source.liveKey,
+	});
+	assertFinishInventoryClear(await store.list(prefix), prefix);
+	if (
+		(await journal.listForVideo(videoId)).some((row) => row.state !== "PURGED")
+	)
+		throw new Error("inventory relocation is incomplete");
+	const [after] = await app
+		.select()
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId as never));
+	if (
+		!after ||
+		after.liveKey !== source.liveKey ||
+		after.sha256 !== source.sha256 ||
+		after.a1Digest !== source.a1Digest ||
+		after.indexId !== source.indexId
+	)
+		throw new Error(
+			"prepared original identity changed during inventory completion",
+		);
 }
 
 const SHA64 = /^[a-f0-9]{64}$/;

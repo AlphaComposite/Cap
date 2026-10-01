@@ -485,6 +485,15 @@ function prepareEffects(app: App, origin: unknown) {
 			if (!(await reconcileOriginReadPolicy(app)))
 				throw new Error("relocated source policy is not ready");
 		},
+		completeInventory: async (input: { videoId: string }) => {
+			const { completePreparedSourceInventory, runtimeObjectStore } =
+				await import("@/lib/instant-finish-source-relocate");
+			await completePreparedSourceInventory(
+				app,
+				input.videoId,
+				runtimeObjectStore(),
+			);
+		},
 		refreshCaptions: async (input: { videoId: string }) => {
 			const { refreshCurrentRevisionCaptions } = await import(
 				"@/lib/revision-caption-refresh"

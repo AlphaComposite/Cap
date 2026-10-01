@@ -964,6 +964,12 @@ app.post(
 										body: JSON.stringify({
 											videoId,
 											userId: user.id,
+											webhookUrl: new URL(
+												"/api/webhooks/media-server/progress",
+												serverEnv().MEDIA_SERVER_WEBHOOK_URL ||
+													serverEnv().WEB_URL,
+											).toString(),
+											webhookSecret,
 											videoUrl: inputUrl,
 											outputPresignedUrl,
 											previewGifPresignedUrl,

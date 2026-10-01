@@ -62,6 +62,10 @@ vi.mock("@/lib/instant-finish-source-relocate", async (original) => ({
 		exists: async (key: string) => runtime.objects.has(key),
 		request: async () => 404,
 		presignGet: async () => "http://127.0.0.1/not-used",
+		list: async (prefix: string) =>
+			[...runtime.objects.keys()].filter((key) => key.startsWith(prefix)),
+		listVersions: async (key: string) =>
+			runtime.objects.has(key) ? ["fixture-version"] : [],
 		listAtPublicOrigin: async (key: string) =>
 			runtime.objects.has(key) ? [{ key }] : [],
 		headPublicOrigin: async (key: string) => runtime.objects.has(key),
@@ -323,6 +327,130 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		delete finishInventoryProbe.getObject;
 		delete finishInventoryProbe.listPrefix;
 		if (pool) await pool.end();
+	});
+
+	it("clears full inventory on a warm PURGED identity without native preparation", async () => {
+		await seedCurrent();
+		await database.update(schema.sourceObject).set({
+			warmExpiresAt: new Date(Date.now() + 600_000),
+		});
+		const prefix = `${ownerId}/${videoId}/`;
+		const leftovers = [
+			"raw-upload.webm",
+			"screenshot/screen-capture.jpg",
+			"preview/animated-preview.gif",
+		];
+		const retained = ["transcription.vtt", "comments/attachment.png"];
+		for (const suffix of [...leftovers, ...retained])
+			runtime.objects.set(prefix + suffix, Buffer.from(suffix));
+		const otherKey = `${ownerId}/v57parent00002/raw-upload.mp4`;
+		runtime.objects.set(otherKey, Buffer.from("other video"));
+		const beforeSource = (await database.select().from(schema.sourceObject))[0];
+		const beforeCurrent = (
+			await database.select().from(schema.videoPublication)
+		)[0];
+		if (!beforeSource || !beforeCurrent) throw new Error("warm fixture missing");
+		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
+		await drainSourcePrepare(database as never, origin as never);
+		for (const suffix of leftovers)
+			expect(runtime.objects.has(prefix + suffix)).toBe(false);
+		for (const suffix of retained)
+			expect(runtime.objects.get(prefix + suffix)).toEqual(Buffer.from(suffix));
+		expect(runtime.objects.get(otherKey)).toEqual(Buffer.from("other video"));
+		expect((await database.select().from(schema.sourceObject))[0]).toEqual(
+			beforeSource,
+		);
+		expect((await database.select().from(schema.videoPublication))[0]).toEqual(
+			beforeCurrent,
+		);
+		expect(runtime.objects.get(beforeSource.liveKey)).toEqual(source);
+		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(0);
+		expect(runtime.prepare).not.toHaveBeenCalled();
+		expect(runtime.publish).not.toHaveBeenCalled();
+		expect(origin.prepareRevision).not.toHaveBeenCalled();
+	});
+
+	it("retries interrupted rollback cleanup after the original is already PURGED", async () => {
+		await seedCurrent();
+		await database.update(schema.sourceObject).set({
+			warmExpiresAt: new Date(Date.now() + 600_000),
+		});
+		const rawKey = `${ownerId}/${videoId}/raw-upload.mp4`;
+		runtime.objects.set(rawKey, Buffer.from("raw bytes"));
+		runtime.deleteThrows = 1;
+		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
+		await drainSourcePrepare(database as never, origin as never);
+		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(1);
+		expect(runtime.objects.has(rawKey)).toBe(true);
+		const [pending] = await database.select().from(schema.revisionOutbox);
+		if (!pending) throw new Error("retry job missing");
+		await database.update(schema.revisionOutbox).set({
+			payload: {
+				...(pending.payload as object),
+				notBeforeMs: 0,
+				leaseUntilMs: 0,
+			},
+		});
+		await drainSourcePrepare(database as never, origin as never);
+		expect(runtime.objects.has(rawKey)).toBe(false);
+		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(0);
+		const rows = await database.select().from(schema.sourceRelocation);
+		expect(rows.filter((row) => row.oldKey === rawKey)).toHaveLength(1);
+		expect(rows.every((row) => row.state === "PURGED")).toBe(true);
+		expect(runtime.prepare).not.toHaveBeenCalled();
+		expect(runtime.publish).not.toHaveBeenCalled();
+	});
+
+	it("keeps the existing Finish fence closed for terminal ABORTED history", async () => {
+		await seedCurrent();
+		await database.update(schema.sourceObject).set({
+			warmExpiresAt: new Date(Date.now() + 600_000),
+		});
+		await database.insert(schema.sourceRelocation).values({
+			videoId,
+			revisionId: "failed-copy",
+			oldKey: `${ownerId}/${videoId}/old-preview.gif`,
+			newKey: `private/rollback/${videoId}/failed-copy`,
+			sha256: sha,
+			state: "ABORTED",
+			createdAt: new Date(),
+		});
+		const { allocateRevision } = await import("@/lib/revision-publication");
+		const cut = {
+			...untouchedEditorSpec(20),
+			manualKeepRanges: [{ start: 0, end: 10 }],
+			keepRanges: [{ start: 0, end: 10 }],
+		};
+		await expect(
+			database.transaction((tx) =>
+				allocateRevision(
+					tx as never,
+					{
+						videoId,
+						editSpec: cut,
+						baseGeneration: 1,
+						draftVersion: 1,
+						draftSession: "aborted-history",
+						sourceDuration: 20,
+					},
+					cut,
+					new Date(),
+					() => "blocked-history",
+				),
+			),
+		).rejects.toMatchObject({
+			status: 409,
+			message:
+				"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+		});
+		const rawKey = `${ownerId}/${videoId}/raw-upload.mp4`;
+		runtime.objects.set(rawKey, Buffer.from("retained during refusal"));
+		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
+		await drainSourcePrepare(database as never, origin as never);
+		expect(runtime.objects.has(rawKey)).toBe(true);
+		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(1);
+		expect(runtime.prepare).not.toHaveBeenCalled();
+		expect(runtime.publish).not.toHaveBeenCalled();
 	});
 
 	it("registers a verified COPIED row before native preparation, without flipping CURRENT", async () => {
