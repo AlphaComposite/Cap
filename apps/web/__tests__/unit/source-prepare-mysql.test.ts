@@ -155,6 +155,7 @@ describe.skipIf(!databaseUrl)("source prepare mysql lease", () => {
 				prepare: async () => ({ encoded: false, sha256: "a".repeat(64) }),
 				publishIdentity: async () => ({ revisionId: "rev-b" }),
 				relocateOriginal: async () => undefined,
+				completeInventory: async () => undefined,
 				refreshCaptions: async () => "ready" as const,
 			},
 		});

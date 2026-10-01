@@ -65,6 +65,7 @@ function effects(order: string[]): PrepareEffects {
 		relocateOriginal: async () => {
 			order.push("relocate");
 		},
+		completeInventory: async () => undefined,
 		refreshCaptions: async () => {
 			order.push("captions");
 			return "pending";

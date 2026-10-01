@@ -391,6 +391,7 @@ export type PrepareEffects = {
 		sourceKey: string;
 		oldKey: string;
 	}) => Promise<void>;
+	completeInventory: (input: { videoId: string }) => Promise<void>;
 	refreshCaptions: (input: {
 		videoId: string;
 	}) => Promise<"ready" | "pending" | "unavailable">;
@@ -456,6 +457,8 @@ export async function advanceSourcePrepare(
 			const claim = await effects.refreshCaptions({
 				videoId: snapshot.videoId,
 			});
+			if (claim !== "pending" && (snapshot.relocated || resumeDeletion))
+				await effects.completeInventory({ videoId: snapshot.videoId });
 			return {
 				done: claim !== "pending",
 				exhaustedSafe: true,
@@ -463,6 +466,8 @@ export async function advanceSourcePrepare(
 				playback: "hls",
 			};
 		}
+		if (snapshot.currentReadable && (snapshot.relocated || resumeDeletion))
+			await effects.completeInventory({ videoId: snapshot.videoId });
 		return { done: true, exhaustedSafe: true, calls, playback };
 	}
 	if (snapshot.currentIsIdentity && snapshot.currentReadable) {
@@ -489,6 +494,7 @@ export async function advanceSourcePrepare(
 				return { done: false, exhaustedSafe: true, calls, playback: "hls" };
 			}
 		}
+		await effects.completeInventory({ videoId: snapshot.videoId });
 		return { done: true, exhaustedSafe: true, calls, playback: "hls" };
 	}
 	const sourceKey = snapshot.relocated
@@ -554,6 +560,7 @@ export async function advanceSourcePrepare(
 			};
 		}
 	}
+	await effects.completeInventory({ videoId: snapshot.videoId });
 	return {
 		done: true,
 		exhaustedSafe: true,
