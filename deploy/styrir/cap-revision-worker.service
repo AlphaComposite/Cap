@@ -1,0 +1,23 @@
+[Unit]
+Description=CAP privileged revision/source preparation worker
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /srv/styrir/shared/bin/cap-revision-worker.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=4G
+CPUQuota=200%
+UMask=0077
+WorkingDirectory=/srv/styrir/releases/cap/d0708cd9c0/src/apps/web
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

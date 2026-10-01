@@ -78,6 +78,7 @@ services:
       ORIGIN_HOST_PUBLISH: 127.0.0.1
       ORIGIN_CACHE: /var/cache/origin
       ORIGIN_WARM_TTL_S: "600"
+      ORIGIN_MAX_KEEP_RANGES: "${ORIGIN_MAX_KEEP_RANGES:-1024}"
       S3_INTERNAL_ENDPOINT: http://minio:9000
       S3_BUCKET: cap
       S3_ACCESS_KEY: ${ORIGIN_S3_ACCESS_KEY:-}
