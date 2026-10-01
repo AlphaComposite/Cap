@@ -107,4 +107,39 @@ describe("durable video processing completion", () => {
 			30_000,
 		);
 	});
+
+	it("treats processing progress 100 without an error as ready when metadata is valid", async () => {
+		mocks.rows = [
+			[{ ...pending, processingProgress: 100, processingError: null }],
+			[metadata],
+		];
+		await expect(readVideoProcessingStatus("video")).resolves.toEqual({
+			status: "complete",
+			metadata,
+		});
+	});
+
+	it("does not treat processing progress 100 as ready when metadata is missing", async () => {
+		mocks.rows = [[{ ...pending, processingProgress: 100 }], []];
+		await expect(readVideoProcessingStatus("video")).resolves.toEqual({
+			status: "error",
+			message: "Processing completed but video metadata is missing",
+		});
+	});
+
+	it("keeps an explicit error ahead of progress 100", async () => {
+		mocks.rows = [
+			[
+				{
+					...pending,
+					processingProgress: 100,
+					processingError: "Download failed",
+				},
+			],
+		];
+		await expect(readVideoProcessingStatus("video")).resolves.toEqual({
+			status: "failed",
+			message: "Download failed",
+		});
+	});
 });

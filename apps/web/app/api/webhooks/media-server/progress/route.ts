@@ -3,7 +3,7 @@ import { db } from "@cap/database";
 import { videos, videoUploads } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
 import type { Video } from "@cap/web-domain";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { handleAudioLevelPublication } from "@/lib/audio-level-publication";
 import { SourceCommitPendingError } from "@/lib/desktop-recording-jobs";
@@ -62,6 +62,90 @@ interface ProgressWebhookPayload {
 
 function getValidDuration(duration: number) {
 	return Number.isFinite(duration) && duration > 0 ? duration : undefined;
+}
+
+function affectedRows(result: unknown) {
+	const item = Array.isArray(result) ? result[0] : result;
+	if (!item || typeof item !== "object" || !("affectedRows" in item)) return 0;
+	return typeof item.affectedRows === "number" ? item.affectedRows : 0;
+}
+
+function observedIdentity(
+	column: typeof videoUploads.rawFileKey | typeof videoUploads.recoveryClaimId,
+	value: string | null,
+) {
+	return value == null ? isNull(column) : eq(column, value);
+}
+
+async function retainGenericWebMp4Completion(
+	payload: ProgressWebhookPayload,
+	ownerId: string,
+) {
+	return db().transaction(async (tx) => {
+		const [locked] = await tx
+			.select({
+				phase: videoUploads.phase,
+				rawFileKey: videoUploads.rawFileKey,
+				recoveryClaimId: videoUploads.recoveryClaimId,
+			})
+			.from(videoUploads)
+			.where(eq(videoUploads.videoId, payload.videoId as Video.VideoId))
+			.for("update");
+		if (
+			!locked ||
+			(locked.phase !== "processing" && locked.phase !== "generating_thumbnail")
+		) {
+			return false;
+		}
+		// Phase stays processing so raw cleanup and recovery leases still match.
+		const updated = await tx
+			.update(videoUploads)
+			.set({
+				phase: "processing",
+				processingProgress: 100,
+				processingError: null,
+				processingMessage: payload.message ?? null,
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					eq(videoUploads.videoId, payload.videoId as Video.VideoId),
+					observedIdentity(videoUploads.rawFileKey, locked.rawFileKey),
+					observedIdentity(
+						videoUploads.recoveryClaimId,
+						locked.recoveryClaimId,
+					),
+					or(
+						eq(videoUploads.phase, "processing"),
+						eq(videoUploads.phase, "generating_thumbnail"),
+					),
+				),
+			);
+		if (affectedRows(updated) === 0) return false;
+		if (payload.metadata) {
+			const duration = getValidDuration(payload.metadata.duration);
+			await tx
+				.update(videos)
+				.set({
+					width: payload.metadata.width,
+					height: payload.metadata.height,
+					fps: payload.metadata.fps,
+					...(duration === undefined ? {} : { duration }),
+				})
+				.where(eq(videos.id, payload.videoId as Video.VideoId));
+		}
+		if (isInstantFinishEnabledForOwner(ownerId)) {
+			await enqueueVerifiedReady(tx as never, {
+				hook: "progress",
+				videoId: payload.videoId,
+				ownerId,
+				sourceObjectKey: `${ownerId}/${payload.videoId}/result.mp4`,
+				desktopSource: false,
+				editRender: false,
+			});
+		}
+		return true;
+	});
 }
 
 function mapPhaseToDbPhase(
@@ -197,6 +281,18 @@ export async function POST(request: NextRequest) {
 					success: true,
 					status: "queued-for-verification",
 				});
+			}
+			if (!isEditUpload && currentVideo?.source.type === "webMP4") {
+				const retained = await retainGenericWebMp4Completion(
+					payload,
+					currentVideo.ownerId,
+				);
+				if (retained) {
+					await invalidateGoogleDriveStorageQuotaCache(
+						currentVideo.storageIntegrationId,
+					);
+				}
+				return NextResponse.json({ success: true });
 			}
 			const receipt = proof
 				? currentVideo && payload.metadata

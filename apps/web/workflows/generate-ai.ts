@@ -295,7 +295,6 @@ async function markError(
 		.where(
 			and(
 				eq(videos.id, videoId as Video.VideoId),
-				eq(videos.transcriptionStatus, "COMPLETE"),
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = ${status}`,
 			),

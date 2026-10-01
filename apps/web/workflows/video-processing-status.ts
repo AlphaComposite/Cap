@@ -23,6 +23,38 @@ function isPositiveNumber(value: number | null): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+async function readCompletedVideo(videoId: string): Promise<ProcessingStatus> {
+	const [video] = await db()
+		.select({
+			duration: videos.duration,
+			width: videos.width,
+			height: videos.height,
+			fps: videos.fps,
+		})
+		.from(videos)
+		.where(eq(videos.id, Video.VideoId.make(videoId)));
+	if (
+		!video ||
+		!isPositiveNumber(video.width) ||
+		!isPositiveNumber(video.height) ||
+		!isPositiveNumber(video.fps)
+	) {
+		return {
+			status: "error",
+			message: "Processing completed but video metadata is missing",
+		};
+	}
+	return {
+		status: "complete",
+		metadata: {
+			duration: isPositiveNumber(video.duration) ? video.duration : 0,
+			width: video.width,
+			height: video.height,
+			fps: video.fps,
+		},
+	};
+}
+
 export async function readVideoProcessingStatus(
 	videoId: string,
 ): Promise<ProcessingStatus> {
@@ -39,35 +71,7 @@ export async function readVideoProcessingStatus(
 		.where(eq(videoUploads.videoId, Video.VideoId.make(videoId)));
 
 	if (!upload || upload.phase === "complete") {
-		const [video] = await db()
-			.select({
-				duration: videos.duration,
-				width: videos.width,
-				height: videos.height,
-				fps: videos.fps,
-			})
-			.from(videos)
-			.where(eq(videos.id, Video.VideoId.make(videoId)));
-		if (
-			!video ||
-			!isPositiveNumber(video.width) ||
-			!isPositiveNumber(video.height) ||
-			!isPositiveNumber(video.fps)
-		) {
-			return {
-				status: "error",
-				message: "Processing completed but video metadata is missing",
-			};
-		}
-		return {
-			status: "complete",
-			metadata: {
-				duration: isPositiveNumber(video.duration) ? video.duration : 0,
-				width: video.width,
-				height: video.height,
-				fps: video.fps,
-			},
-		};
+		return readCompletedVideo(videoId);
 	}
 	if (upload.processingError || upload.phase === "error") {
 		return {
@@ -77,6 +81,9 @@ export async function readVideoProcessingStatus(
 				upload.processingMessage ||
 				"Video processing failed",
 		};
+	}
+	if (upload.phase === "processing" && upload.processingProgress === 100) {
+		return readCompletedVideo(videoId);
 	}
 	return {
 		status: "pending",
