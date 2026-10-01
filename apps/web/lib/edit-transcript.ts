@@ -658,6 +658,8 @@ export function getTranscriptSilenceGaps(
 	durationMs: number,
 	options: { thresholdMs?: number; padMs?: number } = {},
 ): TranscriptSilenceGap[] {
+	if (words.length === 0) return [];
+
 	const thresholdMs = Math.max(0, options.thresholdMs ?? 800);
 	const padMs = Math.max(0, options.padMs ?? 150);
 	const gaps: TranscriptSilenceGap[] = [];

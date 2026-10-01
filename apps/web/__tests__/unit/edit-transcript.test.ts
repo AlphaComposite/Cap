@@ -5,6 +5,7 @@ import {
 	editTranscriptWordsToCaptionVtt,
 	findActiveTranscriptWordIndex,
 	getDeletedTranscriptWordIds,
+	getTranscriptSilenceGaps,
 	groupEditTranscriptWords,
 	isFillerWord,
 	normalizeTranscriptSelection,
@@ -230,6 +231,18 @@ describe("edit transcript", () => {
 			skippedCount: 0,
 		});
 	});
+
+	it.each([500, 68_112, 1_972_967])(
+		"does not infer silence from an empty transcript lasting %i ms",
+		(durationMs) => {
+			expect(getTranscriptSilenceGaps([], durationMs)).toEqual([]);
+			expect(planSilenceCuts([], durationMs)).toEqual({
+				ranges: [],
+				gapCount: 0,
+				removedMs: 0,
+			});
+		},
+	);
 
 	it("plans extended silence cuts with natural edge padding", () => {
 		const transcript = createEditTranscript(

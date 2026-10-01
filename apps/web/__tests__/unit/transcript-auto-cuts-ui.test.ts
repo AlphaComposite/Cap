@@ -167,6 +167,39 @@ describe("TranscriptSidebar automatic cuts", () => {
 		vi.clearAllMocks();
 	});
 
+	it("keeps a ready no-speech recording available for manual editing", async () => {
+		const emptyTranscript = { ...transcript, durationMs: 68_112, words: [] };
+		mocks.getTranscript.mockResolvedValue({
+			status: "ready",
+			transcript: emptyTranscript,
+		});
+		const onInitializeAutoCuts = vi.fn();
+		await renderSidebar(
+			root,
+			createAutoCuts(),
+			vi.fn(),
+			onInitializeAutoCuts,
+			undefined,
+			{ current: document.createElement("video") },
+			[{ start: 0, end: 68.112 }],
+		);
+
+		expect(container.textContent).toContain("No speech detected");
+		expect(onInitializeAutoCuts).toHaveBeenCalledTimes(1);
+		expect(onInitializeAutoCuts).toHaveBeenCalledWith({
+			silence: expect.objectContaining({
+				ranges: [],
+				gapCount: 0,
+				removedMs: 0,
+			}),
+			fillers: expect.objectContaining({
+				ranges: [],
+				removedCount: 0,
+				skippedCount: 0,
+			}),
+		});
+	});
+
 	it("bounds the narrow-screen transcript viewport for internal scrolling", async () => {
 		await renderSidebar(root, createAutoCuts(), vi.fn());
 		expect(container.querySelector("aside")?.className).toContain(
