@@ -3,6 +3,24 @@
 These notes describe the maintained `downstream/main` fork, not an official
 CapSoftware release. Runtime configuration and credentials stay outside Git.
 
+## Deployment parity follow-up
+
+- Persist the tested `ORIGIN_MAX_KEEP_RANGES=1024` in the fork Compose default,
+  configurable through the existing environment setting. This admits the real
+  long-recording combined-cut plans that exceeded the native default of 512.
+  Direct native launches still need the explicit setting; native code is unchanged.
+- Version the exact Example production host-worker launcher and systemd unit under
+  [`deploy/example/`](deploy/example/README.md). They are site-specific examples,
+  contain no credential values, and use external credential files and the existing
+  revision worker. Review the documented paths before using them elsewhere.
+- The external-worker startup guard and its regression tests were already in
+  `d0708cd9c0` before the live web switch. No post-switch application hot patch is
+  introduced by this follow-up. Resolved production Compose overrides, credential
+  files, acceptance sessions and recordings remain outside Git.
+- Fast first-open remains an acceptance requirement: initialize historical
+  recordings and verify a fresh long upload before its first editor request.
+  Successful editing on an already-prepared source does not satisfy that gate.
+
 ## Revision-based web editing — owner-accepted release candidate
 
 ### Changes
