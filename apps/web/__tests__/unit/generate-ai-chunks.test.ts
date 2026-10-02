@@ -231,7 +231,23 @@ describe("multi-chunk chapter evidence", () => {
 		expect(result).toBeInstanceOf(Error);
 		expect((result as Error).message).toContain("usable chunk");
 		expect(generateTextMock).toHaveBeenCalledTimes(4);
-		expect(JSON.stringify(state.updates)).not.toContain("COMPLETE");
+		expect(state.video?.metadata).not.toHaveProperty(
+			"aiChapterBackfillGenerationId",
+		);
+		expect(state.updates).toHaveLength(2);
+		const terminalUpdate = state.updates.at(-1) as {
+			metadata: { strings: string[]; values: unknown[] };
+		};
+		expect(terminalUpdate.metadata.strings.join("")).toContain(
+			"'$.aiChapterBackfillGenerationId'",
+		);
+		expect(terminalUpdate.metadata.values.at(-1)).toEqual({
+			strings: [
+				"JSON_SET(COALESCE(",
+				", JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR')",
+			],
+			values: ["videos.metadata"],
+		});
 		expect(JSON.stringify(state.updates)).not.toContain("Fabricated title");
 	});
 });
