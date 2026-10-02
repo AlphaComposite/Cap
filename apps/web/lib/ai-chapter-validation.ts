@@ -260,56 +260,84 @@ export function validateGeneratedChapters(
 }
 
 /**
- * Only enforce a chapter floor when both the recording and the analysis have
- * strong structural evidence. This deliberately does not force chapters onto
- * short recordings or a long transcript that fit in one coherent section.
+ * Duration floors apply only when timestamped topic evidence warrants coverage.
+ * A coherent single topic stays exempt. Eligible cue starts cap placement; they
+ * are not themselves topics, and guidance maxima do not delete chapters.
  */
+export function getDurationChapterFloor(videoDuration: number): number {
+	if (!Number.isFinite(videoDuration) || videoDuration < 120) return 0;
+	if (videoDuration < 600) return 2;
+	if (videoDuration < 1800) return 4;
+	return 6;
+}
+
+const GENERIC_CHAPTER_TITLE =
+	/^(?:(?:full|complete|entire|overall)\s+)?(?:(?:video|recording|discussion|presentation|meeting|session)\s+)?(?:overview|summary|introduction(?: and background)?|intro|discussion|main topic|content)$/i;
+
+function timestampedTopicTitles(
+	sectionCandidates: readonly GeneratedChapter[],
+) {
+	const titles = new Set<string>();
+	const starts: number[] = [];
+	for (const candidate of sectionCandidates) {
+		if (
+			candidate.title.trim().length === 0 ||
+			!Number.isFinite(candidate.start) ||
+			candidate.start < 0
+		) {
+			continue;
+		}
+		titles.add(candidate.title.trim().replace(/\s+/g, " ").toLocaleLowerCase());
+		starts.push(candidate.start);
+	}
+	return { titles, starts };
+}
+
+function eligibleCueStarts(
+	transcriptSegments: readonly ChapterTranscriptEvidence[],
+): number[] {
+	return [
+		...new Set(
+			transcriptSegments
+				.filter(
+					(segment) =>
+						typeof segment.text === "string" &&
+						segment.text.trim().length > 0 &&
+						Number.isFinite(segment.start) &&
+						segment.start >= 0,
+				)
+				.map((segment) => segment.start),
+		),
+	];
+}
+
 export function getMinimumUsefulChapterCount(
 	videoDuration: number,
 	sectionCandidates: readonly GeneratedChapter[],
 	transcriptSegments: ChapterTranscriptEvidence[] = [],
 ): number {
-	if (videoDuration < 29 * 60) return 0;
+	const floor = getDurationChapterFloor(videoDuration);
+	if (floor === 0) return 0;
 
-	const distinctTitles = new Set(
-		sectionCandidates
-			.filter(
-				(candidate) =>
-					candidate.title.trim().length > 0 &&
-					Number.isFinite(candidate.start) &&
-					candidate.start >= 0,
-			)
-			.map((candidate) =>
-				candidate.title.trim().replace(/\s+/g, " ").toLocaleLowerCase(),
-			),
-	);
-
-	if (distinctTitles.size >= 2) return 2;
-	const meaningfulSegments = transcriptSegments.filter(
-		(segment) =>
-			typeof segment.text === "string" &&
-			segment.text.trim().length > 0 &&
-			Number.isFinite(segment.start) &&
-			segment.start >= 0,
-	);
+	const { titles, starts } = timestampedTopicTitles(sectionCandidates);
+	const cues = eligibleCueStarts(transcriptSegments);
+	const timestampedTopics = titles.size >= 2 && new Set(starts).size >= 2;
+	const onlyTitle = [...titles][0] ?? "";
+	const genericTitle = GENERIC_CHAPTER_TITLE.test(onlyTitle);
 	const hasWideTimelineEvidence =
-		meaningfulSegments.some(
-			(segment) => segment.start <= videoDuration * 0.25,
-		) &&
-		meaningfulSegments.some((segment) => segment.start >= videoDuration * 0.6);
-	const onlyTitle = [...distinctTitles][0] ?? "";
-	const genericTitle =
-		/^(?:(?:full|complete|entire|overall)\s+)?(?:(?:video|recording|discussion|presentation|meeting|session)\s+)?(?:overview|summary|introduction(?: and background)?|intro|discussion|main topic|content)$/i.test(
-			onlyTitle,
-		);
-	if (
-		(sectionCandidates.length === 0 ||
-			(sectionCandidates.length === 1 && genericTitle)) &&
-		(transcriptSegments.length === 0 || hasWideTimelineEvidence)
-	) {
-		return 2;
-	}
-	return 0;
+		cues.some((start) => start <= videoDuration * 0.25) &&
+		cues.some((start) => start >= videoDuration * 0.6);
+	const genericCollapse =
+		(sectionCandidates.length === 0 || (titles.size <= 1 && genericTitle)) &&
+		(transcriptSegments.length === 0 || hasWideTimelineEvidence);
+	if (!timestampedTopics && !genericCollapse) return 0;
+	if (transcriptSegments.length === 0) return floor;
+	const placeableCues = clampChapters(
+		cues.map((start) => ({ title: "Cue", start })),
+		videoDuration,
+	).length;
+	if (placeableCues === 0) return 0;
+	return Math.min(floor, placeableCues);
 }
 
 export function getRequiredChapterSynthesisCount(

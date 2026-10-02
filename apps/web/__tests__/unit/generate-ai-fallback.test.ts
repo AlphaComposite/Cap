@@ -168,6 +168,20 @@ describe("callAiApi provider fallback on invalid output", () => {
 		expect((error.cause as Error).name).toBe("InvalidAiOutputError");
 	});
 
+	it("falls through to the next provider when a title exceeds the display cap", async () => {
+		generateTextMock
+			.mockResolvedValueOnce({
+				text: JSON.stringify({ title: "x".repeat(96), chapters: [] }),
+			})
+			.mockResolvedValueOnce({ text: VALID_JSON });
+
+		await expect(callAiApi("prompt", parseAiResponse)).resolves.toEqual({
+			title: "Workflow review",
+			chapters: [],
+		});
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("falls through when valid JSON is missing required fields", async () => {
 		generateTextMock
 			.mockResolvedValueOnce({ text: '{"chapters":[]}' })
@@ -333,12 +347,12 @@ describe("useful chapter coverage", () => {
 	];
 
 	it("requires multiple chapters only for long transcripts with distinct section candidates", () => {
-		expect(getMinimumUsefulChapterCount(30 * 60, distinctSections)).toBe(2);
-		expect(getMinimumUsefulChapterCount(45 * 60, distinctSections)).toBe(2);
-		// Transcript duration is estimated from the final cue start, so allow the
-		// final cue of a 30-minute recording to begin up to a minute earlier.
-		expect(getMinimumUsefulChapterCount(29 * 60, distinctSections)).toBe(2);
-		expect(getMinimumUsefulChapterCount(28 * 60, distinctSections)).toBe(0);
+		expect(getMinimumUsefulChapterCount(30 * 60, distinctSections)).toBe(6);
+		expect(getMinimumUsefulChapterCount(45 * 60, distinctSections)).toBe(6);
+		expect(getMinimumUsefulChapterCount(29 * 60, distinctSections)).toBe(4);
+		expect(getMinimumUsefulChapterCount(10 * 60, distinctSections)).toBe(4);
+		expect(getMinimumUsefulChapterCount(2 * 60, distinctSections)).toBe(2);
+		expect(getMinimumUsefulChapterCount(119, distinctSections)).toBe(0);
 		expect(
 			getMinimumUsefulChapterCount(45 * 60, distinctSections.slice(0, 1)),
 		).toBe(0);
@@ -347,7 +361,7 @@ describe("useful chapter coverage", () => {
 	it("requires coverage when a long transcript only returns one generic chapter", () => {
 		expect(
 			getMinimumUsefulChapterCount(32 * 60, [{ title: "Overview", start: 0 }]),
-		).toBe(2);
+		).toBe(6);
 	});
 
 	it("recognizes an introduction and background singleton as generic coverage", () => {
@@ -355,7 +369,7 @@ describe("useful chapter coverage", () => {
 			getMinimumUsefulChapterCount(32 * 60, [
 				{ title: "Introduction and Background", start: 0 },
 			]),
-		).toBe(2);
+		).toBe(6);
 	});
 
 	it("does not complete a long transcript with only an injected opening chapter", () => {
@@ -401,7 +415,7 @@ describe("useful chapter coverage", () => {
 				{ title: "Onboarding", start: 0 },
 				{ title: "Billing changes", start: 20 },
 			]),
-		).toBe(2);
+		).toBe(6);
 		expect(
 			getRequiredChapterSynthesisCount(45 * 60, [
 				{ title: "Product walkthrough", start: 0 },
@@ -518,6 +532,18 @@ describe("map-reduce output parsers", () => {
 		expect(() => parseFinalTitle('{"title":""}')).toThrow();
 		expect(parseFinalTitle('{"title":"  Workflow review  "}')).toEqual({
 			title: "Workflow review",
+		});
+	});
+
+	it("parseFinalTitle rejects overlong titles instead of cutting them", () => {
+		expect(() =>
+			parseFinalTitle(JSON.stringify({ title: "x".repeat(61) })),
+		).toThrow("valid title");
+		expect(() =>
+			parseFinalTitle(JSON.stringify({ title: "x".repeat(256) })),
+		).toThrow("valid title");
+		expect(parseFinalTitle(JSON.stringify({ title: "x".repeat(60) }))).toEqual({
+			title: "x".repeat(60),
 		});
 	});
 });

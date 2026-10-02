@@ -383,6 +383,7 @@ function answerFor(prompt: string) {
 		return {
 			text: chunkAnalysis([
 				{ title: "SYNTHETIC later phase", start: 2041.866 },
+				{ title: "SYNTHETIC later follow-up", start: 2200.25 },
 			]),
 		};
 	}

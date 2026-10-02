@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@cap/database", () => ({
@@ -36,6 +37,7 @@ vi.mock("server-only", () => ({}));
 
 import { clampChapters } from "@/lib/ai-chapter-validation";
 import {
+	conciseGeneratedTitleGuidance,
 	getAiContentGuidelines,
 	getAiLanguageInstruction,
 	parseAiResponse,
@@ -79,6 +81,37 @@ describe("parseAiResponse", () => {
 				'{"title":"Generated Title","chapters":[{"title":"","start":0}]}',
 			),
 		).toThrow();
+	});
+
+	it("rejects overlong titles instead of cutting them", () => {
+		const displayTitle = "x".repeat(60);
+		const overDisplay = "x".repeat(61);
+		const overDatabase = "x".repeat(256);
+		expect(
+			parseAiResponse(
+				JSON.stringify({
+					title: displayTitle,
+					chapters: [{ title: "Opening", start: 0 }],
+				}),
+			).title,
+		).toBe(displayTitle);
+		expect(() =>
+			parseAiResponse(
+				JSON.stringify({
+					title: overDisplay,
+					chapters: [{ title: "Opening", start: 0 }],
+				}),
+			),
+		).toThrow("valid title");
+		expect(() =>
+			parseAiResponse(
+				JSON.stringify({
+					title: overDatabase,
+					chapters: [],
+				}),
+			),
+		).toThrow("valid title");
+		expect(overDisplay.slice(0, 60)).not.toBe(overDisplay);
 	});
 });
 
@@ -276,5 +309,36 @@ describe("getAiContentGuidelines", () => {
 		expect(
 			clampChapters([{ title: "After the video", start: 120 }], 120),
 		).toEqual([]);
+	});
+});
+
+describe("concise generated title prompts", () => {
+	const source = readFileSync(
+		new URL("../../workflows/generate-ai.ts", import.meta.url),
+		"utf8",
+	);
+	const singleStart = source.indexOf("async function generateSingleChunk");
+	const multiStart = source.indexOf("async function generateMultipleChunks");
+	const parserStart = source.indexOf("export function parseChunkAnalysis");
+	const single = source.slice(singleStart, multiStart);
+	const multi = source.slice(multiStart, parserStart);
+
+	it("guides every active title path, including summary preservation", () => {
+		expect(single).toContain("conciseGeneratedTitleGuidance()");
+		expect(multi).toContain("conciseGeneratedTitleGuidance()");
+		expect(multi).toContain("Do not return a summary");
+		const guidance = conciseGeneratedTitleGuidance();
+		expect(guidance).toContain("at most 60 characters");
+		expect(guidance).toContain("never exceed 255 characters");
+		expect(guidance).toContain("Do not pad the title");
+		expect(guidance).toContain("reflects the transcript");
+	});
+
+	it("keeps synthesis evidence-backed on both chunk paths", () => {
+		expect(single).toContain("do not invent topics");
+		expect(multi).toContain("do not invent topics");
+		expect(single).toContain("equal time slices");
+		expect(multi).toContain("equal time slices");
+		expect(source).toContain("Allowed chapter cue starts");
 	});
 });

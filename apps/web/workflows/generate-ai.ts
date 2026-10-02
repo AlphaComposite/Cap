@@ -93,6 +93,8 @@ const getAffectedRows = (result: unknown) => {
 
 const MAX_CHARS_PER_CHUNK = 24000;
 const LEGACY_AI_TITLE_FALLBACK = "Generated Title";
+export const GENERATED_TITLE_DATABASE_MAX_LENGTH = 255;
+export const GENERATED_TITLE_DISPLAY_MAX_LENGTH = 60;
 
 export const aiChapterSaveProbe: {
 	afterEarlyRead?: () => Promise<void>;
@@ -123,6 +125,25 @@ export function shouldReplaceVideoTitle({
 	if (sourceName?.trim() && title === sourceName.trim()) return true;
 	if (title === LEGACY_AI_TITLE_FALLBACK) return true;
 	return GENERATED_TITLE_PATTERN.test(title);
+}
+
+export function conciseGeneratedTitleGuidance(): string {
+	return `Write a concise title of at most ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters that reflects the transcript. Do not pad the title to reach a length, and never exceed ${GENERATED_TITLE_DATABASE_MAX_LENGTH} characters.`;
+}
+
+export function acceptGeneratedTitle(title: unknown): string {
+	if (typeof title !== "string") {
+		throw new Error("AI response did not contain a valid title");
+	}
+	const trimmed = title.trim();
+	if (
+		!trimmed ||
+		trimmed.length > GENERATED_TITLE_DATABASE_MAX_LENGTH ||
+		trimmed.length > GENERATED_TITLE_DISPLAY_MAX_LENGTH
+	) {
+		throw new Error("AI response did not contain a valid title");
+	}
+	return trimmed;
 }
 
 export async function generateAiWorkflow(payload: GenerateAiWorkflowPayload) {
@@ -938,6 +959,7 @@ ${contentGuidelines.chapters}
 
 Additional requirements:
 - ${languageInstruction}
+- ${conciseGeneratedTitleGuidance()}
 - Keep JSON property names exactly as shown.
 - Include specific names, numbers, decisions, and conclusions in chapter titles only when they help someone navigate the video.
 - IMPORTANT: All chapter "start" values MUST be between 0 and ${videoDuration} seconds. Use the timestamps from the transcript to determine accurate chapter start times.
@@ -961,7 +983,7 @@ ${transcriptWithTimestamps}`;
 
 Allowed chapter cue starts (seconds): ${chapterCueStarts.join(", ")}
 
-The first analysis returned only a generic opening chapter. Return at least ${minimumChapterCount} distinct, useful chapters that cover supported topic or phase changes across the full recording. Use only the allowed cue starts and do not invent topics.
+The first analysis did not meet evidence-backed coverage. Return at least ${minimumChapterCount} distinct, useful chapters that cover supported topic or phase changes across the full recording. Use only the allowed cue starts and do not invent topics, create equal time slices, or treat a title or cue position alone as a topic.
 
 Provide JSON in this format:
 {
@@ -1080,6 +1102,7 @@ ${chunk.text}`;
 			chapterCueStarts.length > 0
 				? `Allowed chapter cue starts (seconds): ${chapterCueStarts.join(", ")}`
 				: "No eligible transcript cue starts are available.";
+		const contentGuidelines = getAiContentGuidelines(videoDuration);
 		const chapterPrompt = `You are Cap AI, creating navigation chapters from timestamped section analyses for a ${videoDuration}-second video.
 
 Section analyses:
@@ -1087,13 +1110,14 @@ ${sectionDetails}
 
 ${chapterCueGuidance}
 
-The analyses contain distinct chapter candidates that indicate multiple meaningful sections. Return at least ${minimumChapterCount} distinct, useful chapters that cover the supported topic or phase changes across the video. Reuse accurate section timestamps and do not invent topics not present in the analyses.
+The analyses contain distinct chapter candidates that indicate multiple meaningful sections. Return at least ${minimumChapterCount} distinct, useful chapters that cover the supported topic or phase changes across the video. Reuse accurate section timestamps and do not invent topics not present in the analyses. Do not create equal time slices or treat a title or cue position alone as a topic.
 
 Provide JSON in this format:
 {
   "chapters": [{"title": "string (specific descriptive title)", "start": number (seconds from video start)}]
 }
 
+- ${contentGuidelines.chapters}
 - Include an opening chapter near 0 seconds.
 - All chapter starts must be between 0 and ${videoDuration} seconds.
 - Return ONLY valid JSON without markdown formatting or code blocks.`;
@@ -1127,6 +1151,7 @@ Provide JSON in the following format:
 
 Additional requirements:
 - ${languageInstruction}
+- ${conciseGeneratedTitleGuidance()}
 - Keep JSON property names exactly as shown.
 - Do not return a summary or any other public content.
 Return ONLY valid JSON without any markdown formatting or code blocks.`;
@@ -1202,7 +1227,7 @@ export function parseFinalTitle(content: string): { title: string } {
 	if (typeof parsed.title !== "string" || !parsed.title.trim()) {
 		throw new Error("AI response did not contain a valid title");
 	}
-	return { title: parsed.title.trim() };
+	return { title: acceptGeneratedTitle(parsed.title) };
 }
 
 export function parseChapterSynthesis(
@@ -1312,7 +1337,7 @@ export function parseAiResponse(content: string): AiResult {
 	});
 
 	return {
-		title: data.title.trim(),
+		title: acceptGeneratedTitle(data.title),
 		chapters,
 	};
 }

@@ -845,7 +845,7 @@ export const ShareHeader = ({
 										aria-hidden
 										className={clsx(
 											TITLE_TEXT_CLASS,
-											"invisible col-start-1 row-start-1 overflow-hidden whitespace-pre",
+											"invisible col-start-1 row-start-1 min-w-0 overflow-hidden whitespace-pre",
 										)}
 									>
 										{(isEditing ? editValue : displayTitle) ||
@@ -874,20 +874,22 @@ export const ShareHeader = ({
 										/>
 									) : (
 										<h1
+											title={displayTitle}
 											className={clsx(
 												TITLE_TEXT_CLASS,
-												"col-start-1 row-start-1 min-w-0 truncate",
+												"col-start-1 row-start-1 min-w-0 whitespace-normal break-words",
 											)}
 										>
 											{isOwner ? (
 												<button
 													ref={titleButtonRef}
 													type="button"
+													title={displayTitle}
 													// `leading-[inherit]`: the base layer gives every bare
 													// button a 1.5rem line height, which would leave the
 													// heading stubbier than the field and bump the text
 													// every time you clicked it.
-													className="block w-full cursor-text truncate text-left leading-[inherit] outline-none"
+													className="block w-full cursor-text whitespace-normal break-words text-left leading-[inherit] outline-none"
 													onClick={startEditing}
 												>
 													{displayTitle}
