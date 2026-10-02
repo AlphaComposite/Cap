@@ -598,6 +598,27 @@ function parseVttWithTimestamps(vttContent: string): VttSegment[] {
 	return segments;
 }
 
+// Parsed seconds must stay exact. A floored clock is below the section start and the strict validator rejects it.
+function formatAbsoluteCueStart(start: number): string {
+	return JSON.stringify(start);
+}
+
+function getSectionChapterGuidance(
+	sectionStart: number,
+	sectionEnd: number,
+): string {
+	const sectionDuration = sectionEnd - sectionStart;
+	const countGuidance =
+		sectionDuration < 120
+			? "Create one opening chapter at this section's first meaningful cue. Add another only for a clear topic or phase change inside this section."
+			: sectionDuration < 600
+				? "Create 2-4 chapters when this section supports meaningful topic or phase changes."
+				: sectionDuration < 1800
+					? "Create 4-8 chapters when this section supports meaningful topic or phase changes."
+					: "Create 6-12 chapters when this section supports meaningful topic or phase changes.";
+	return `${countGuidance} Open this section at its first meaningful cue, ${formatAbsoluteCueStart(sectionStart)} seconds. Select chapter starts only from the exact absolute seconds displayed on this section's cues. Cover only topic or phase changes inside this section, and end before ${formatAbsoluteCueStart(sectionEnd)} seconds.`;
+}
+
 function chunkTranscriptWithTimestamps(segments: VttSegment[]): {
 	text: string;
 	segments: VttSegment[];
@@ -613,7 +634,7 @@ function chunkTranscriptWithTimestamps(segments: VttSegment[]): {
 	let currentChunk: VttSegment[] = [];
 	let currentLength = 0;
 	const formatCue = (segment: VttSegment) =>
-		`[${Math.floor(segment.start / 60)}:${String(Math.floor(segment.start % 60)).padStart(2, "0")}] ${segment.text}`;
+		`[${formatAbsoluteCueStart(segment.start)}] ${segment.text}`;
 
 	for (const segment of segments) {
 		if (
@@ -824,15 +845,14 @@ async function generateMultipleChunks(
 		startTime: number;
 		endTime: number;
 	}[] = [];
-	const contentGuidelines = getAiContentGuidelines(videoDuration);
 
 	for (let i = 0; i < chunks.length; i++) {
 		const chunk = chunks[i];
 		if (!chunk) continue;
 
-		const chunkPrompt = `You are Cap AI, analyzing one section of a video for a later final summary. This is section ${i + 1} of ${chunks.length} from a video that is ${videoDuration} seconds long (${Math.floor(videoDuration / 60)}:${String(Math.floor(videoDuration % 60)).padStart(2, "0")} total). This section covers timestamp ${Math.floor(chunk.startTime / 60)}:${String(chunk.startTime % 60).padStart(2, "0")} to ${Math.floor(chunk.endTime / 60)}:${String(chunk.endTime % 60).padStart(2, "0")}.
+		const chunkPrompt = `You are Cap AI, analyzing one section of a video for a later final summary. This is section ${i + 1} of ${chunks.length} from a video that is ${videoDuration} seconds long (${Math.floor(videoDuration / 60)}:${String(Math.floor(videoDuration % 60)).padStart(2, "0")} total). This section covers absolute seconds ${formatAbsoluteCueStart(chunk.startTime)} to ${formatAbsoluteCueStart(chunk.endTime)}.
 
-Extract only the information needed to understand this section's contribution to the full video and provide JSON:
+Extract only the information needed to understand this section and provide JSON:
 {
   "summary": "string (concise factual notes about the subject, intention, essential explanation, outcomes, decisions, or next steps in this section)",
   "keyPoints": ["string (essential key point or takeaway, or an empty array when there is none)", ...],
@@ -842,7 +862,7 @@ Extract only the information needed to understand this section's contribution to
 - Preserve specific names, numbers, decisions, responsibilities, and conclusions that matter to the final summary.
 - Omit filler, greetings, reactions, apologies, repetition, incidental conversation, and minor UI actions.
 - Do not narrate the transcript chronologically or pad the section analysis.
-- ${contentGuidelines.chapters}
+- ${getSectionChapterGuidance(chunk.startTime, chunk.endTime)}
 - ${languageInstruction}
 - Keep JSON property names exactly as shown.
 IMPORTANT: All chapter "start" values MUST be at least ${chunk.startTime} and strictly less than ${chunk.endTime} seconds, and each start MUST align within one second of one of the timestamped transcript cues above. The total video is only ${videoDuration} seconds long.

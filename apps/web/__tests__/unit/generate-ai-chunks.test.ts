@@ -200,15 +200,15 @@ describe("multi-chunk chapter evidence", () => {
 		});
 		expect(generateTextMock).toHaveBeenCalledTimes(6);
 		expect(generateTextMock.mock.calls[0]?.[0].prompt).toContain(
-			"Transcript section:\n[0:00]",
+			"Transcript section:\n[0] ",
 		);
 		expect(generateTextMock.mock.calls[1]?.[0].prompt).toContain(
-			"Transcript section:\n[0:00]",
+			"Transcript section:\n[0] ",
 		);
 		expect(generateTextMock.mock.calls[2]?.[0].prompt).toContain(
-			"Transcript section:\n[0:30]",
+			"Transcript section:\n[30] ",
 		);
-		expect(generateTextMock.mock.calls[2]?.[0].prompt).toContain("[2:00]");
+		expect(generateTextMock.mock.calls[2]?.[0].prompt).toContain("[120] ");
 		expect(generateTextMock.mock.calls[3]?.[0].prompt).toContain(
 			"Allowed chapter cue starts (seconds): 0, 30, 120",
 		);
