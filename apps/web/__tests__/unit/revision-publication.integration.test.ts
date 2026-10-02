@@ -899,10 +899,17 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				return row?.metadata;
 			};
 			await publish(40);
-			await publish(39, [
+			const savedSourceChapters = [
 				{ title: "Start", start: 0 },
 				{ title: "Late", start: 20 },
-			]);
+			];
+			await database
+				.update(videos)
+				.set({
+					metadata: sql`JSON_SET(${videos.metadata}, '$.chapters', CAST(${JSON.stringify(savedSourceChapters)} AS JSON), '$.sourceChapters', CAST(${JSON.stringify(savedSourceChapters)} AS JSON))`,
+				})
+				.where(eq(videos.id, longVideoId as never));
+			await publish(39, savedSourceChapters);
 			const [fullRow] = await database
 				.select({ metadata: videos.metadata })
 				.from(videos)
@@ -968,10 +975,17 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 			return row?.metadata;
 		};
 		await publish(9);
-		await publish(8.5, [
+		const savedSourceChapters = [
 			{ title: "Start", start: 0 },
 			{ title: "Late", start: 6 },
-		]);
+		];
+		await database
+			.update(videos)
+			.set({
+				metadata: sql`JSON_SET(${videos.metadata}, '$.chapters', CAST(${JSON.stringify(savedSourceChapters)} AS JSON), '$.sourceChapters', CAST(${JSON.stringify(savedSourceChapters)} AS JSON))`,
+			})
+			.where(eq(videos.id, videoId as never));
+		await publish(8.5, savedSourceChapters);
 		const [fullRow] = await database
 			.select({ metadata: videos.metadata })
 			.from(videos)

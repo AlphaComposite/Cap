@@ -27,6 +27,41 @@ const schema = vi.hoisted(() => ({
 vi.mock("@cap/database/schema", () => schema);
 vi.mock("@cap/database", () => ({
 	db: () => ({
+		async transaction<T>(
+			run: (tx: {
+				select: () => {
+					from: () => {
+						where: () => { for: () => Promise<Record<string, unknown>[]> };
+					};
+				};
+				update: () => {
+					set: (values: unknown) => {
+						where: (condition: unknown) => Promise<{ affectedRows: number }[]>;
+					};
+				};
+			}) => Promise<T>,
+		): Promise<T> {
+			return run({
+				select: () => ({
+					from: () => ({
+						where: () => ({
+							for: async () => (state.video ? [state.video] : []),
+						}),
+					}),
+				}),
+				update: () => ({
+					set: (values: unknown) => {
+						state.updates.push(values);
+						return {
+							where: async (condition: unknown) => {
+								state.conditions.push(condition);
+								return [{ affectedRows: state.updateResults.shift() ?? 1 }];
+							},
+						};
+					},
+				}),
+			});
+		},
 		select: () => {
 			let joined = false;
 			const query = {
