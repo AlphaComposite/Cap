@@ -398,6 +398,74 @@ function answerFor(prompt: string) {
 	throw new Error(`unexpected SYNTHETIC prompt: ${prompt.slice(0, 80)}`);
 }
 
+describe("faithful sparse-topic synthesis", () => {
+	it.each([false, true])(
+		"accepts two supported topics after synthesis (multi=%s)",
+		async (multi) => {
+			const segments = [0, 400, 800, 1200, 1600, 2000, 2200].map(
+				(start, index) => ({
+					start,
+					end: index === 6 ? 2287 : start + 100,
+					text:
+						index === 0 && multi
+							? "Deployment planning ".repeat(1400)
+							: start < 1200
+								? "Continuing deployment planning"
+								: "Continuing deployment execution",
+				}),
+			);
+			const chapters = [
+				{ title: "Deployment planning", start: 0 },
+				{ title: "Deployment execution", start: 1200 },
+			];
+			generateTextMock.mockImplementation(
+				async ({ prompt }: { prompt: string }) => {
+					if (prompt.includes("creating navigation chapters"))
+						return { text: JSON.stringify({ chapters }) };
+					if (prompt.includes("creating a concise title"))
+						return {
+							text: JSON.stringify({
+								title: "Deployment planning and execution",
+							}),
+						};
+					if (prompt.includes("Transcript section:"))
+						return {
+							text: JSON.stringify({
+								summary: "One of two deployment phases",
+								keyPoints: [],
+								chapters: [prompt.includes("[0]") ? chapters[0] : chapters[1]],
+							}),
+						};
+					return {
+						text: JSON.stringify({
+							title: "Deployment planning and execution",
+							chapters,
+						}),
+					};
+				},
+			);
+			const timestamp = (seconds: number) =>
+				new Date(seconds * 1000).toISOString().slice(11, 23);
+			state.transcript =
+				"WEBVTT\n\n" +
+				segments
+					.map(
+						(s) => `${timestamp(s.start)} --> ${timestamp(s.end)}\n${s.text}\n`,
+					)
+					.join("\n");
+			const result = await runWorkflow();
+			expect(result.success).toBe(true);
+			expect(savedPayload()).toContain("Deployment planning");
+			expect(savedPayload()).toContain("Deployment execution");
+			expect(
+				generateTextMock.mock.calls.some(([args]) =>
+					args.prompt.includes("creating navigation chapters"),
+				),
+			).toBe(true);
+		},
+	);
+});
+
 describe("mocked chapter pipeline", () => {
 	it("saves a substantive title and exact-cue chapters without summary or edit writes", async () => {
 		setVideo({

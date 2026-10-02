@@ -27,22 +27,35 @@ const richCues = [
 ];
 
 describe("duration chapter floors", () => {
+	it("requests richer synthesis without forcing six topics from two phases", () => {
+		const topics = [
+			{ title: "Deployment planning", start: 0.15 },
+			{ title: "Deployment execution", start: 1200 },
+		];
+		expect(getMinimumUsefulChapterCount(ewDuration, topics, richCues)).toBe(2);
+		expect(getRequiredChapterSynthesisCount(ewDuration, topics, richCues)).toBe(
+			2,
+		);
+		expect(validateGeneratedChapters(topics, ewDuration, richCues)).toEqual(
+			topics,
+		);
+	});
 	it("reconnects lower bounds to the existing duration guidance", () => {
 		expect(getMinimumUsefulChapterCount(119, twoPhases)).toBe(0);
 		expect(getMinimumUsefulChapterCount(120, twoPhases)).toBe(2);
 		expect(getMinimumUsefulChapterCount(599, twoPhases)).toBe(2);
-		expect(getMinimumUsefulChapterCount(600, twoPhases)).toBe(4);
-		expect(getMinimumUsefulChapterCount(1799, twoPhases)).toBe(4);
-		expect(getMinimumUsefulChapterCount(1800, twoPhases)).toBe(6);
+		expect(getMinimumUsefulChapterCount(600, twoPhases)).toBe(2);
+		expect(getMinimumUsefulChapterCount(1799, twoPhases)).toBe(2);
+		expect(getMinimumUsefulChapterCount(1800, twoPhases)).toBe(2);
 	});
 
-	it("does not let three distinct 38-minute phases satisfy the old floor of 2", () => {
+	it("revisits sparse 38-minute phases while accepting fewer supported topics", () => {
 		expect(getMinimumUsefulChapterCount(ewDuration, ewPhases, richCues)).toBe(
-			6,
+			2,
 		);
 		expect(
 			getRequiredChapterSynthesisCount(ewDuration, ewPhases, richCues),
-		).toBe(6);
+		).toBe(2);
 	});
 
 	it("keeps a coherent single topic exempt on a long recording", () => {

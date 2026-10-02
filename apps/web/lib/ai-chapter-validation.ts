@@ -331,13 +331,14 @@ export function getMinimumUsefulChapterCount(
 		(sectionCandidates.length === 0 || (titles.size <= 1 && genericTitle)) &&
 		(transcriptSegments.length === 0 || hasWideTimelineEvidence);
 	if (!timestampedTopics && !genericCollapse) return 0;
-	if (transcriptSegments.length === 0) return floor;
+	if (transcriptSegments.length === 0) return Math.min(2, floor);
 	const placeableCues = clampChapters(
 		cues.map((start) => ({ title: "Cue", start })),
 		videoDuration,
 	).length;
 	if (placeableCues === 0) return 0;
-	return Math.min(floor, placeableCues);
+	// Duration is a coverage target, not proof that six topics exist.
+	return Math.min(2, floor, placeableCues);
 }
 
 export function getRequiredChapterSynthesisCount(
@@ -351,8 +352,23 @@ export function getRequiredChapterSynthesisCount(
 		transcriptSegments,
 	);
 	if (minimumChapterCount === 0 || sectionCandidates.length === 0) return 0;
-	return clampChapters(sectionCandidates, videoDuration).length <
-		minimumChapterCount
+	const coverageTarget =
+		transcriptSegments.length === 0
+			? getDurationChapterFloor(videoDuration)
+			: Math.min(
+					getDurationChapterFloor(videoDuration),
+					clampChapters(
+						eligibleCueStarts(transcriptSegments).map((start) => ({
+							title: "Cue",
+							start,
+						})),
+						videoDuration,
+					).length,
+				);
+	// Revisit sparse output even when it passed the smaller evidence-safe floor.
+	// The synthesis prompt carries the conditional duration range; its parser must
+	// still accept a faithful smaller result rather than require invented topics.
+	return clampChapters(sectionCandidates, videoDuration).length < coverageTarget
 		? minimumChapterCount
 		: 0;
 }

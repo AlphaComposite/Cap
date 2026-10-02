@@ -991,6 +991,7 @@ Provide JSON in this format:
 }
 
 - ${contentGuidelines.chapters}
+- The duration range is conditional guidance, not a topic quota. Return fewer chapters when the transcript supports fewer meaningful transitions; never split a coherent topic to meet the range.
 - Return ONLY valid JSON without markdown.
 Transcript:
 ${transcriptWithTimestamps}`;
@@ -1118,6 +1119,7 @@ Provide JSON in this format:
 }
 
 - ${contentGuidelines.chapters}
+- The duration range is conditional guidance, not a topic quota. Return fewer chapters when the analyses support fewer meaningful transitions; never split a coherent topic to meet the range.
 - Include an opening chapter near 0 seconds.
 - All chapter starts must be between 0 and ${videoDuration} seconds.
 - Return ONLY valid JSON without markdown formatting or code blocks.`;

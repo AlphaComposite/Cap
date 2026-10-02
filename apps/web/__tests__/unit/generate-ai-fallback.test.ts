@@ -347,10 +347,10 @@ describe("useful chapter coverage", () => {
 	];
 
 	it("requires multiple chapters only for long transcripts with distinct section candidates", () => {
-		expect(getMinimumUsefulChapterCount(30 * 60, distinctSections)).toBe(6);
-		expect(getMinimumUsefulChapterCount(45 * 60, distinctSections)).toBe(6);
-		expect(getMinimumUsefulChapterCount(29 * 60, distinctSections)).toBe(4);
-		expect(getMinimumUsefulChapterCount(10 * 60, distinctSections)).toBe(4);
+		expect(getMinimumUsefulChapterCount(30 * 60, distinctSections)).toBe(2);
+		expect(getMinimumUsefulChapterCount(45 * 60, distinctSections)).toBe(2);
+		expect(getMinimumUsefulChapterCount(29 * 60, distinctSections)).toBe(2);
+		expect(getMinimumUsefulChapterCount(10 * 60, distinctSections)).toBe(2);
 		expect(getMinimumUsefulChapterCount(2 * 60, distinctSections)).toBe(2);
 		expect(getMinimumUsefulChapterCount(119, distinctSections)).toBe(0);
 		expect(
@@ -361,7 +361,7 @@ describe("useful chapter coverage", () => {
 	it("requires coverage when a long transcript only returns one generic chapter", () => {
 		expect(
 			getMinimumUsefulChapterCount(32 * 60, [{ title: "Overview", start: 0 }]),
-		).toBe(6);
+		).toBe(2);
 	});
 
 	it("recognizes an introduction and background singleton as generic coverage", () => {
@@ -369,7 +369,7 @@ describe("useful chapter coverage", () => {
 			getMinimumUsefulChapterCount(32 * 60, [
 				{ title: "Introduction and Background", start: 0 },
 			]),
-		).toBe(6);
+		).toBe(2);
 	});
 
 	it("does not complete a long transcript with only an injected opening chapter", () => {
@@ -415,7 +415,7 @@ describe("useful chapter coverage", () => {
 				{ title: "Onboarding", start: 0 },
 				{ title: "Billing changes", start: 20 },
 			]),
-		).toBe(6);
+		).toBe(2);
 		expect(
 			getRequiredChapterSynthesisCount(45 * 60, [
 				{ title: "Product walkthrough", start: 0 },
