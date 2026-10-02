@@ -792,11 +792,14 @@ describe("AI generation save chapter clock", () => {
 		expect(state.publications[0]?.currentRevisionId).toBe("racer-revision");
 	});
 
-	it("keeps revision provenance when a flag-off rewrite does not change the chapter clock", async () => {
+	it("clears stale source and tag when a flag-off rewrite keeps starts but changes titles", async () => {
 		process.env.CAP_INSTANT_FINISH_OWNERS = "";
 		seed({
-			chapters: GENERATED.map((chapter) => ({ ...chapter })),
-			sourceChapters: [{ title: "Kept source", start: 1 }],
+			chapters: GENERATED.map((chapter) => ({
+				title: `Old ${chapter.title}`,
+				start: chapter.start,
+			})),
+			sourceChapters: [{ title: "Old canonical", start: 7 }],
 			chaptersRevisionId: REVISION_ID,
 			aiChapterBackfillGenerationId: "generation-1",
 		});
@@ -811,7 +814,36 @@ describe("AI generation save chapter clock", () => {
 
 		expect(state.videos[0]?.metadata).toMatchObject({
 			chapters: GENERATED,
-			sourceChapters: [{ title: "Kept source", start: 1 }],
+			summary: "Saved summary",
+			aiGenerationStatus: "COMPLETE",
+		});
+		expect(state.videos[0]?.metadata.sourceChapters).toBeUndefined();
+		expect(state.videos[0]?.metadata.chaptersRevisionId).toBeUndefined();
+		expect(
+			state.videos[0]?.metadata.aiChapterBackfillGenerationId,
+		).toBeUndefined();
+	});
+
+	it("keeps revision provenance when a flag-off rewrite matches complete chapter content and source", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNERS = "";
+		seed({
+			chapters: GENERATED.map((chapter) => ({ ...chapter })),
+			sourceChapters: GENERATED.map((chapter) => ({ ...chapter })),
+			chaptersRevisionId: REVISION_ID,
+			aiChapterBackfillGenerationId: "generation-1",
+		});
+		const video = state.videos[0];
+		if (video) video.duration = 120;
+
+		await generateAiWorkflow({
+			videoId: "video-1",
+			userId: "owner-1",
+			generationId: "generation-1",
+		});
+
+		expect(state.videos[0]?.metadata).toMatchObject({
+			chapters: GENERATED,
+			sourceChapters: GENERATED,
 			chaptersRevisionId: REVISION_ID,
 			summary: "Saved summary",
 			aiGenerationStatus: "COMPLETE",
@@ -819,6 +851,36 @@ describe("AI generation save chapter clock", () => {
 		expect(
 			state.videos[0]?.metadata.aiChapterBackfillGenerationId,
 		).toBeUndefined();
+	});
+
+	it("clears stale source when CURRENT is unreadable and only chapter starts match", async () => {
+		seed({
+			chapters: [{ title: "Old", start: 0 }],
+			sourceChapters: [{ title: "Old canonical", start: 7 }],
+			chaptersRevisionId: REVISION_ID,
+			aiChapterBackfillGenerationId: "generation-1",
+		});
+		const intent = state.intents[0];
+		if (intent) intent.canonicalSpec = { not: "a spec" };
+		generateTextMock.mockResolvedValue({
+			text: JSON.stringify({
+				title: "Generated title",
+				chapters: [{ title: "New", start: 0 }],
+			}),
+		});
+
+		await generateAiWorkflow({
+			videoId: "video-1",
+			userId: "owner-1",
+			generationId: "generation-1",
+		});
+
+		expect(state.videos[0]?.metadata.chapters).toEqual([
+			{ title: "New", start: 0 },
+		]);
+		expect(state.videos[0]?.metadata.sourceChapters).toBeUndefined();
+		expect(state.videos[0]?.metadata.chaptersRevisionId).toBeUndefined();
+		expect(state.videos[0]?.metadata.summary).toBe("Saved summary");
 	});
 
 	it("does not clear revision provenance when a manual edit wins the flag-off commit", async () => {

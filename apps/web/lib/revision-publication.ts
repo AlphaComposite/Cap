@@ -1973,6 +1973,22 @@ export async function restoreRetainedIdentity(
 	});
 }
 
+function sameChapterPayload(
+	left: readonly { title: string; start: number }[] | null | undefined,
+	right: readonly { title: string; start: number }[] | null | undefined,
+) {
+	const preparedLeft = left ?? [];
+	const preparedRight = right ?? [];
+	return (
+		preparedLeft.length === preparedRight.length &&
+		preparedLeft.every(
+			(chapter, index) =>
+				chapter.title === preparedRight[index]?.title &&
+				chapter.start === preparedRight[index]?.start,
+		)
+	);
+}
+
 export async function flipCurrent(
 	tx: PublicationTx,
 	input: PublishRevisionInput,
@@ -2039,6 +2055,33 @@ export async function flipCurrent(
 			allocated.revisionId,
 		);
 	}
+	const [videoRow] = await tx
+		.select({ metadata: videos.metadata })
+		.from(videos)
+		.where(eq(videos.id, videoId(input.videoId)));
+	if (input.chapters !== undefined || input.sourceChapters != null) {
+		const previous = await readPreviousSpec(tx, input, spec);
+		const freshChapters = deriveRevisionChapterState({
+			storedChapters: videoRow?.metadata?.chapters ?? [],
+			storedSourceChapters: videoRow?.metadata?.sourceChapters ?? null,
+			previousSpec: previous.previousSpec,
+			nextSpec: spec,
+		});
+		if (
+			!sameChapterPayload(freshChapters.chapters, prepared.chapters) ||
+			!sameChapterPayload(
+				freshChapters.sourceChapters,
+				prepared.sourceChapters ?? prepared.chapters,
+			)
+		) {
+			throw new RevisionPublicationError(
+				409,
+				"Prepared chapters are stale",
+				publication.generation,
+				allocated.revisionId,
+			);
+		}
+	}
 	const stamped = await tx
 		.select({ id: comments.id, timestamp: comments.timestamp })
 		.from(comments)
@@ -2055,10 +2098,6 @@ export async function flipCurrent(
 			.set({ timestamp: nextTimestamp })
 			.where(eq(comments.id, comment.id));
 	}
-	const [videoRow] = await tx
-		.select({ metadata: videos.metadata })
-		.from(videos)
-		.where(eq(videos.id, videoId(input.videoId)));
 	const snapshot = finishMetadataSnapshot({
 		captionsVtt: prepared.captionsVtt,
 		chapters: prepared.chapters,

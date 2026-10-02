@@ -93,6 +93,10 @@ const getAffectedRows = (result: unknown) => {
 
 const MAX_CHARS_PER_CHUNK = 24000;
 const LEGACY_AI_TITLE_FALLBACK = "Generated Title";
+
+export const aiChapterSaveProbe: {
+	afterEarlyRead?: () => Promise<void>;
+} = {};
 const GENERATED_TITLE_PATTERN =
 	/^(Cap (Recording|Upload) - .+|Cap \d{4}-\d{2}-\d{2} at \d{2}[.:]\d{2}[.:]\d{2}|Untitled|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|.+ \((Display|Window|Area|Camera)\) \d{4}-\d{2}-\d{2} \d{2}:\d{2} [AP]M)$/;
 
@@ -508,17 +512,42 @@ async function committedCurrentSpec(
 	return spec ? { revisionId: row.revisionId, spec } : null;
 }
 
-function chapterClock(chapters: { start: number }[] | null | undefined) {
-	return JSON.stringify((chapters ?? []).map((chapter) => chapter.start));
+function sameChapterContent(
+	left: { title: string; start: number }[] | null | undefined,
+	right: { title: string; start: number }[] | null | undefined,
+) {
+	const normalize = (
+		chapters: { title: string; start: number }[] | null | undefined,
+	) =>
+		(chapters ?? []).map((chapter) => ({
+			title: chapter.title,
+			start: chapter.start,
+		}));
+	return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
-function revisionProvenanceChangedClock(
+function provenanceDescribesIncoming(
 	metadata: VideoMetadata,
-	chapters: { start: number }[],
+	chapters: { title: string; start: number }[],
+) {
+	const tag = metadata.chaptersRevisionId;
+	const source = metadata.sourceChapters;
+	if (typeof tag !== "string" || tag.length === 0 || !Array.isArray(source)) {
+		return false;
+	}
+	return (
+		sameChapterContent(metadata.chapters, chapters) &&
+		sameChapterContent(source, chapters)
+	);
+}
+
+function shouldClearInconsistentProvenance(
+	metadata: VideoMetadata,
+	chapters: { title: string; start: number }[],
 ) {
 	const tagged =
 		metadata.chaptersRevisionId != null || metadata.sourceChapters != null;
-	return tagged && chapterClock(metadata.chapters) !== chapterClock(chapters);
+	return tagged && !provenanceDescribesIncoming(metadata, chapters);
 }
 
 function buildGeneratedMetadataUpdate(
@@ -567,6 +596,9 @@ async function saveResults(
 	const { video, metadata } = videoData;
 	const generatedTitle = result.title?.trim();
 	const currentVideo = await getCurrentVideo(videoId);
+	if (aiChapterSaveProbe.afterEarlyRead) {
+		await aiChapterSaveProbe.afterEarlyRead();
+	}
 	const currentMetadata = currentVideo
 		? (currentVideo.metadata as VideoMetadata) || {}
 		: metadata;
@@ -601,7 +633,7 @@ async function saveResults(
 						: null;
 				const clearProvenance =
 					!chapterClock &&
-					revisionProvenanceChangedClock(
+					shouldClearInconsistentProvenance(
 						(locked?.metadata as VideoMetadata | null) ?? {},
 						result.chapters ?? [],
 					);
@@ -618,21 +650,28 @@ async function saveResults(
 					})
 					.where(generationClaim(videoId, generationId));
 			})
-		: await db()
-				.update(videos)
-				.set({
-					metadata: buildGeneratedMetadataUpdate(
-						baseMetadata,
-						result,
-						generationId,
-						null,
-						revisionProvenanceChangedClock(
-							currentMetadata,
-							result.chapters ?? [],
+		: await db().transaction(async (tx) => {
+				const [locked] = await tx
+					.select()
+					.from(videos)
+					.where(eq(videos.id, videoId as Video.VideoId))
+					.for("update");
+				return tx
+					.update(videos)
+					.set({
+						metadata: buildGeneratedMetadataUpdate(
+							baseMetadata,
+							result,
+							generationId,
+							null,
+							shouldClearInconsistentProvenance(
+								(locked?.metadata as VideoMetadata | null) ?? {},
+								result.chapters ?? [],
+							),
 						),
-					),
-				})
-				.where(generationClaim(videoId, generationId));
+					})
+					.where(generationClaim(videoId, generationId));
+			});
 
 	if (getAffectedRows(metadataResult) === 0) return false;
 
