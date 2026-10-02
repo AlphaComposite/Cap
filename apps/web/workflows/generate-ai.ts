@@ -1,5 +1,11 @@
 import { db } from "@cap/database";
-import { organizations, videos } from "@cap/database/schema";
+import {
+	editIntent,
+	editRevision,
+	organizations,
+	videoPublication,
+	videos,
+} from "@cap/database/schema";
 import type { VideoMetadata } from "@cap/database/types";
 import { Storage } from "@cap/web-backend/src/Storage/index";
 import {
@@ -26,8 +32,15 @@ import {
 	validateChapterStartsInSection,
 	validateGeneratedChapters,
 } from "@/lib/ai-chapter-validation";
-import { setGeneratedAiContent } from "@/lib/ai-content-metadata";
+import {
+	setGeneratedAiContent,
+	setGeneratedChaptersClearingProvenance,
+	setGeneratedRevisionChapters,
+} from "@/lib/ai-content-metadata";
+import { mapGeneratedSourceChapters } from "@/lib/ai-generated-chapter-clock";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
+import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
 
@@ -456,10 +469,68 @@ function restoreMatchingBackfillState(
 	return sql`IF(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiChapterBackfillGenerationId')) = ${generationId}, JSON_REMOVE(JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'COMPLETE'), '$.aiChapterBackfillGenerationId', '$.aiGenerationId'), ${metadata})`;
 }
 
+function generationClaim(videoId: string, generationId: string) {
+	return and(
+		eq(videos.id, videoId as Video.VideoId),
+		eq(videos.transcriptionStatus, "COMPLETE"),
+		sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = 'PROCESSING'`,
+		sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
+	);
+}
+
+function readableCurrentSpec(value: unknown) {
+	try {
+		return parseRenderedCanonicalSpec(value);
+	} catch (error) {
+		if (!(error instanceof Error)) throw error;
+		return null;
+	}
+}
+
+async function committedCurrentSpec(
+	tx: Parameters<Parameters<ReturnType<typeof db>["transaction"]>[0]>[0],
+	videoId: string,
+) {
+	const [row] = await tx
+		.select({
+			revisionId: editRevision.revisionId,
+			canonicalSpec: editIntent.canonicalSpec,
+		})
+		.from(videoPublication)
+		.innerJoin(
+			editRevision,
+			eq(editRevision.revisionId, videoPublication.currentRevisionId),
+		)
+		.innerJoin(editIntent, eq(editIntent.intentId, editRevision.intentId))
+		.where(eq(videoPublication.videoId, videoId as Video.VideoId));
+	if (!row?.revisionId || row.canonicalSpec == null) return null;
+	const spec = readableCurrentSpec(row.canonicalSpec);
+	return spec ? { revisionId: row.revisionId, spec } : null;
+}
+
+function chapterClock(chapters: { start: number }[] | null | undefined) {
+	return JSON.stringify((chapters ?? []).map((chapter) => chapter.start));
+}
+
+function revisionProvenanceChangedClock(
+	metadata: VideoMetadata,
+	chapters: { start: number }[],
+) {
+	const tagged =
+		metadata.chaptersRevisionId != null || metadata.sourceChapters != null;
+	return tagged && chapterClock(metadata.chapters) !== chapterClock(chapters);
+}
+
 function buildGeneratedMetadataUpdate(
 	metadata: SQL,
 	result: AiResult,
 	generationId: string,
+	chapterClock?: {
+		chapters: { title: string; start: number }[];
+		sourceChapters: { title: string; start: number }[];
+		chaptersRevisionId: string;
+	} | null,
+	clearInconsistentProvenance = false,
 ): SQL {
 	if (!Array.isArray(result.chapters)) {
 		throw new Error("Cannot mark AI generation complete without chapters");
@@ -470,11 +541,14 @@ function buildGeneratedMetadataUpdate(
 		metadataUpdate = sql`JSON_SET(${metadataUpdate}, '$.aiTitle', ${generatedTitle})`;
 	}
 	if (result.chapters) {
-		metadataUpdate = setGeneratedAiContent(
-			metadataUpdate,
-			"chapters",
-			result.chapters,
-		);
+		metadataUpdate = chapterClock
+			? setGeneratedRevisionChapters(metadataUpdate, chapterClock)
+			: clearInconsistentProvenance
+				? setGeneratedChaptersClearingProvenance(
+						metadataUpdate,
+						result.chapters,
+					)
+				: setGeneratedAiContent(metadataUpdate, "chapters", result.chapters);
 	}
 	return clearMatchingBackfillMarker(
 		sql`JSON_SET(${metadataUpdate}, '$.aiGenerationStatus', 'COMPLETE')`,
@@ -497,24 +571,68 @@ async function saveResults(
 		? (currentVideo.metadata as VideoMetadata) || {}
 		: metadata;
 	const currentTitle = currentVideo?.name ?? video.name;
-
-	const metadataUpdate = buildGeneratedMetadataUpdate(
-		sql`COALESCE(${videos.metadata}, JSON_OBJECT())`,
-		result,
-		generationId,
-	);
-
-	const metadataResult = await db()
-		.update(videos)
-		.set({ metadata: metadataUpdate })
-		.where(
-			and(
-				eq(videos.id, videoId as Video.VideoId),
-				eq(videos.transcriptionStatus, "COMPLETE"),
-				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = 'PROCESSING'`,
-				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) = ${generationId}`,
-			),
-		);
+	const ownerId = currentVideo?.ownerId ?? video.ownerId;
+	const baseMetadata = sql`COALESCE(${videos.metadata}, JSON_OBJECT())`;
+	// videos before video_publication, same order as allocateRevision.
+	const metadataResult = isInstantFinishEnabledForOwner(ownerId)
+		? await db().transaction(async (tx) => {
+				const [locked] = await tx
+					.select()
+					.from(videos)
+					.where(eq(videos.id, videoId as Video.VideoId))
+					.for("update");
+				const [publication] = await tx
+					.select({
+						currentRevisionId: videoPublication.currentRevisionId,
+					})
+					.from(videoPublication)
+					.where(eq(videoPublication.videoId, videoId as Video.VideoId))
+					.for("update");
+				const current = publication?.currentRevisionId
+					? await committedCurrentSpec(tx, videoId)
+					: null;
+				const chapterClock =
+					current && Array.isArray(result.chapters)
+						? mapGeneratedSourceChapters({
+								generatedChapters: result.chapters,
+								spec: current.spec,
+								revisionId: current.revisionId,
+							})
+						: null;
+				const clearProvenance =
+					!chapterClock &&
+					revisionProvenanceChangedClock(
+						(locked?.metadata as VideoMetadata | null) ?? {},
+						result.chapters ?? [],
+					);
+				return tx
+					.update(videos)
+					.set({
+						metadata: buildGeneratedMetadataUpdate(
+							baseMetadata,
+							result,
+							generationId,
+							chapterClock,
+							clearProvenance,
+						),
+					})
+					.where(generationClaim(videoId, generationId));
+			})
+		: await db()
+				.update(videos)
+				.set({
+					metadata: buildGeneratedMetadataUpdate(
+						baseMetadata,
+						result,
+						generationId,
+						null,
+						revisionProvenanceChangedClock(
+							currentMetadata,
+							result.chapters ?? [],
+						),
+					),
+				})
+				.where(generationClaim(videoId, generationId));
 
 	if (getAffectedRows(metadataResult) === 0) return false;
 
