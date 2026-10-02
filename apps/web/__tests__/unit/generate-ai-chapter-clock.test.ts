@@ -338,7 +338,7 @@ function applyMetadata(row: VideoRow, expression: unknown) {
 	row.metadata = parsed.value as Metadata;
 }
 
-const database = {
+const databaseOperations = {
 	select(fields?: Record<string, unknown>) {
 		let table: unknown;
 		let joinedOrganization = false;
@@ -450,8 +450,12 @@ const database = {
 			},
 		};
 	},
-	async transaction(run: (tx: typeof database) => Promise<unknown>) {
-		const result = await run(database);
+};
+
+const database = {
+	...databaseOperations,
+	async transaction(run: (tx: typeof databaseOperations) => Promise<unknown>) {
+		const result = await run(databaseOperations);
 		const deferred = state.deferUntilCommit.splice(0);
 		for (const change of deferred) change();
 		return result;
