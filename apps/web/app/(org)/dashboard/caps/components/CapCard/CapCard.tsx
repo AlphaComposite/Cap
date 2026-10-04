@@ -41,6 +41,7 @@ import { toast } from "sonner";
 import { ConfirmationDialog } from "@/app/(org)/dashboard/_components/ConfirmationDialog";
 import { useDashboardContext } from "@/app/(org)/dashboard/Contexts";
 import { useUploadProgress } from "@/app/s/[videoId]/_components/ProgressCircle";
+import { EditReadinessStatus } from "@/app/s/[videoId]/edit/EditReadinessGate";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import {
 	type ImageLoadingStatus,
@@ -59,6 +60,7 @@ import {
 	videoPreviewImageUrl,
 } from "@/lib/video-share-clipboard";
 import { usePublicEnv } from "@/utils/public-env";
+import { useEditReadiness } from "../../../../../../hooks/use-edit-readiness";
 import { MoveItemsDialog } from "../MoveItemsDialog";
 import { PasswordDialog } from "../PasswordDialog";
 import { SettingsDialog } from "../SettingsDialog";
@@ -271,6 +273,11 @@ export const CapCard = ({
 		cap.id,
 		cap.hasActiveUpload || false,
 	);
+	const editReadiness = useEditReadiness(
+		cap.id,
+		isOwner && !sharedCapCard && cap.isScreenshot !== true,
+		JSON.stringify([cap.hasActiveUpload, uploadProgress?.status]),
+	);
 	const hasRawFallback =
 		uploadProgress?.status === "error" && uploadProgress.hasRawFallback;
 	const hasVisibleUploadProgress =
@@ -409,7 +416,7 @@ export const CapCard = ({
 		isOwner &&
 		!sharedCapCard &&
 		cap.isScreenshot !== true &&
-		!cap.hasActiveUpload &&
+		editReadiness.readiness?.playbackAdmission === true &&
 		(cap.source?.type === "desktopMP4" || cap.source?.type === "webMP4") &&
 		Boolean(cap.duration && cap.duration > 0);
 	const handleEditVideo = () => {
@@ -648,7 +655,11 @@ export const CapCard = ({
 											className="flex gap-2 items-center rounded-lg"
 										>
 											<FontAwesomeIcon className="size-3" icon={faScissors} />
-											<p className="text-sm text-gray-12">Edit video</p>
+											<p className="text-sm text-gray-12">
+												{editReadiness.readiness?.transcriptUsable
+													? "Edit video"
+													: "Edit timeline"}
+											</p>
 										</DropdownMenuItem>
 									)}
 									<DropdownMenuItem
@@ -895,6 +906,9 @@ export const CapCard = ({
 						setIsSharingDialogOpen={setIsSharingDialogOpen}
 					/>
 					{children}
+					{isOwner && !sharedCapCard && cap.isScreenshot !== true && (
+						<EditReadinessStatus state={editReadiness} />
+					)}
 					<CapCardAnalytics
 						capId={cap.id}
 						displayCount={analytics}

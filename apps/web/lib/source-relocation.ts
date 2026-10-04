@@ -491,26 +491,120 @@ export async function relocateOwnerVideo(input: {
 	}
 	const moved: string[] = [];
 	if (!input.reconcileOnly) {
+		const assertCurrentOpen = async (open: RelocationRow[]) => {
+			const openOriginals: string[] = [];
+			const freshOriginals: string[] = [];
+			for (const item of exposed) {
+				const matching = open.filter((row) => row.oldKey === item.key);
+				if (matching.length > 1) {
+					throw new Error(`ambiguous open relocation for ${item.key}`);
+				}
+				for (const row of matching) {
+					const destinationOk =
+						row.newKey.startsWith(`private/source/${input.videoId}/`) ||
+						row.newKey.startsWith(`private/rollback/${input.videoId}/`);
+					if (
+						row.videoId !== input.videoId ||
+						!row.oldKey.startsWith(prefix) ||
+						!destinationOk
+					) {
+						throw new Error(`open relocation video mismatch for ${item.key}`);
+					}
+				}
+				const row = matching[0];
+				const exists = await input.store.exists(item.key);
+				if (
+					row &&
+					(exists || row.state === "DELETED") &&
+					row.newKey.startsWith(`private/source/${input.videoId}/`)
+				) {
+					openOriginals.push(item.key);
+				} else if (!row && exists && item.kind === "original") {
+					freshOriginals.push(item.key);
+				}
+			}
+			if (
+				openOriginals.length > 1 ||
+				(openOriginals.length === 1 && freshOriginals.length > 0)
+			) {
+				throw new Error("multiple original relocations would change liveKey");
+			}
+		};
+		const rejectUnverifiedDeleted = async (open: RelocationRow[]) => {
+			for (const row of open) {
+				if (row.state !== "DELETED") continue;
+				if (!exposed.some((item) => item.key === row.oldKey)) continue;
+				const verified = await input.store.sha256(row.newKey);
+				if (verified !== row.sha256) {
+					throw new Error(
+						"refusing to purge deleted relocation without a verified copy",
+					);
+				}
+			}
+		};
+		const pointerKind = async (row: RelocationRow): Promise<RelocationKind> => {
+			const currentLive = await input.journal.getLiveKey(input.videoId);
+			if (currentLive?.startsWith("private/source/") !== true)
+				return kindFor(row);
+			const owner = (await input.journal.listForVideo(input.videoId)).find(
+				(item) => item.state === "PURGED" && item.newKey === currentLive,
+			);
+			if (owner && row.id !== owner.id) return "rollback";
+			return kindFor(row);
+		};
+		const initialOpen = await input.journal.listOpen();
+		await assertCurrentOpen(initialOpen);
+		await rejectUnverifiedDeleted(initialOpen);
 		for (const item of exposed) {
-			if (!(await input.store.exists(item.key))) continue;
-			const open = await input.journal.listOpen();
-			if (open.some((row) => row.oldKey === item.key)) continue;
-			const newKey = privateKeyFor(item.kind, input.videoId);
+			let open = await input.journal.listOpen();
+			await assertCurrentOpen(open);
+			await rejectUnverifiedDeleted(open);
+			let matching = open.filter((row) => row.oldKey === item.key);
+			let resumed = matching.length === 1 ? matching[0] : undefined;
+			const exists = await input.store.exists(item.key);
+			if (!exists && resumed?.state !== "DELETED") continue;
+			if (resumed?.state === "DELETED") {
+				if (!presigned.has(item.key)) {
+					presigned.set(item.key, await input.store.presignGet(item.key));
+				}
+				if (input.store.presignHead && !headSigned.has(item.key)) {
+					headSigned.set(item.key, await input.store.presignHead(item.key));
+				}
+			}
+			open = await input.journal.listOpen();
+			await assertCurrentOpen(open);
+			await rejectUnverifiedDeleted(open);
+			matching = open.filter((row) => row.oldKey === item.key);
+			const selected = matching.length === 1 ? matching[0] : undefined;
+			if ((resumed?.id ?? null) !== (selected?.id ?? null)) {
+				throw new Error(`open relocation video mismatch for ${item.key}`);
+			}
+			resumed = selected;
 			const getUrl = presigned.get(item.key);
 			const headUrl = headSigned.get(item.key);
-			await relocateKey({
-				videoId: input.videoId,
-				revisionId: input.revisionId ?? "relocate",
-				oldKey: item.key,
-				newKey,
-				kind: item.kind,
-				store: input.store,
-				journal: input.journal,
-				preissuedUrl: getUrl,
-				probes: headUrl ? [{ url: headUrl, method: "HEAD" }] : undefined,
-				crash: input.crash,
-				flagged: true,
-			});
+			if (resumed) {
+				await continueRelocation(resumed, input.store, input.journal, {
+					kind: await pointerKind(resumed),
+					preissuedUrl: getUrl,
+					probes: headUrl ? [{ url: headUrl, method: "HEAD" }] : undefined,
+					crash: input.crash,
+				});
+			} else {
+				const newKey = privateKeyFor(item.kind, input.videoId);
+				await relocateKey({
+					videoId: input.videoId,
+					revisionId: input.revisionId ?? "relocate",
+					oldKey: item.key,
+					newKey,
+					kind: item.kind,
+					store: input.store,
+					journal: input.journal,
+					preissuedUrl: getUrl,
+					probes: headUrl ? [{ url: headUrl, method: "HEAD" }] : undefined,
+					crash: input.crash,
+					flagged: true,
+				});
+			}
 			if (input.store.listVersions) {
 				const versions = await input.store.listVersions(item.key);
 				if (versions.length > 0) {

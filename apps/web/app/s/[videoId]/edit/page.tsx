@@ -13,6 +13,7 @@ import { Video } from "@cap/web-domain";
 import { and, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
+import { getEditReadiness } from "@/actions/videos/get-edit-readiness";
 import {
 	editorHasExistingEdits,
 	selectEditorBaselineSpec,
@@ -28,6 +29,7 @@ import {
 	parseRenderedCanonicalSpec,
 	parseVideoEditSpec,
 } from "@/lib/video-edits";
+import { EditReadinessGate } from "./EditReadinessGate";
 import { EditUpgradeGate } from "./EditUpgradeGate";
 import { EditVideoClient } from "./EditVideoClient";
 import { EditRecovery } from "./edit-recovery";
@@ -68,9 +70,7 @@ export default async function EditVideoPage(props: {
 		!video ||
 		video.ownerId !== user.id ||
 		video.isScreenshot ||
-		!isMp4BackedVideo(video.source) ||
-		!video.duration ||
-		video.duration <= 0
+		!isMp4BackedVideo(video.source)
 	) {
 		notFound();
 	}
@@ -100,13 +100,15 @@ export default async function EditVideoPage(props: {
 			/>
 		);
 	}
-	if (
-		video.uploadPhase &&
-		["uploading", "processing", "generating_thumbnail"].includes(
-			video.uploadPhase,
-		)
-	) {
-		notFound();
+	if (video.uploadPhase && video.uploadPhase !== "complete") {
+		return <EditReadinessGate videoId={videoId} />;
+	}
+	if (!video.duration || video.duration <= 0) {
+		return <EditReadinessGate videoId={videoId} />;
+	}
+	const readiness = await getEditReadiness(videoId);
+	if (readiness.status !== "ready" || !readiness.readiness.manualEditing) {
+		return <EditReadinessGate videoId={videoId} />;
 	}
 
 	const [existingEdit] = await db()

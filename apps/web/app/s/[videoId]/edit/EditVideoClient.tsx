@@ -36,6 +36,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
+import { requestEditTranscript } from "@/actions/videos/get-edit-transcript";
 import { getEditorInstantFinishState } from "@/actions/videos/publish-revision";
 import {
 	restoreVideoToOriginal,
@@ -99,6 +100,7 @@ import {
 	type VideoTimelineState,
 } from "@/lib/video-edits";
 import { navigateWithTransition } from "@/utils/view-transition";
+import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
 import { CapVideoPlayer } from "../_components/CapVideoPlayer";
 import { VideoDownloadMenu } from "../_components/VideoDownloadMenu";
 import { captureVideoFrameDataUrl } from "../_components/video-frame-thumbnail";
@@ -106,6 +108,7 @@ import {
 	EditorChapterMarkers,
 	useEditorChapterPreview,
 } from "./EditorChapterPreview";
+import { EditReadinessStatus } from "./EditReadinessGate";
 import { TranscriptSidebar } from "./TranscriptSidebar";
 import { useRenewingPlaybackSource } from "./use-renewing-playback-source";
 
@@ -672,6 +675,12 @@ export function EditVideoClient({
 	usesOriginalSource: boolean;
 }) {
 	const router = useRouter();
+	const [isPreparingTranscript, setIsPreparingTranscript] = useState(false);
+	const editReadiness = useEditReadiness(
+		video.id,
+		true,
+		JSON.stringify([video.transcriptionStatus, playbackSrc]),
+	);
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const timelineRef = useRef<HTMLDivElement | null>(null);
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2085,11 +2094,48 @@ export function EditVideoClient({
 			<main
 				className={[
 					"mx-auto flex w-full flex-1 flex-col px-3 pt-3 pb-4 sm:px-5 sm:pt-4 sm:pb-5",
-					video.transcriptionStatus === "COMPLETE"
+					editReadiness.readiness?.transcriptUsable
 						? "max-w-[1500px] xl:pr-[640px]"
 						: "max-w-6xl",
 				].join(" ")}
 			>
+				{!editReadiness.readiness?.transcriptUsable && (
+					<section className="mb-3 rounded-xl border border-gray-4 p-3">
+						<EditReadinessStatus state={editReadiness} />
+						{editReadiness.readiness?.transcriptLabel ===
+							"Word timings unavailable" && (
+							<button
+								type="button"
+								disabled={isPreparingTranscript}
+								className="mt-2 text-sm underline disabled:opacity-50"
+								onClick={async () => {
+									setIsPreparingTranscript(true);
+									try {
+										const result = await requestEditTranscript(video.id);
+										if (result.status === "error")
+											toast.error(
+												"Word timings could not be prepared. Use the share page recovery controls.",
+											);
+										editReadiness.checkAgain();
+									} catch {
+										toast.error(
+											"Word timings could not be prepared. Check again.",
+										);
+									} finally {
+										setIsPreparingTranscript(false);
+									}
+								}}
+							>
+								Prepare word timings
+							</button>
+						)}
+						<p className="mt-2 text-sm text-gray-11">
+							Manual timeline editing remains available. Word editing and
+							auto-cuts require usable word timings. For transcription recovery
+							or settings, use the share page controls.
+						</p>
+					</section>
+				)}
 				<section className="flex min-h-0 flex-1 items-center justify-center">
 					<div
 						className="relative max-h-full max-w-full overflow-hidden rounded-xl bg-black ring-1 ring-gray-5 [&_[data-slot=media-player-controls]]:!hidden"
@@ -2481,7 +2527,7 @@ export function EditVideoClient({
 				</div>
 			</main>
 
-			{video.transcriptionStatus === "COMPLETE" && (
+			{editReadiness.readiness?.transcriptUsable && (
 				<TranscriptSidebar
 					videoId={video.id}
 					videoRef={videoRef}

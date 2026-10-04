@@ -59,6 +59,8 @@ import {
 } from "@/lib/video-share-clipboard";
 import { usePublicEnv } from "@/utils/public-env";
 import { navigateWithTransition } from "@/utils/view-transition";
+import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
+import { EditReadinessStatus } from "../edit/EditReadinessGate";
 import type { SharePageBranding, VideoData } from "../types";
 import { describeShareAudience } from "./share-audience";
 import { useVideoDownload } from "./use-video-download";
@@ -184,6 +186,15 @@ export const ShareHeader = ({
 		queryKey: ["videoStatus", data.id],
 		queryFn: skipToken,
 	});
+	const editReadiness = useEditReadiness(
+		data.id,
+		user?.id === data.owner.id && !data.isScreenshot,
+		JSON.stringify([
+			data.hasActiveUpload,
+			videoStatus?.transcriptionStatus,
+			data.hasPassword,
+		]),
+	);
 	const [isEditing, setIsEditing] = useState(false);
 	const [displayTitle, setDisplayTitle] = useState(data.name);
 	const [editValue, setEditValue] = useState(data.name);
@@ -561,7 +572,7 @@ export const ShareHeader = ({
 	const canEditVideo =
 		isOwner &&
 		!data.isScreenshot &&
-		!data.hasActiveUpload &&
+		editReadiness.readiness?.playbackAdmission === true &&
 		(data.source.type === "desktopMP4" || data.source.type === "webMP4");
 	const handleEditVideo = () => {
 		if (userIsOwnerAndNotPro) {
@@ -1013,6 +1024,7 @@ export const ShareHeader = ({
 							<div className="flex flex-wrap items-center gap-2 ml-auto justify-end">
 								{isOwner && (
 									<>
+										<EditReadinessStatus state={editReadiness} />
 										{canEditVideo && (
 											<Button
 												variant="gray"
@@ -1021,7 +1033,9 @@ export const ShareHeader = ({
 												onClick={handleEditVideo}
 											>
 												<Scissors className="size-3.5 text-gray-12" />
-												Edit video
+												{editReadiness.readiness?.transcriptUsable
+													? "Edit video"
+													: "Edit timeline"}
 											</Button>
 										)}
 										<Button
@@ -1062,7 +1076,11 @@ export const ShareHeader = ({
 														className="flex items-center gap-2 rounded-lg sm:hidden"
 													>
 														<Scissors className="size-3.5" />
-														<p className="text-sm text-gray-12">Edit video</p>
+														<p className="text-sm text-gray-12">
+															{editReadiness.readiness?.transcriptUsable
+																? "Edit video"
+																: "Edit timeline"}
+														</p>
 													</DropdownMenuItem>
 												)}
 												<DropdownMenuItem
