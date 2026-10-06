@@ -37,6 +37,8 @@ AUDIO_BITRATE = "160k"
 AUDIO_TRACK_ID = 2
 ROOT = Path(__file__).resolve().parent
 MAX_ADJUST = 2
+# ponytail: 0.5s ceiling on audio-shorter-than-video padding; larger gaps still fail loudly.
+TAIL_SILENCE_MAX = 24000
 # ffmpeg native AAC emits one priming frame, then one frame per 1024 input samples.
 PRIMING_FRAMES = 1
 # Init elst skips this many media samples so the leading overlap frame is not presented.
@@ -276,6 +278,54 @@ def load_audio_index(source: Path) -> tuple[AudioIndex, dict]:
     return index, record
 
 
+def _has_audio_stream(source: Path) -> bool:
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(source)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=limits.timeout_for_source(source),
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-2000:])
+    return bool(result.stdout.strip())
+
+
+def audio_source_for(source: Path, timeline: Path) -> Path:
+    """Audio input for a source. Video-only sources get a source-bound silent AAC track, as long as
+    the served video timeline (the mezzanine), beside the original, so the editor and renders work
+    instead of refusing the recording."""
+    if _has_audio_stream(source):
+        return source
+    source_sha = _sha256(source)
+    dest = source.with_name(f"silent-{source_sha[:32]}.m4a")
+    if dest.is_file():
+        return dest
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration",
+         "-of", "csv=p=0", str(timeline)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=limits.timeout_for_source(source),
+    )
+    try:
+        duration = float(probe.stdout.decode().strip().splitlines()[0])
+    except (ValueError, IndexError):
+        raise AudioRejected(f"refusing silent source without a video duration: {source.name}") from None
+    if probe.returncode or not duration > 0:
+        raise AudioRejected(f"refusing silent source without a video duration: {source.name}")
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{threading.get_ident()}.m4a")
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-f", "lavfi", "-i", f"anullsrc=r={SR}:cl=stereo", "-t", f"{duration:.6f}",
+         "-c:a", "aac", "-b:a", AUDIO_BITRATE,
+         # Bind content (and so its sha / cache namespace) to this source, not just its duration.
+         "-metadata", f"comment=silent-for-source-sha256={source_sha}", str(tmp)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=limits.timeout_for_source(source),
+    )
+    if result.returncode:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-2000:])
+    private(tmp)
+    os.replace(tmp, dest)
+    return dest
+
+
 def probe_audio_rate(source: Path) -> int:
     result = subprocess.run(
         [
@@ -402,9 +452,16 @@ def _read_presentation(source: Path, lo: int, hi: int) -> np.ndarray:
     if hi <= lo:
         return np.zeros((0, 2), np.float32)
     pcm, _record = load_presentation(source)
-    if lo < 0 or hi > len(pcm):
+    short = hi - len(pcm)
+    # Video can outlast audio by a few frames (cap-ol0.9): the gap plays as silence. More than that is a broken index.
+    if lo < 0 or short > TAIL_SILENCE_MAX:
         raise RuntimeError(f"presentation slice {lo}:{hi} outside decoded length {len(pcm)}")
-    return np.array(pcm[lo:hi], dtype=np.float32, copy=True)
+    if short <= 0:
+        return np.array(pcm[lo:hi], dtype=np.float32, copy=True)
+    out = np.zeros((hi - lo, 2), np.float32)
+    have = max(0, len(pcm) - lo)
+    out[:have] = pcm[lo:lo + have]
+    return out
 
 
 def _samples_at(tick: int, video_tb: int = TB) -> int:
