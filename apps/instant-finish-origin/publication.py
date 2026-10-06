@@ -220,13 +220,33 @@ class ConnectionPool:
 
     def acquire(self):
         try:
-            return self._idle.get_nowait()
+            conn = self._idle.get_nowait()
         except queue.Empty:
             with self._lock:
                 if self._created < self.size:
                     self._created += 1
-                    return self._connect()
-        return self._idle.get(timeout=2)
+                    try:
+                        return self._connect()
+                    except Exception:
+                        self._created -= 1
+                        raise
+            conn = self._idle.get(timeout=2)
+        return self._revalidate(conn)
+
+    def _revalidate(self, conn):
+        # Idle connections can be closed server-side (wait_timeout, DB restart);
+        # reuse without a check surfaced as OperationalError 2013 on editor open.
+        try:
+            conn.ping(reconnect=True)
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._created = max(0, self._created - 1)
+            raise
 
     def release(self, conn) -> None:
         try:

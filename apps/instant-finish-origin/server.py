@@ -508,9 +508,10 @@ class OriginApp:
                 _log_failed("source-prepare", reason="MezzanineUnbound", video=video_id)
                 return self._text(500, b"unavailable")
             self._remember_sha(key, bind["source_sha256"])
-            lib_audio.build_audio_index(original)
-            lib_audio.prepare_presentation(original)
-            warm = lib_origin.warm_for_source(cache_id, mezz, original)
+            audio = lib_audio.audio_source_for(original, mezz)
+            lib_audio.build_audio_index(audio)
+            lib_audio.prepare_presentation(audio)
+            warm = lib_origin.warm_for_source(cache_id, mezz, audio)
             self._remember_source(video_id, cache_id, key)
             probed = _probe_source(original, bind)
         except limits.InputRejected:
@@ -958,6 +959,14 @@ class OriginApp:
     ) -> lib_origin.Origin:
         mezz, original, source_sha = self._source_files(video_id, source_id, expected_sha, source_key)
         key = f"{source_sha}:{lib_origin.canonical_spec(ranges).hex()}"
+        with self._lock:
+            found = self._origins.get(key)
+            if found is not None:
+                origin, _seen = found
+                self._origins[key] = (origin, time.monotonic())
+                return origin
+        # Cache miss only, outside the lock: may probe/encode a silent track.
+        audio = lib_audio.audio_source_for(original, mezz)
         now = time.monotonic()
         with self._lock:
             self._evict_origins(now)
@@ -966,7 +975,7 @@ class OriginApp:
                 origin, _seen = found
                 self._origins[key] = (origin, now)
                 return origin
-            origin = lib_origin.Origin(mezz, original, self.cache, ranges, source_sha)
+            origin = lib_origin.Origin(mezz, audio, self.cache, ranges, source_sha)
             self._origins[key] = (origin, now)
             self._evict_origins(now)
             return origin
