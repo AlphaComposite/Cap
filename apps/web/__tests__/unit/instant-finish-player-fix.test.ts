@@ -162,3 +162,15 @@ describe("F7 share and embed documents do not leak grant referrers", () => {
 		expect(player).not.toMatch(/console\.(log|error)\([^)]*,\s*data\)/);
 	});
 });
+
+describe("grant refresh keeps the viewer's sound", () => {
+	it("mutes only for autoplay, never for a grant resume", () => {
+		const player = readFileSync(
+			path.join(root, "app/s/[videoId]/_components/HLSVideoPlayer.tsx"),
+			"utf8",
+		);
+		expect(player).not.toMatch(/autoplay \|\| startAt > 0\) \{\s*video\.muted = true/);
+		expect(player).toContain("if (autoplay) video.muted = true;");
+		expect(player).toContain("resumePlayingRef.current = !video.paused;");
+	});
+});

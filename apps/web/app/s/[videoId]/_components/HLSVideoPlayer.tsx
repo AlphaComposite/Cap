@@ -179,6 +179,8 @@ export function HLSVideoPlayer({
 }: Props) {
 	const hlsInstance = useRef<Hls | null>(null);
 	const resumeAtRef = useRef(-1);
+	// Grant refreshes rebuild the player; keep the viewer's sound and play state.
+	const resumePlayingRef = useRef(false);
 	const [currentCue, setCurrentCue] = useState<string>("");
 	const [controlsVisible, setControlsVisible] = useState(false);
 	const [toggleCaptions, setToggleCaptions] = useState(true);
@@ -430,14 +432,16 @@ export function HLSVideoPlayer({
 
 			hls.loadSource(playbackSrc);
 			hls.attachMedia(video);
+			const resumePlaying = startAt > 0 && resumePlayingRef.current;
+			resumePlayingRef.current = false;
+			if (autoplay) video.muted = true;
 			if (autoplay || startAt > 0) {
-				video.muted = true;
 				hls.on(Hls.Events.MANIFEST_PARSED, () => {
 					if (startAt > 0) {
 						video.currentTime = startAt;
 						hls.startLoad(startAt);
 					}
-					if (autoplay) void video.play().catch(() => undefined);
+					if (autoplay || resumePlaying) void video.play().catch(() => undefined);
 				});
 			}
 			if (isLiveSegments) {
@@ -507,6 +511,7 @@ export function HLSVideoPlayer({
 							playbackResumeTime(lastPositive, video.currentTime),
 						);
 						resumeAtRef.current = startPosition;
+						resumePlayingRef.current = !video.paused;
 						hls.stopLoad();
 						void refreshRevisionSourceRef
 							.current()
