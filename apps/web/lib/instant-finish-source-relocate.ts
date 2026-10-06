@@ -505,7 +505,6 @@ async function publishOriginObjectPolicy(input: {
 						envFile,
 						"-v",
 						`${dir}:/policy:ro`,
-						"minio/mc:RELEASE.2025-08-13T08-35-41Z",
 						...args,
 					],
 					{ stdio: ["ignore", "ignore", "ignore"] },
@@ -513,37 +512,29 @@ async function publishOriginObjectPolicy(input: {
 				child.on("error", reject);
 				child.on("close", (code) => resolve(code ?? 1));
 			});
-		const created = await run([
-			"admin",
-			"policy",
-			"create",
-			"local",
+		// One container for create+attach (each `docker run` costs ~0.55 s). The
+		// policy name and user stay positional args ($1/$2), never shell text.
+		// Exit 10 = create failed (nothing attached), 11 = attach failed.
+		const accessKey = process.env.ORIGIN_S3_ACCESS_KEY;
+		const script = [
+			'mc admin policy create local "$1" /policy/policy.json || exit 10',
+			'[ -z "$2" ] || mc admin policy attach local "$1" --user "$2" || exit 11',
+		].join("\n");
+		const code = await run([
+			"--entrypoint",
+			"sh",
+			"minio/mc:RELEASE.2025-08-13T08-35-41Z",
+			"-c",
+			script,
+			"mc-policy",
 			input.policyName,
-			"/policy/policy.json",
+			accessKey ?? "",
 		]);
-		if (created !== 0) {
+		if (code !== 0) {
 			throw new RevisionPublicationError(
 				409,
 				"Origin read policy was not updated for the relocated key",
 			);
-		}
-		const accessKey = process.env.ORIGIN_S3_ACCESS_KEY;
-		if (accessKey) {
-			const attached = await run([
-				"admin",
-				"policy",
-				"attach",
-				"local",
-				input.policyName,
-				"--user",
-				accessKey,
-			]);
-			if (attached !== 0) {
-				throw new RevisionPublicationError(
-					409,
-					"Origin read policy was not updated for the relocated key",
-				);
-			}
 		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });

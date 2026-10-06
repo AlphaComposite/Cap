@@ -9,9 +9,10 @@ vi.mock("node:child_process", () => ({
 	spawn: (_cmd: string, args: string[]) => {
 		calls.push(args);
 		let code = 0;
-		if (args.includes("create") && createFailures > 0) {
+		const script = args.find((arg) => arg.includes("mc admin policy create"));
+		if ((args.includes("create") || script) && createFailures > 0) {
 			createFailures -= 1;
-			code = 1;
+			code = script ? 10 : 1;
 		}
 		return {
 			on(event: string, cb: (code: number) => void) {
@@ -110,5 +111,33 @@ describe("origin read policy off the editor path", () => {
 		expect(removed === -1 || (attached !== -1 && attached < removed)).toBe(
 			true,
 		);
+	});
+
+	it("creates then attaches in one mc container, args passed positionally", async () => {
+		vi.resetModules();
+		const { refreshOriginReadPolicy } = await import(
+			"@/lib/instant-finish-source-relocate"
+		);
+		await refreshOriginReadPolicy(fakeDb() as never, "private/source/vid/a.mp4");
+		const runs = calls.filter((args) => args[0] === "run");
+		expect(runs).toHaveLength(1);
+		const script = runs[0]!.find((arg) => arg.includes("mc admin policy create"));
+		expect(script).toBeDefined();
+		expect(script).toContain("mc admin policy attach");
+		// Name and user are never interpolated into the shell script.
+		expect(script).not.toContain("origin-reader");
+		expect(runs[0]!.slice(-2)).toEqual([expect.any(String), "origin-reader"]);
+	});
+
+	it("rejects and never attaches when create fails", async () => {
+		createFailures = 1;
+		vi.resetModules();
+		const { refreshOriginReadPolicy } = await import(
+			"@/lib/instant-finish-source-relocate"
+		);
+		await expect(
+			refreshOriginReadPolicy(fakeDb() as never, "private/source/vid/a.mp4"),
+		).rejects.toThrow("Origin read policy was not updated");
+		expect(calls.filter((args) => args[0] === "run")).toHaveLength(1);
 	});
 });
