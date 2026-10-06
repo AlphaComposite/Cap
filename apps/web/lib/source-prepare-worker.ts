@@ -245,7 +245,14 @@ function prepareEffects(app: App, origin: unknown) {
 				"@/lib/instant-finish-source-relocate"
 			);
 			const store = runtimeObjectStore();
+			// Opt-in sub-step timing (CAP_WORKER_TIMING=1), same switch as source-prepare-timing.
+			const t0 = performance.now();
+			const mark = (step: string) => {
+				if (process.env.CAP_WORKER_TIMING === "1")
+					console.log(`copy-stable-timing ${JSON.stringify({ videoId: input.videoId, step, ms: Math.round(performance.now() - t0) })}`);
+			};
 			const sourceSha = await store.sha256(input.from);
+			mark("sha-source");
 			if (!sourceSha || !/^[a-f0-9]{64}$/.test(sourceSha))
 				throw new Error("source object missing before copy");
 			if (!input.to.startsWith(`private/source/${input.videoId}/`))
@@ -254,12 +261,14 @@ function prepareEffects(app: App, origin: unknown) {
 			if (copied && copied !== sourceSha)
 				throw new Error("staged source identity changed");
 			if (!copied) await store.copy(input.from, input.to);
+			mark("copy");
 			if (
 				(await store.sha256(input.to)) !== sourceSha ||
 				(await store.sha256(input.from)) !== sourceSha
 			) {
 				throw new Error("stable copy sha mismatch");
 			}
+			mark("verify");
 			await app.transaction(async (tx) => {
 				const [video] = await tx
 					.select()
@@ -321,8 +330,10 @@ function prepareEffects(app: App, origin: unknown) {
 						});
 				}
 			});
+			mark("journal-tx");
 			if (!(await reconcileOriginReadPolicy(app)))
 				throw new Error("staged source policy is not ready");
+			mark("policy");
 			return { sha256: sourceSha, skipped: Boolean(copied) };
 		},
 		prepare: async (input: { videoId: string; sourceKey: string }) => {

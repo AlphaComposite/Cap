@@ -836,7 +836,7 @@ async function claimLockedSourcePrepare(database: OutboxTx, now: Date) {
 			typeof limited.for === "function"
 				? await limited.for("update", { skipLocked: true })
 				: await limited
-		) as Array<{ id: number; payload: SourcePreparePayload }>;
+		) as Array<{ id: number; payload: SourcePreparePayload; createdAt?: Date }>;
 		const due = rows.find((row) => sourcePrepareDue(row.payload, nowMs));
 		if (!due?.id || !tx.update) return null;
 		const token = randomBytes(16).toString("hex");
@@ -849,7 +849,7 @@ async function claimLockedSourcePrepare(database: OutboxTx, now: Date) {
 			.update(revisionOutbox)
 			.set({ payload })
 			.where(eq(revisionOutbox.id, due.id));
-		return { id: due.id, payload, leaseToken: token };
+		return { id: due.id, payload, leaseToken: token, createdAt: due.createdAt };
 	};
 	if (database.transaction) return database.transaction(claim);
 	return claim(database);
@@ -895,6 +895,26 @@ export async function sweepSourcePrepare(
 	if (!claimed || !database.update || !database.delete) {
 		return { claimed: 0, encoded: 0 };
 	}
+	const mark = sourcePrepareTimer(claimed);
+	mark("claim", {
+		attempts: claimed.payload.attempts,
+		phase: claimed.payload.phase ?? "queued",
+	});
+	const effects = mark.enabled
+		? (Object.fromEntries(
+				Object.entries(input.effects).map(([name, fn]) => [
+					name,
+					async (...args: unknown[]) => {
+						mark(`${name}:start`);
+						try {
+							return await (fn as (...a: unknown[]) => unknown)(...args);
+						} finally {
+							mark(`${name}:end`);
+						}
+					},
+				]),
+			) as PrepareEffects)
+		: input.effects;
 	const beat = () =>
 		heartbeatSourcePrepare(
 			database,
@@ -907,12 +927,14 @@ export async function sweepSourcePrepare(
 	}, 30_000);
 	try {
 		const snapshot = await input.load(claimed.payload);
+		mark("load");
 		try {
 			const held = await beat();
 			if (!held) return { claimed: 1, encoded: 0 };
-			const advanced = await advanceSourcePrepare(snapshot, input.effects);
+			const advanced = await advanceSourcePrepare(snapshot, effects);
 			if (!(await beat()))
 				return { claimed: 1, encoded: advanced.calls.prepare };
+			mark(advanced.done ? "done" : "requeue:captions");
 			if (advanced.done) {
 				await database
 					.delete(revisionOutbox)
@@ -941,7 +963,8 @@ export async function sweepSourcePrepare(
 					.where(leaseMatches(claimed.id, claimed.leaseToken));
 			}
 			return { claimed: 1, encoded: advanced.calls.prepare };
-		} catch {
+		} catch (error) {
+			mark("error", { message: String((error as Error)?.message ?? error).slice(0, 200) });
 			if (await beat()) {
 				await database
 					.update(revisionOutbox)
@@ -959,4 +982,19 @@ export async function sweepSourcePrepare(
 	} finally {
 		clearInterval(timer);
 	}
+}
+
+// Opt-in per-job timing (CAP_WORKER_TIMING=1): one JSON line per step, ms since the job was queued and since claim. Off by default.
+function sourcePrepareTimer(claimed: { id: number; payload: SourcePreparePayload; createdAt?: Date }) {
+	const enabled = process.env.CAP_WORKER_TIMING === "1";
+	const claimedAt = Date.now();
+	const queuedAt = claimed.createdAt ? new Date(claimed.createdAt).getTime() : null;
+	const mark = (event: string, extra: Record<string, unknown> = {}) => {
+		if (!enabled) return;
+		const at = Date.now();
+		console.log(
+			`source-prepare-timing ${JSON.stringify({ job: claimed.id, videoId: claimed.payload.videoId, event, sinceQueuedMs: queuedAt === null ? null : at - queuedAt, sinceClaimMs: at - claimedAt, ...extra })}`,
+		);
+	};
+	return Object.assign(mark, { enabled });
 }

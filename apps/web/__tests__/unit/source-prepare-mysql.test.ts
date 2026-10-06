@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import mysql from "mysql2/promise";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	enqueueSourcePrepare,
 	SOURCE_PREPARE_JOB,
@@ -166,5 +166,67 @@ describe.skipIf(!databaseUrl)("source prepare mysql lease", () => {
 		);
 		expect(rows).toEqual([{ token: "successor" }]);
 		expect(eq(revisionOutbox.job, SOURCE_PREPARE_JOB)).toBeTruthy();
+	});
+
+	it("logs per-step timing only when CAP_WORKER_TIMING=1", async () => {
+		const database = drizzle(pool);
+		const lines: string[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+			lines.push(String(line));
+		});
+		const run = async (videoId: string) => {
+			await pool.query("DELETE FROM outbox WHERE job = ?", [SOURCE_PREPARE_JOB]);
+			await enqueueSourcePrepare(database as never, {
+				videoId,
+				ownerId,
+				sourceObjectKey: `${ownerId}/${videoId}/result.mp4`,
+				env: { CAP_INSTANT_FINISH_OWNERS: ownerId },
+			});
+			await sweepSourcePrepare(database as never, {
+				load: async () => ({
+					videoId,
+					ownerId,
+					sourceObjectKey: `${ownerId}/${videoId}/result.mp4`,
+					stableKey: `private/source/${videoId}/original`,
+					flagged: true,
+					currentRevisionId: null,
+					currentIsIdentity: false,
+					currentReadable: false,
+					hasUserEdit: false,
+					relocated: true,
+					registeredPrivateKey: `private/source/${videoId}/original`,
+					publicResultEligible: false,
+					sourceIndexed: false,
+					bindMatches: false,
+					transcriptReady: false,
+					captionsClaimed: true,
+				}),
+				effects: {
+					copyStable: async () => ({ sha256: "a".repeat(64), skipped: true }),
+					prepare: async () => ({ encoded: false, sha256: "a".repeat(64) }),
+					publishIdentity: async () => ({ revisionId: "rev-t" }),
+					relocateOriginal: async () => undefined,
+					completeInventory: async () => undefined,
+					refreshCaptions: async () => "ready" as const,
+				},
+			});
+		};
+		try {
+			delete process.env.CAP_WORKER_TIMING;
+			await run(videoB);
+			expect(lines.filter((l) => l.startsWith("source-prepare-timing"))).toEqual([]);
+			process.env.CAP_WORKER_TIMING = "1";
+			await run(videoB);
+			const events = lines
+				.filter((l) => l.startsWith("source-prepare-timing "))
+				.map((l) => JSON.parse(l.slice("source-prepare-timing ".length)));
+			expect(events.map((e) => e.event)).toEqual(
+				expect.arrayContaining(["claim", "load", "prepare:start", "prepare:end", "done"]),
+			);
+			expect(events.every((e) => e.videoId === videoB && typeof e.sinceQueuedMs === "number")).toBe(true);
+		} finally {
+			delete process.env.CAP_WORKER_TIMING;
+			spy.mockRestore();
+		}
 	});
 });
