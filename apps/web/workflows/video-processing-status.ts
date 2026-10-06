@@ -102,9 +102,14 @@ export async function readVideoProcessingStatus(
 export async function waitForVideoProcessing(
 	videoId: string,
 ): Promise<ProcessedVideoMetadata> {
-	const deadline = Date.now() + 60 * 60 * 1000;
+	const started = Date.now();
+	const deadline = started + 60 * 60 * 1000;
 	let lastStatus = "processing";
-	for (let attempt = 0; Date.now() < deadline; attempt++) {
+	// Fast reads while a typical recording finishes (~10-20s); the old backoff
+	// alone left completion unseen for up to 10s. ponytail: fixed 1-minute fast
+	// window; a webhook-resumed hook would remove polling if load ever matters.
+	let slowAttempt = 0;
+	while (Date.now() < deadline) {
 		const result = await readVideoProcessingStatus(videoId);
 		if (result.status === "complete") return result.metadata;
 		if (result.status === "failed") {
@@ -112,7 +117,11 @@ export async function waitForVideoProcessing(
 		}
 		if (result.status === "error") throw new FatalError(result.message);
 		lastStatus = result.message;
-		await sleep(Math.min(5_000 * (attempt + 1), 30_000));
+		await sleep(
+			Date.now() - started < 60_000
+				? 2_000
+				: Math.min(5_000 * ++slowAttempt, 30_000),
+		);
 	}
 	throw new FatalError(`Video processing timed out while ${lastStatus}`);
 }

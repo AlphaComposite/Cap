@@ -59,7 +59,15 @@ describe("durable video processing completion", () => {
 	it("suspends between status reads and observes a delayed callback", async () => {
 		mocks.rows = [[pending], [pending], [pending], [], [metadata]];
 		await expect(waitForVideoProcessing("video")).resolves.toEqual(metadata);
-		expect(mocks.sleep.mock.calls).toEqual([[5_000], [10_000], [15_000]]);
+		expect(mocks.sleep.mock.calls).toEqual([[2_000], [2_000], [2_000]]);
+	});
+
+	it("polls every 2s for the first minute, then keeps the existing backoff", async () => {
+		mocks.where.mockResolvedValue([pending]);
+		await expect(waitForVideoProcessing("video")).rejects.toThrow();
+		const delays = mocks.sleep.mock.calls.map(([delay]) => delay);
+		expect(delays.slice(0, 30).every((delay) => delay === 2_000)).toBe(true);
+		expect(delays.slice(30, 36)).toEqual([5_000, 10_000, 15_000, 20_000, 25_000, 30_000]);
 	});
 
 	it("supports an explicit complete row", async () => {
@@ -102,7 +110,8 @@ describe("durable video processing completion", () => {
 			"Video processing timed out while processing 25% Processing video...",
 		);
 		expect(mocks.now).toBeLessThanOrEqual(60 * 60 * 1000 + 30_000);
-		expect(mocks.sleep.mock.calls.length).toBeLessThan(130);
+		// 30 fast polls in the first minute + the existing ~120-step hourly ceiling.
+		expect(mocks.sleep.mock.calls.length).toBeLessThan(160);
 		expect(Math.max(...mocks.sleep.mock.calls.map(([delay]) => delay))).toBe(
 			30_000,
 		);
