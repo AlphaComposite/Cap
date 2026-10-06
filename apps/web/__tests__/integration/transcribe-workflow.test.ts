@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const schemaMocks = vi.hoisted(() => ({
+	sourceRelocation: { videoId: "sourceRelocation.videoId" },
 	videos: {
 		id: "videos.id",
 		metadata: "videos.metadata",
@@ -53,12 +54,22 @@ vi.mock("@cap/env", () => ({
 }));
 
 vi.mock("@cap/database/schema", () => schemaMocks);
+vi.mock("@/lib/source-prepare-worker", () => ({
+	enqueueSourceCaptionsAfterTranscript: vi.fn(async () => undefined),
+}));
 
 vi.mock("@cap/database", () => ({
 	db: () => ({
+		execute: async () => [[]],
+		transaction: async (run: (tx: unknown) => Promise<unknown>) => {
+			const { db } = await import("@cap/database");
+			return run(db());
+		},
 		select: () => {
 			const query = {
 				from: (table: unknown) => {
+					if (table === schemaMocks.sourceRelocation)
+						return { where: async () => [] };
 					if (table === schemaMocks.videoUploads) {
 						return {
 							where: () => ({ limit: async () => [] }),
@@ -196,6 +207,18 @@ describe("transcribeVideoWorkflow", () => {
 				arrayBuffer: async () => new ArrayBuffer(8),
 			})),
 		);
+	});
+
+	it("polls AssemblyAI every 1000 ms", async () => {
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		await transcribeVideoWorkflow({
+			videoId: "video-123",
+			userId: "user-456",
+			aiGenerationEnabled: false,
+		});
+		expect(mocks.transcribe.mock.calls[0]?.[1]).toEqual({
+			pollingInterval: 1000,
+		});
 	});
 
 	it("persists captions and the word transcript from a single paid pass", async () => {

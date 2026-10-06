@@ -859,11 +859,14 @@ async function transcribeWithAssemblyAI(
 		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
 	});
 
-	const transcript = await client.transcripts.transcribe({
-		audio: audioBuffer,
-		...getAssemblyAITranscriptionOptions(language),
-		disfluencies: true,
-	});
+	const transcript = await client.transcripts.transcribe(
+		{
+			audio: audioBuffer,
+			...getAssemblyAITranscriptionOptions(language),
+			disfluencies: true,
+		},
+		{ pollingInterval: 1000 },
+	);
 
 	console.log(
 		`[transcribe] AssemblyAI transcript ${transcript.id} finished with status=${transcript.status}, model=${transcript.speech_model_used ?? "unknown"}`,
