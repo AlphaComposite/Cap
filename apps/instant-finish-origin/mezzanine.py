@@ -44,6 +44,31 @@ def mezz_command(source: Path, dest: Path, timescale: int) -> list[str]:
     ]
 
 
+def copy_command(source: Path, dest: Path, timescale: int) -> list[str]:
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy", "-video_track_timescale", str(timescale),
+        "-movflags", "+faststart", str(dest),
+    ]
+
+
+def copy_eligible(probed: Probe) -> bool:
+    """True when the source already meets A1 (H.264, no B-frames, IDR at 0 and at least every 2s), so re-encoding buys nothing."""
+    if probed.codec != "h264" or probed.has_b_frames != 0 or probed.timescale <= 0 or not probed.packets:
+        return False
+    ordered = sorted(probed.packets, key=lambda row: row.pts)
+    keys = [row.pts for row in ordered if row.key]
+    if not keys or keys[0] != ordered[0].pts:
+        return False
+    # ponytail: keyframe gaps up to 2 s are copied; dropped frames in long recordings stretch the
+    # media server's forced 1 s IDRs to ~1.14 s. Segments are planned at 2 s and edits seek from the
+    # previous keyframe, so a wider gap only costs a little extra decode per cut. Tighten if cut
+    # latency on long GOPs is measured to regress.
+    limit = probed.timescale * 2
+    return all(b - a <= limit for a, b in zip(keys, keys[1:] + [ordered[-1].pts]))
+
+
 def _duration_s(probed: Probe) -> float:
     if not probed.packets or probed.timescale <= 0:
         return 0.0
@@ -59,15 +84,14 @@ def build_mezzanine(source: Path, dest: Path, video_id: str = "") -> dict:
 def _encode_mezzanine(source: Path, dest: Path, video_id: str = "") -> dict:
     """Build A1 beside the immutable original. Does not replace the original and is not a Finish path."""
     original = probe(source)
-    if original.audio_rate is None:
-        raise MezzanineError("refusing source with no audio stream")
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = dest.with_name(
         f".{dest.stem}.{os.getpid()}.{threading.get_ident()}.build.mp4"
     )
     started = time.perf_counter()
-    cmd = mezz_command(source, tmp, original.timescale)
-    print(f"source-prepare-encode video={video_id}", file=sys.stderr, flush=True)
+    copied = copy_eligible(original)
+    cmd = (copy_command if copied else mezz_command)(source, tmp, original.timescale)
+    print(f"source-prepare-{'copy' if copied else 'encode'} video={video_id}", file=sys.stderr, flush=True)
     if "-vf" in cmd or "fps=" in " ".join(cmd):
         raise MezzanineError("A1 command drifted")
     try:
