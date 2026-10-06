@@ -92,6 +92,9 @@ const getAffectedRows = (result: unknown) => {
 };
 
 const MAX_CHARS_PER_CHUNK = 24000;
+// One AI pass over a long meeting collapses chapters into the first minutes;
+// time-bounded sections give every part of the meeting its own candidates.
+const MAX_SECONDS_PER_CHUNK = 600;
 const LEGACY_AI_TITLE_FALLBACK = "Generated Title";
 export const GENERATED_TITLE_DATABASE_MAX_LENGTH = 255;
 export const GENERATED_TITLE_DISPLAY_MAX_LENGTH = 60;
@@ -815,9 +818,11 @@ function chunkTranscriptWithTimestamps(segments: VttSegment[]): {
 		`[${formatAbsoluteCueStart(segment.start)}] ${segment.text}`;
 
 	for (const segment of segments) {
+		const chunkStart = currentChunk[0]?.start ?? segment.start;
 		if (
-			currentLength + segment.text.length > MAX_CHARS_PER_CHUNK &&
-			currentChunk.length > 0
+			currentChunk.length > 0 &&
+			(currentLength + segment.text.length > MAX_CHARS_PER_CHUNK ||
+				segment.start - chunkStart >= MAX_SECONDS_PER_CHUNK)
 		) {
 			chunks.push({
 				text: currentChunk.map(formatCue).join("\n"),

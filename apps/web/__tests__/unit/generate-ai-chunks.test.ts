@@ -253,6 +253,41 @@ describe("multi-chunk chapter evidence", () => {
 		expect(JSON.stringify(state.updates)).toContain("Long workflow review");
 	});
 
+	it("splits a short-text long meeting into time sections so chapters cover the whole video", async () => {
+		const cues = Array.from({ length: 32 }, (_, i) => {
+			const start = i * 60;
+			const ts = (n: number) =>
+				`00:${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}.000`;
+			return `${ts(start)} --> ${ts(start + 10)}\nTopic talk minute ${i}.`;
+		});
+		state.transcript = `WEBVTT\n\n${cues.join("\n\n")}`;
+		const section = (a: number, b: number) => ({
+			text: JSON.stringify({
+				summary: "Section.",
+				keyPoints: [],
+				chapters: [
+					{ title: `Topic ${a}`, start: a },
+					{ title: `Topic ${b}`, start: b },
+				],
+			}),
+		});
+		generateTextMock
+			.mockResolvedValueOnce(section(0, 300))
+			.mockResolvedValueOnce(section(600, 900))
+			.mockResolvedValueOnce(section(1200, 1500))
+			.mockResolvedValueOnce({
+				text: '{"summary":"End.","keyPoints":[],"chapters":[{"title":"Wrap up","start":1800}]}',
+			})
+			.mockResolvedValueOnce({ text: '{"title":"Long meeting"}' });
+
+		await runWorkflow();
+
+		expect(generateTextMock.mock.calls[0]?.[0].prompt).toContain("section 1 of 4");
+		const saved = JSON.stringify(state.updates);
+		expect(saved).toContain("Topic 1500");
+		expect(saved).toContain("Wrap up");
+	});
+
 	it("fails before title fallback when every chunk analysis is unusable", async () => {
 		generateTextMock
 			.mockResolvedValueOnce({ text: "not JSON" })
