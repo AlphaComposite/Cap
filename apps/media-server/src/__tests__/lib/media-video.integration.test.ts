@@ -1144,6 +1144,19 @@ describe("processVideo integration tests", () => {
 			const outputMetadata = await probeVideo(`file://${tempFile.path}`);
 			expect(outputMetadata.videoCodec).toBe("h264");
 			expect(outputMetadata.audioCodec).toBe("aac");
+			// cap-ol0.8: origin stream-copies only B-frame-free output with an IDR at least every 1s.
+			const probeOut = (args: string[]) =>
+				execFileSync("ffprobe", ["-v", "error", "-select_streams", "v:0", ...args, "-of", "csv=p=0", tempFile.path])
+					.toString()
+					.trim();
+			expect(probeOut(["-show_entries", "stream=has_b_frames"])).toBe("0");
+			const keyTimes = probeOut(["-skip_frame", "nokey", "-show_entries", "frame=pts_time"])
+				.split("\n")
+				.map((line) => Number.parseFloat(line));
+			expect(keyTimes[0]).toBe(0);
+			for (let i = 1; i < keyTimes.length; i++) {
+				expect(keyTimes[i] - keyTimes[i - 1]).toBeLessThanOrEqual(1.1);
+			}
 
 			await tempFile.cleanup();
 		} finally {

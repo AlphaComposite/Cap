@@ -1285,6 +1285,12 @@ export async function downloadVideoToTemp(
 	}
 }
 
+// ponytail: one knob for the main transcode only; set MEDIA_TRANSCODE_THREADS to match the container's cpus.
+export function transcodeThreads(env: Record<string, string | undefined> = process.env): string {
+	const n = Number.parseInt(env.MEDIA_TRANSCODE_THREADS ?? "", 10);
+	return Number.isInteger(n) && n >= 1 && n <= 16 ? String(n) : "2";
+}
+
 function needsVideoTranscode(
 	metadata: VideoMetadata,
 	options: VideoProcessingOptions,
@@ -1524,7 +1530,7 @@ export async function processVideo(
 	const ffmpegArgs: string[] = [
 		"ffmpeg",
 		"-threads",
-		"2",
+		transcodeThreads(),
 		...extraInputArgs,
 		"-i",
 		inputPath,
@@ -1551,6 +1557,15 @@ export async function processVideo(
 			"yuv420p",
 			"-level:v",
 			targetH264Level.ffmpegValue,
+			// Origin A1 mezzanine shape (no B-frames, closed 1s IDR GOPs): the origin stream-copies instead of re-encoding (cap-ol0.8).
+			"-bf",
+			"0",
+			"-force_key_frames",
+			"expr:gte(t,n_forced*1)",
+			"-forced-idr",
+			"1",
+			"-x264-params",
+			"keyint=1000:min-keyint=1:scenecut=0:open-gop=0:b-adapt=0",
 		);
 	} else {
 		ffmpegArgs.push("-c:v", "copy");
