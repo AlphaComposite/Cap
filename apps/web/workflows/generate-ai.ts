@@ -1058,13 +1058,31 @@ ${chunk.text}`;
 		try {
 			const parsed = await callAiApi(chunkPrompt, (content) => {
 				const parsed = parseChunkAnalysis(content);
-				validateChapterStartsInSection(
-					parsed.chapters,
-					chunk,
-					videoDuration,
-					chunk.segments,
-				);
-				return parsed;
+				// Drop single stray starts instead of discarding the whole
+				// section; a section with no usable chapter still fails over.
+				const valid = parsed.chapters.filter((chapter) => {
+					try {
+						validateChapterStartsInSection(
+							[chapter],
+							chunk,
+							videoDuration,
+							chunk.segments,
+						);
+						return true;
+					} catch {
+						return false;
+					}
+				});
+				if (parsed.chapters.length > 0 && valid.length === 0) {
+					validateChapterStartsInSection(
+						parsed.chapters,
+						chunk,
+						videoDuration,
+						chunk.segments,
+					);
+				}
+				validateChapterOrder(valid);
+				return { ...parsed, chapters: valid };
 			});
 			chunkSummaries.push({
 				...parsed,

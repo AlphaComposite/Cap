@@ -288,6 +288,31 @@ describe("multi-chunk chapter evidence", () => {
 		expect(saved).toContain("Wrap up");
 	});
 
+	it("keeps a section's valid chapters when one start strays outside it", async () => {
+		const cues = Array.from({ length: 32 }, (_, i) => {
+			const start = i * 60;
+			const ts = (n: number) =>
+				`00:${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}.000`;
+			return `${ts(start)} --> ${ts(start + 10)}\nTopic talk minute ${i}.`;
+		});
+		state.transcript = `WEBVTT\n\n${cues.join("\n\n")}`;
+		const section = (chapters: { title: string; start: number }[]) => ({
+			text: JSON.stringify({ summary: "Section.", keyPoints: [], chapters }),
+		});
+		generateTextMock
+			.mockResolvedValueOnce(section([{ title: "Opening", start: 0 }, { title: "Plan", start: 300 }]))
+			.mockResolvedValueOnce(section([{ title: "Budget", start: 600 }, { title: "Stray", start: 1200 }]))
+			.mockResolvedValueOnce(section([{ title: "Hiring", start: 1200 }, { title: "Access", start: 1500 }]))
+			.mockResolvedValueOnce(section([{ title: "Wrap up", start: 1800 }]))
+			.mockResolvedValueOnce({ text: '{"title":"Long meeting"}' });
+
+		await runWorkflow();
+
+		const saved = JSON.stringify(state.updates);
+		expect(saved).toContain("Budget");
+		expect(saved).not.toContain("Stray");
+	});
+
 	it("fails before title fallback when every chunk analysis is unusable", async () => {
 		generateTextMock
 			.mockResolvedValueOnce({ text: "not JSON" })
