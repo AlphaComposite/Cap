@@ -166,6 +166,88 @@ describe("serialized read-only polling", () => {
 		expect(current.message).toBe("Unable to check readiness");
 		expect(element.textContent).not.toContain("private details");
 	});
+	it("retries a transient unavailable result until a later read is ready", async () => {
+		mocks.read
+			.mockResolvedValueOnce({ status: "unavailable" })
+			.mockResolvedValue(ready("video", "NO_AUDIO"));
+		await render();
+		expect(mocks.read).toHaveBeenCalledTimes(1);
+		expect(current.readiness).toBeNull();
+		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		expect(mocks.read).toHaveBeenCalledTimes(2);
+		expect(current.readiness?.videoId).toBe("video");
+		expect(current.readiness?.manualEditing).toBe(true);
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(mocks.read).toHaveBeenCalledTimes(2);
+	});
+	it("retries a thrown read on the same bounded schedule without exposing the error", async () => {
+		mocks.read
+			.mockRejectedValueOnce(new Error("private details"))
+			.mockResolvedValue(ready("video", "NO_AUDIO"));
+		await render();
+		expect(current.message).toBe("Unable to check readiness");
+		expect(element.textContent).not.toContain("private details");
+		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		expect(mocks.read).toHaveBeenCalledTimes(2);
+		expect(current.readiness?.manualEditing).toBe(true);
+	});
+	it("stops unavailable retries at the existing attempt cap and starts a new cycle on Check again", async () => {
+		mocks.read.mockResolvedValue({ status: "unavailable" });
+		await render();
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(mocks.read).toHaveBeenCalledTimes(12);
+		expect(current.readiness).toBeNull();
+		expect(current.message).toBe("Unable to check readiness");
+		await act(async () => current.checkAgain());
+		expect(mocks.read).toHaveBeenCalledTimes(13);
+	});
+	it("does not overlap or continue unavailable retries after disable, unmount, or a video switch", async () => {
+		let resolve: (value: unknown) => void = () => {};
+		mocks.read.mockImplementationOnce(
+			() =>
+				new Promise((done) => {
+					resolve = done;
+				}),
+		);
+		await render();
+		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		expect(mocks.read).toHaveBeenCalledTimes(1);
+		await act(async () => resolve({ status: "unavailable" }));
+		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		expect(mocks.read).toHaveBeenCalledTimes(2);
+		await render({ enabled: false });
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(mocks.read).toHaveBeenCalledTimes(2);
+		mocks.read.mockResolvedValue({ status: "unavailable" });
+		await render();
+		await act(async () => root.render(null));
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(mocks.read).toHaveBeenCalledTimes(3);
+		let late: (value: unknown) => void = () => {};
+		mocks.read.mockImplementationOnce(
+			() =>
+				new Promise((done) => {
+					late = done;
+				}),
+		);
+		await render({ id: "old" });
+		await render({ id: "new" });
+		mocks.read.mockResolvedValue(ready("new", "NO_AUDIO"));
+		await act(async () => late({ status: "unavailable" }));
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(current.readiness?.videoId).toBe("new");
+		expect(element.textContent).not.toContain("old");
+	});
+	it("does not admit a wrong-video response while retrying", async () => {
+		mocks.read
+			.mockResolvedValueOnce(ready("other", "COMPLETE"))
+			.mockResolvedValue(ready("video", "NO_AUDIO"));
+		await render();
+		expect(current.readiness).toBeNull();
+		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		expect(current.readiness?.videoId).toBe("video");
+		expect(current.readiness?.manualEditing).toBe(true);
+	});
 	it("bounds automatic polling and leaves manual check available", async () => {
 		await render();
 		await act(async () => vi.advanceTimersByTimeAsync(3600000));

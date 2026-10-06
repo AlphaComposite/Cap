@@ -2,6 +2,7 @@
 
 import type { Video } from "@cap/web-domain";
 import { useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
 
 export function EditReadinessStatus({
@@ -36,8 +37,41 @@ export function EditReadinessStatus({
 }
 
 export function EditReadinessGate({ videoId }: { videoId: Video.VideoId }) {
-	const state = useEditReadiness(videoId);
+	const state = useEditReadiness(videoId, true, "", true);
 	const router = useRouter();
+	const refreshed = useRef<string | null>(null);
+	// router.refresh() is void, and a remount clears refs. Record the identity before refresh so a still-preparing server cannot loop.
+	useEffect(() => {
+		if (refreshed.current && !refreshed.current.startsWith(`${videoId}\0`)) {
+			refreshed.current = null;
+		}
+		const readiness = state.readiness;
+		if (!readiness || readiness.videoId !== videoId) return;
+		if (readiness.manualEditing !== true) return;
+		const token = `${videoId}\0${readiness.identity}`;
+		if (refreshed.current === token) return;
+		const storageKey = `cap.edit-readiness.reentry.${videoId}`;
+		try {
+			if (
+				typeof sessionStorage !== "undefined" &&
+				sessionStorage.getItem(storageKey) === readiness.identity
+			) {
+				refreshed.current = token;
+				return;
+			}
+		} catch {
+			return;
+		}
+		try {
+			if (typeof sessionStorage !== "undefined") {
+				sessionStorage.setItem(storageKey, readiness.identity);
+			}
+		} catch {
+			return;
+		}
+		refreshed.current = token;
+		router.refresh();
+	}, [state.readiness, videoId, router]);
 	return (
 		<main className="mx-auto flex max-w-xl flex-col gap-4 p-8">
 			<h1 className="text-xl font-medium">Preparing your video editor</h1>

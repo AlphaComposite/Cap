@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement, type ReactNode } from "react";
+import { act, createElement, type ReactNode, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveEditReadiness } from "../../lib/video-edit-readiness";
@@ -101,6 +101,7 @@ const state = (status: string | null, usable = false) => ({
 	checkAgain: mocks.check,
 });
 beforeEach(() => {
+	sessionStorage.clear();
 	Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 	vi.stubGlobal(
 		"ResizeObserver",
@@ -182,17 +183,198 @@ describe("editor readiness panel", () => {
 		expect(element.textContent).toContain("Usable transcript controls");
 		expect(mocks.refresh).not.toHaveBeenCalled();
 	});
-	it("Check again in preparation only reads, never navigates automatically", async () => {
+	it("Check again only rechecks and does not itself navigate", async () => {
 		await act(async () =>
 			root.render(
 				createElement(EditReadinessGate, { videoId: "video" as never }),
 			),
 		);
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
 		const button = [...element.querySelectorAll("button")].find(
 			(node) => node.textContent === "Check again",
 		);
 		await act(async () => button?.click());
 		expect(mocks.check).toHaveBeenCalledOnce();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+	});
+	function gateState(
+		manual: boolean,
+		identity = manual ? "admitted" : "pending",
+	) {
+		return {
+			readiness: deriveEditReadiness({
+				videoId: "video",
+				identity,
+				eligible: true,
+				isPro: true,
+				playbackAdmission: manual,
+				videoState: manual ? "processed" : "processing",
+				transcriptionStatus: "PROCESSING",
+				transcriptRead: "unavailable",
+			}),
+			checking: false,
+			message: "",
+			checkAgain: mocks.check,
+		};
+	}
+	it("refreshes the server page once when manual admission appears", async () => {
+		mocks.readiness.mockReturnValue(gateState(false));
+		await act(async () =>
+			root.render(
+				createElement(EditReadinessGate, { videoId: "video" as never }),
+			),
+		);
 		expect(mocks.refresh).not.toHaveBeenCalled();
+		mocks.readiness.mockReturnValue(gateState(true));
+		await act(async () =>
+			root.render(
+				createElement(EditReadinessGate, { videoId: "video" as never }),
+			),
+		);
+		expect(element.textContent).toContain("Open timeline editor");
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+	});
+	async function renderGate(videoId = "video") {
+		await act(async () =>
+			root.render(
+				createElement(EditReadinessGate, { videoId: videoId as never }),
+			),
+		);
+	}
+	it("refreshes once per admission identity and keeps explicit retry", async () => {
+		mocks.readiness.mockReturnValue(gateState(false));
+		await renderGate();
+		mocks.readiness.mockReturnValue({
+			readiness: null,
+			checking: false,
+			message: "Unable to check readiness",
+			checkAgain: mocks.check,
+		});
+		await renderGate();
+		expect(mocks.refresh).not.toHaveBeenCalled();
+		mocks.readiness.mockReturnValue(gateState(true, "admitted"));
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		mocks.readiness.mockReturnValue(gateState(true, "changed"));
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(2);
+		const open = [...element.querySelectorAll("button")].find(
+			(node) => node.textContent === "Open timeline editor",
+		);
+		await act(async () => open?.click());
+		expect(mocks.refresh).toHaveBeenCalledTimes(3);
+		const check = [...element.querySelectorAll("button")].find(
+			(node) => node.textContent === "Check again",
+		);
+		await act(async () => check?.click());
+		expect(mocks.check).toHaveBeenCalledOnce();
+		expect(mocks.refresh).toHaveBeenCalledTimes(3);
+	});
+	it("does not refresh stale, switched, or unmounted gate readiness", async () => {
+		mocks.readiness.mockReturnValue(gateState(false));
+		await renderGate();
+		const stale = gateState(true, "other-page");
+		stale.readiness = { ...stale.readiness, videoId: "other" };
+		mocks.readiness.mockReturnValue(stale);
+		await renderGate("next");
+		expect(mocks.refresh).not.toHaveBeenCalled();
+		await act(async () => root.render(null));
+		mocks.readiness.mockReturnValue(gateState(true));
+		expect(mocks.refresh).not.toHaveBeenCalled();
+	});
+	function readinessFor(videoId: string, manual: boolean, identity: string) {
+		const next = gateState(manual, identity);
+		return {
+			...next,
+			readiness: { ...next.readiness, videoId },
+		};
+	}
+	it("refreshes once when the first mounted readiness is already manual", async () => {
+		mocks.readiness.mockReturnValue(gateState(true, "first-ready"));
+		await renderGate();
+		expect(element.textContent).toContain("Open timeline editor");
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		const open = [...element.querySelectorAll("button")].find(
+			(node) => node.textContent === "Open timeline editor",
+		);
+		await act(async () => open?.click());
+		expect(mocks.refresh).toHaveBeenCalledTimes(2);
+		const check = [...element.querySelectorAll("button")].find(
+			(node) => node.textContent === "Check again",
+		);
+		await act(async () => check?.click());
+		expect(mocks.check).toHaveBeenCalledOnce();
+		expect(mocks.refresh).toHaveBeenCalledTimes(2);
+	});
+	it("refreshes once from an initial unavailable read to manual ready", async () => {
+		mocks.readiness.mockReturnValue({
+			readiness: null,
+			checking: true,
+			message: "Checking readiness",
+			checkAgain: mocks.check,
+		});
+		await renderGate();
+		expect(mocks.refresh).not.toHaveBeenCalled();
+		mocks.readiness.mockReturnValue(gateState(true, "became-ready"));
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+	});
+	it("does not repeat refresh for a stable identity across rerender, remount, or StrictMode", async () => {
+		mocks.readiness.mockReturnValue(gateState(true, "stable-ready"));
+		await renderGate();
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		await act(async () => root.unmount());
+		root = createRoot(element);
+		await renderGate();
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		await act(async () => root.unmount());
+		root = createRoot(element);
+		sessionStorage.clear();
+		mocks.refresh.mockClear();
+		await act(async () =>
+			root.render(
+				createElement(
+					StrictMode,
+					null,
+					createElement(EditReadinessGate, { videoId: "video" as never }),
+				),
+			),
+		);
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+	});
+	it("isolates automatic reentry by video and identity and does not refresh after unmount", async () => {
+		mocks.readiness.mockReturnValue(
+			readinessFor("video-a", true, "shared-identity"),
+		);
+		await renderGate("video-a");
+		expect(mocks.refresh).toHaveBeenCalledTimes(1);
+		mocks.readiness.mockReturnValue(
+			readinessFor("video-b", true, "shared-identity"),
+		);
+		await renderGate("video-b");
+		expect(mocks.refresh).toHaveBeenCalledTimes(2);
+		mocks.readiness.mockReturnValue(
+			readinessFor("video-a", true, "shared-identity"),
+		);
+		await renderGate("video-a");
+		expect(mocks.refresh).toHaveBeenCalledTimes(2);
+		mocks.readiness.mockReturnValue(
+			readinessFor("video-a", true, "changed-identity"),
+		);
+		await renderGate("video-a");
+		expect(mocks.refresh).toHaveBeenCalledTimes(3);
+		mocks.readiness.mockReturnValue(
+			readinessFor("video-b", true, "shared-identity"),
+		);
+		await renderGate("video-a");
+		expect(mocks.refresh).toHaveBeenCalledTimes(3);
+		await act(async () => root.unmount());
+		root = createRoot(element);
+		expect(mocks.refresh).toHaveBeenCalledTimes(3);
 	});
 });
