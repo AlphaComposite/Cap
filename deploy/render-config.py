@@ -176,7 +176,7 @@ def main():
                 config["paths"]["compose_file"] = str(args.compose_file.resolve())
             render(config)
         except (ValueError, OSError, yaml.YAMLError) as error:
-            parser.exit(1, f"Configuration failed: {error.__class__.__name__}; check required keys, values and paths\n")
+            parser.exit(1, f"Configuration failed: {error}\n")  # messages name keys/paths, never values
     else:
         parser.error("provide a config YAML path or --self-check")
 
