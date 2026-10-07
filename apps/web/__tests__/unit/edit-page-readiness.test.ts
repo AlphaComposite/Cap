@@ -153,6 +153,19 @@ describe("direct editor admission before mutations", () => {
 	});
 	it("lets transcript-only pending enter the manual editor", async () => {
 		expect((await page()).type).toBe(EditVideoClient);
+		expect(mocks.readiness).toHaveBeenCalledWith("video", true, false);
+	});
+	it("waits when fresh admission rejects an advisory ready hint", async () => {
+		mocks.flag.mockReturnValue(true);
+		mocks.readiness.mockImplementation(
+			async (_videoId, _transcript, usePlaybackHint) => ({
+				status: "ready",
+				readiness: { manualEditing: usePlaybackHint !== false },
+			}),
+		);
+		expect((await page()).type).toBe(EditReadinessGate);
+		expect(mocks.readiness).toHaveBeenCalledWith("video", true, false);
+		expect(mocks.open).not.toHaveBeenCalled();
 	});
 	it("renders preparation on a source-not-ready race instead of throwing", async () => {
 		mocks.flag.mockReturnValue(true);

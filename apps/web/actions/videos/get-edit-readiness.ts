@@ -353,6 +353,7 @@ async function readFacts(
 	videoId: Video.VideoId,
 	ownerId: string,
 	includeTranscript: boolean,
+	usePlaybackHint: boolean,
 ) {
 	const [video] = await db()
 		.select()
@@ -451,8 +452,9 @@ async function readFacts(
 			sourceIdentity = ownerSource.identity;
 			ownerSourceKey = ownerSource.key;
 			if (
-				editorPreparation?.sourcePrepare === "queued" ||
-				editorPreparation?.sourcePrepare === "running"
+				usePlaybackHint &&
+				(editorPreparation?.sourcePrepare === "queued" ||
+					editorPreparation?.sourcePrepare === "running")
 			) {
 				playbackCacheKey = createHash("sha256")
 					.update(
@@ -612,11 +614,17 @@ async function readFence(
 export async function getEditReadiness(
 	videoId: Video.VideoId,
 	includeTranscript = true,
+	usePlaybackHint = true,
 ): Promise<EditReadinessResult> {
 	try {
 		const user = await getCurrentUser();
 		if (!user) return { status: "unavailable" };
-		const facts = await readFacts(videoId, user.id, includeTranscript);
+		const facts = await readFacts(
+			videoId,
+			user.id,
+			includeTranscript,
+			usePlaybackHint,
+		);
 		if (!facts) return { status: "unavailable" };
 		const isPro = userIsPro(user);
 		let transcriptRead: TranscriptReadState = "unavailable";

@@ -122,6 +122,7 @@ export type PublishRevisionInput = {
 	baseGeneration: number;
 	draftVersion: number;
 	draftSession: string;
+	expectedDraftSession?: string;
 	chapters?: readonly VideoChapter[];
 	sourceChapters?: readonly VideoChapter[] | null;
 	transcript?: EditTranscript | null;
@@ -257,6 +258,23 @@ export async function expireAbandonedPreparedRevisions(
 		);
 }
 
+function assertDraftSessionFence(
+	publication: { draftSession: string; generation: number },
+	expectedDraftSession: string | undefined,
+) {
+	if (
+		expectedDraftSession !== undefined &&
+		publication.draftSession &&
+		publication.draftSession !== expectedDraftSession
+	) {
+		throw new RevisionPublicationError(
+			409,
+			"This video was edited in another session. Reload before publishing.",
+			publication.generation,
+		);
+	}
+}
+
 async function reuseCurrentUntouched(
 	app: Database,
 	input: PublishRevisionInput,
@@ -311,6 +329,25 @@ async function reuseCurrentUntouched(
 			})
 	)
 		return null;
+	if (input.expectedDraftSession !== undefined) {
+		const revisionId = decision.revisionId;
+		return app.transaction(async (tx) => {
+			await lockVideoRow(tx, videoId(input.videoId));
+			const [locked] = await tx
+				.select()
+				.from(videoPublication)
+				.where(eq(videoPublication.videoId, videoId(input.videoId)))
+				.for("update");
+			if (
+				!locked ||
+				locked.currentRevisionId !== publication.currentRevisionId ||
+				locked.generation !== publication.generation
+			)
+				return null;
+			assertDraftSessionFence(locked, input.expectedDraftSession);
+			return { success: true, revisionId, generation: locked.generation };
+		});
+	}
 	return {
 		success: true,
 		revisionId: decision.revisionId,
@@ -354,6 +391,8 @@ async function reuseVerifiedReady(
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId(input.videoId)))
 			.for("update");
+		if (publication)
+			assertDraftSessionFence(publication, input.expectedDraftSession);
 		if (!publication || !(await sameSessionPreclick(publication, input))) {
 			return null;
 		}
@@ -791,6 +830,7 @@ export async function publishInstantFinishRevision(
 				baseGeneration: input.baseGeneration,
 				draftVersion: input.draftVersion,
 				draftSession: input.draftSession,
+				expectedDraftSession: input.expectedDraftSession,
 			});
 			return {
 				success: true,
@@ -966,6 +1006,7 @@ export async function allocateRevision(
 	if (!publication) {
 		throw new RevisionPublicationError(500, "Publication row was not created");
 	}
+	assertDraftSessionFence(publication, input.expectedDraftSession);
 	if (
 		input.draftVersion < publication.latestDraftVersion &&
 		publication.draftSession === input.draftSession
@@ -1718,6 +1759,7 @@ export async function restoreRetainedIdentity(
 		baseGeneration?: number;
 		draftVersion?: number;
 		draftSession?: string;
+		expectedDraftSession?: string;
 	},
 ): Promise<{ revisionId: string; generation: number }> {
 	const app = database as Database;
@@ -1824,6 +1866,8 @@ export async function restoreRetainedIdentity(
 			.from(videoPublication)
 			.where(eq(videoPublication.videoId, videoId(id)))
 			.for("update");
+		if (publication)
+			assertDraftSessionFence(publication, options.expectedDraftSession);
 		const [source] = await tx
 			.select()
 			.from(sourceObject)
@@ -2010,6 +2054,7 @@ export async function flipCurrent(
 	if (!publication || !revision) {
 		throw new RevisionPublicationError(500, "Fence row disappeared");
 	}
+	assertDraftSessionFence(publication, input.expectedDraftSession);
 	if (revision.generation !== publication.generation) {
 		await tx
 			.update(editRevision)
@@ -2265,6 +2310,7 @@ export async function recordServerDraft(
 		videoId: string;
 		draftVersion: number;
 		draftSession: string;
+		expectedDraftSession?: string;
 	},
 ): Promise<{ draftVersion: number; draftSession: string; generation: number }> {
 	const app = database as Database;
@@ -2286,6 +2332,7 @@ export async function recordServerDraft(
 		if (!row) {
 			throw new RevisionPublicationError(500, "Draft row was not recorded");
 		}
+		assertDraftSessionFence(row, input.expectedDraftSession);
 		if (
 			row.draftSession.length > 0 &&
 			row.draftSession !== input.draftSession &&

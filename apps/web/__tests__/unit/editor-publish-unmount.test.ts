@@ -408,10 +408,12 @@ describe("editor publish unmount", () => {
 			);
 			expect(publishes).toHaveLength(2);
 			expect(publishes[0]?.[1]).toMatchObject({ draftSession });
+			expect(publishes[0]?.[1]).not.toHaveProperty("expectedDraftSession");
 			expect(publishes[1]?.[1]).toEqual({
 				...publishes[0]?.[1],
 				baseGeneration: 8,
 				draftVersion: 7,
+				expectedDraftSession: session === "same" ? draftSession : "",
 			});
 			expect(harness.instant).toHaveBeenLastCalledWith({
 				videoId: VIDEO_ID,

@@ -1382,6 +1382,7 @@ export function EditVideoClient({
 				return;
 			}
 			let publicationState = instantFinish;
+			let expectedDraftSession: string | undefined;
 			const published = await publishDoneWithRetry(
 				() =>
 					postRevisionRoute<{
@@ -1402,6 +1403,7 @@ export function EditVideoClient({
 						baseGeneration: publicationState.generation ?? 0,
 						draftVersion: (publicationState.draftVersion ?? 0) + 1,
 						draftSession,
+						...(expectedDraftSession !== undefined && { expectedDraftSession }),
 					}),
 				async (error) => {
 					const fresh = await getEditorInstantFinishState({
@@ -1416,6 +1418,7 @@ export function EditVideoClient({
 								);
 					}
 					publicationState = fresh;
+					expectedDraftSession = fresh.draftSession ?? "";
 					setInstantFinish(publicationState);
 				},
 			);

@@ -28,6 +28,7 @@ export type PublishVideoRevisionInput = {
 	baseGeneration: number;
 	draftVersion: number;
 	draftSession: string;
+	expectedDraftSession?: string;
 	chapters?: VideoChapter[];
 	transcript?: EditTranscript | null;
 };
@@ -131,6 +132,10 @@ function recordedInput(
 		baseGeneration: recorded.generation,
 		draftVersion: recorded.draftVersion,
 		draftSession: recorded.draftSession,
+		expectedDraftSession:
+			input.expectedDraftSession === undefined
+				? undefined
+				: recorded.draftSession,
 		chapters:
 			input.chapters ?? current?.chapters ?? video.metadata?.chapters ?? [],
 		sourceChapters:
@@ -189,6 +194,7 @@ export async function publishOwnerRevision(
 		videoId: input.videoId,
 		draftVersion: input.draftVersion,
 		draftSession: input.draftSession,
+		expectedDraftSession: input.expectedDraftSession,
 	});
 	const published = await publishInstantFinishRevision(
 		db(),
@@ -222,6 +228,11 @@ export function parseRevisionRouteBody(
 	if (typeof record.baseGeneration !== "number") return null;
 	if (typeof record.draftVersion !== "number") return null;
 	if (typeof record.draftSession !== "string") return null;
+	if (
+		record.expectedDraftSession !== undefined &&
+		typeof record.expectedDraftSession !== "string"
+	)
+		return null;
 	return {
 		videoId: record.videoId as Video.VideoId,
 		editSpec: record.editSpec as VideoEditSpec,
@@ -232,6 +243,7 @@ export function parseRevisionRouteBody(
 		baseGeneration: record.baseGeneration,
 		draftVersion: record.draftVersion,
 		draftSession: record.draftSession,
+		expectedDraftSession: record.expectedDraftSession,
 	};
 }
 

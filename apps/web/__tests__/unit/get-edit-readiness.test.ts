@@ -202,6 +202,59 @@ describe("owner-only read-only projection", () => {
 		expect(mocks.legacy).toHaveBeenCalledTimes(2);
 	});
 
+	it("keeps positive hints advisory after the object disappears with unchanged DB rows", async () => {
+		mocks.flag.mockReturnValue(true);
+		mocks.publication.mockResolvedValue(null);
+		video.name = "deleted playback object";
+		sourceRows = [
+			{
+				liveKey: "owner/video/result.mp4",
+				sha256: privateSha,
+				relocationState: "LIVE",
+				codec: "h264",
+				timebase: "1/90000",
+				frameMode: "cfr",
+				a1Digest: privateSha,
+				indexId: "index",
+				warmExpiresAt: new Date(Date.now() + 60_000),
+			},
+		];
+		relocationRows = [
+			{
+				oldKey: "owner/video/result.mp4",
+				newKey: privateKey,
+				sha256: privateSha,
+				state: "COPIED",
+			},
+		];
+		outboxRows = [
+			{ job: "source-prepare", payload: { phase: "prepared", attempts: 1 } },
+		];
+		const initial = await getEditReadiness("video" as never, false);
+		expect(initial.status === "ready" && initial.readiness.manualEditing).toBe(
+			true,
+		);
+		mocks.head.mockImplementation(() =>
+			Effect.fail(new Error("object missing")),
+		);
+		const advisory = await getEditReadiness("video" as never, false);
+		expect(
+			advisory.status === "ready" && advisory.readiness.manualEditing,
+		).toBe(true);
+		expect(mocks.head).toHaveBeenCalledTimes(1);
+		const fresh = await getEditReadiness("video" as never, false, false);
+		expect(fresh.status === "ready" && fresh.readiness.playbackAdmission).toBe(
+			false,
+		);
+		expect(fresh.status === "ready" && fresh.readiness.manualEditing).toBe(
+			false,
+		);
+		expect(fresh.status === "ready" && fresh.readiness.editorOpenable).toBe(
+			false,
+		);
+		expect(mocks.head).toHaveBeenCalledTimes(2);
+	});
+
 	it.each([false, true])(
 		"separates source admission from current playback with warm=%s",
 		async (warm) => {

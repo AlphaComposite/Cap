@@ -107,7 +107,7 @@ export default async function EditVideoPage(props: {
 	if (!video.duration || video.duration <= 0) {
 		return <EditReadinessGate videoId={videoId} />;
 	}
-	const readiness = await getEditReadiness(videoId);
+	const readiness = await getEditReadiness(videoId, true, false);
 	if (readiness.status !== "ready" || !readiness.readiness.manualEditing) {
 		return <EditReadinessGate videoId={videoId} />;
 	}
