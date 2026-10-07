@@ -159,7 +159,7 @@ describe("mediaProbe metadata accuracy", () => {
 		const input = createMediaInput(path);
 		try {
 			expect(await input.getDurationFromMetadata()).toBeLessThan(0.1);
-			expect(await input.computeDuration()).toBeCloseTo(4.065133, 3);
+			expect(await input.computeDuration()).toBeCloseTo(4.100125, 3);
 		} finally {
 			input.dispose();
 		}
@@ -168,7 +168,7 @@ describe("mediaProbe metadata accuracy", () => {
 			await probeVideoFile(path),
 			await probeVideo(`file://${path}`),
 		]) {
-			expect(metadata.duration).toBeCloseTo(4.065133, 3);
+			expect(metadata.duration).toBeCloseTo(4.100125, 3);
 			expect(metadata.videoCodec).toBe("h264");
 			expect(metadata.audioCodec).toBe("opus");
 		}

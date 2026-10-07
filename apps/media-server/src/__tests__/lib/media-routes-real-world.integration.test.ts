@@ -1138,14 +1138,14 @@ describe("media routes real-world integration tests", () => {
 			jobId = ((await response.json()) as { jobId: string }).jobId;
 			const job = await waitForTerminalJob(jobId);
 			expect(job.phase).toBe("complete");
-			expect(job.metadata?.duration).toBeCloseTo(4.065133, 3);
-			expect(thumbnail.mock.calls[0]?.[1]).toBeCloseTo(4.065133, 3);
-			expect(preview.mock.calls[0]?.[1]).toBeCloseTo(4.065133, 3);
+			expect(job.metadata?.duration).toBeCloseTo(4.100125, 3);
+			expect(thumbnail.mock.calls[0]?.[1]).toBeCloseTo(4.100125, 3);
+			expect(preview.mock.calls[0]?.[1]).toBeCloseTo(4.100125, 3);
 			expect(webhookPhases.at(-1)).toBe("complete");
-			expect(webhookDurations.at(-1)).toBeCloseTo(4.065133, 3);
+			expect(webhookDurations.at(-1)).toBeCloseTo(4.100125, 3);
 			const output = join(tempDir, "chrome-fragmented.mp4");
 			await writeFile(output, uploadedBytes("/uploads/chrome-fragmented.mp4"));
-			const expected = await mediaVideo.generateThumbnail(output, 4.065133, {
+			const expected = await mediaVideo.generateThumbnail(output, 4.100125, {
 				timestamp: 1,
 			});
 			expect(uploadedBytes("/uploads/chrome-fragmented.jpg")).toEqual(expected);

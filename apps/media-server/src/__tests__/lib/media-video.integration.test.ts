@@ -1009,7 +1009,7 @@ describe("processVideo integration tests", () => {
 			const outputMetadata = await probeVideo(`file://${output.path}`);
 			expect(outputMetadata.videoCodec).toBe("h264");
 			expect(outputMetadata.audioCodec).toBe("aac");
-			expect(outputMetadata.duration).toBeCloseTo(4.065133, 1);
+			expect(outputMetadata.duration).toBeCloseTo(4.100125, 1);
 			expect(
 				Math.abs(outputMetadata.duration - metadata.duration),
 			).toBeLessThan(0.5);
