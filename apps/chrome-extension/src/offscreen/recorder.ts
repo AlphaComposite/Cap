@@ -23,6 +23,7 @@ import {
 } from "@cap/recorder-core";
 
 import {
+	apiUrl,
 	createInstantRecording,
 	deleteInstantRecording,
 	updateUploadProgress,
@@ -810,6 +811,7 @@ const startRecording = async (request: StartRecordingRequest) => {
 		// delete server-side — the live recording it was rejected to protect.
 		throw new Error("Recording is already active");
 	}
+	const baseUrl = apiUrl(request.settings, "/");
 	startInProgress = true;
 	startCancelRequested = false;
 
@@ -894,7 +896,7 @@ const startRecording = async (request: StartRecordingRequest) => {
 					throwIfStartCanceled();
 					const subpath = `raw-upload.${pipeline.fileExtension}`;
 					const api = {
-						baseUrl: request.settings.apiBaseUrl,
+						baseUrl,
 						authToken: request.auth.authApiKey,
 						requestTimeoutMs: DEFAULT_API_REQUEST_TIMEOUT_MS,
 					};
@@ -1513,19 +1515,18 @@ const runFailedUploadRetry = async (
 	}
 
 	const [settings, auth] = await Promise.all([loadSettings(), loadAuth()]);
+	const baseUrl = apiUrl(settings, "/");
 	if (!auth) {
 		throw new Error("Sign in to Cap to retry this upload.");
 	}
 
 	const typedVideoId = failed.videoId as VideoId;
-	const shareUrl =
-		failed.shareUrl ??
-		new URL(`/s/${failed.videoId}`, settings.apiBaseUrl).toString();
+	const shareUrl = failed.shareUrl ?? apiUrl(settings, `/s/${failed.videoId}`);
 	const subpath =
 		failed.subpath ??
 		`raw-upload.${failed.mimeType.includes("webm") ? "webm" : "mp4"}`;
 	const api = {
-		baseUrl: settings.apiBaseUrl,
+		baseUrl,
 		authToken: auth.authApiKey,
 		requestTimeoutMs: DEFAULT_API_REQUEST_TIMEOUT_MS,
 	};

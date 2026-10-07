@@ -4,6 +4,7 @@ import {
 } from "@cap/recorder-core";
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { apiUrl } from "../shared/api";
 import { CapBrand, DoodleBoilFilter } from "../shared/cap-brand";
 import { formatRecordedDuration } from "../shared/format-duration";
 import { mountPageNav } from "../shared/page-nav";
@@ -335,12 +336,17 @@ function App() {
 		setError(null);
 		setSaved(false);
 		try {
-			new URL(settings.apiBaseUrl);
-			await saveSettings(settings);
+			apiUrl(settings, "/");
+			const next = {
+				...settings,
+				apiBaseUrl: settings.apiBaseUrl.trim().replace(/\/+$/, ""),
+			};
+			await saveSettings(next);
+			setSettings(next);
 			await sendServiceWorkerMessage({
 				target: "service-worker",
 				type: "settings-updated",
-				settings,
+				settings: next,
 			}).catch(() => undefined);
 			setSaved(true);
 		} catch (err) {
@@ -419,6 +425,7 @@ function App() {
 							<span>Cap URL</span>
 							<input
 								type="url"
+								placeholder="https://cap.example.com"
 								value={settings.apiBaseUrl}
 								onChange={(event) =>
 									setSettings({

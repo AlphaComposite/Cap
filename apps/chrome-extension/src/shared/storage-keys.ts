@@ -5,3 +5,4 @@
 // re-exports these constants, so both sides always agree on the key names.
 export const RECORDING_STATE_KEY = "cap-extension-recording-state";
 export const SHARED_UI_STATE_KEY = "cap-extension-shared-ui-state";
+export const SETTINGS_KEY = "cap-extension-settings";

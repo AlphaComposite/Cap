@@ -2,16 +2,19 @@ import { type CSSProperties, useId } from "react";
 import { CapBrand, DoodleBoilFilter } from "../../shared/cap-brand";
 
 interface SignInViewProps {
+	configured: boolean;
 	authPending: boolean;
 	busy: boolean;
 	onSignIn: () => void;
 }
 
 export const SignInView = ({
-	authPending,
+	configured,
+	authPending: pendingAuth,
 	busy,
 	onSignIn,
 }: SignInViewProps) => {
+	const authPending = configured && pendingAuth;
 	const boilId = useId();
 	return (
 		<div className="cap-signin">
@@ -51,12 +54,18 @@ export const SignInView = ({
 				</g>
 			</svg>
 			<h1 className="cap-fade-up cap-fade-up-2">
-				{authPending ? "Finish signing in" : "Sign in to record"}
+				{!configured
+					? "Set your Cap server URL"
+					: authPending
+						? "Finish signing in"
+						: "Sign in to record"}
 			</h1>
 			<p className="cap-signin-lede cap-fade-up cap-fade-up-3">
-				{authPending
-					? "Complete sign-in in the Cap window. This panel updates automatically."
-					: "Record your tab, screen or camera. Your video uploads while you record."}
+				{!configured
+					? "Enter your Cap URL in Options to connect to your server."
+					: authPending
+						? "Complete sign-in in the Cap window. This panel updates automatically."
+						: "Record your tab, screen or camera. Your video uploads while you record."}
 			</p>
 			{authPending ? (
 				<p className="cap-signin-wait cap-fade-up cap-fade-up-4">
@@ -74,9 +83,15 @@ export const SignInView = ({
 						: "cap-paper-cta cap-fade-up cap-fade-up-4"
 				}
 				disabled={busy}
-				onClick={onSignIn}
+				onClick={
+					configured ? onSignIn : () => void chrome.runtime.openOptionsPage()
+				}
 			>
-				{authPending ? "Open the sign-in window again" : "Sign in to Cap"}
+				{!configured
+					? "Open Options"
+					: authPending
+						? "Open the sign-in window again"
+						: "Sign in to Cap"}
 			</button>
 			<p
 				className={
@@ -85,9 +100,11 @@ export const SignInView = ({
 						: "cap-signin-footnote cap-fade-up cap-fade-up-5"
 				}
 			>
-				{authPending
-					? "The window closes by itself once it connects."
-					: "Your share link is ready the moment you stop."}
+				{!configured
+					? "No server is configured by default."
+					: authPending
+						? "The window closes by itself once it connects."
+						: "Your share link is ready the moment you stop."}
 			</p>
 		</div>
 	);
