@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
 	pro: vi.fn(),
 	storage: vi.fn(),
 	head: vi.fn(),
+	query: vi.fn(),
+	liveRead: vi.fn(),
 }));
 
 vi.mock("@cap/web-backend", () => ({
@@ -119,30 +121,87 @@ beforeEach(() => {
 	});
 	mocks.db.mockImplementation(() => ({
 		select: () => ({
-			from: (table: unknown) => ({
-				where: async () =>
-					table === tables.videos
-						? [video]
-						: table === tables.videoUploads
-							? upload
-								? [upload]
-								: []
-							: table === tables.sourceObject
-								? sourceRows
-								: table === tables.sourceRelocation
-									? relocationRows
-									: table === tables.videoEdits
-										? editRows
-										: table === tables.revisionOutbox
-											? outboxRows
-											: [revision],
-			}),
+			from: (table: unknown) => {
+				mocks.query(table);
+				return {
+					where: async () =>
+						table === tables.videos
+							? [video]
+							: table === tables.videoUploads
+								? upload
+									? [upload]
+									: []
+								: table === tables.sourceObject
+									? sourceRows
+									: table === tables.sourceRelocation
+										? relocationRows
+										: table === tables.videoEdits
+											? editRows
+											: table === tables.revisionOutbox
+												? outboxRows
+												: [revision],
+				};
+			},
 		}),
-		execute: async () => liveRows,
+		execute: async () => {
+			mocks.liveRead();
+			return liveRows;
+		},
 	}));
 });
 
 describe("owner-only read-only projection", () => {
+	it("reads current playback artifacts once and uses a narrower identity fence", async () => {
+		mocks.flag.mockReturnValue(true);
+		video.transcriptionStatus = "COMPLETE";
+		video.metadata = { aiGenerationStatus: "PROCESSING" };
+		const result = await getEditReadiness("video" as never, false);
+		expect(result.status).toBe("ready");
+		expect(mocks.transcript).not.toHaveBeenCalled();
+		expect(
+			mocks.query.mock.calls.filter(
+				([table]) => table === tables.revisionOutbox,
+			),
+		).toHaveLength(1);
+		expect(mocks.artifact).toHaveBeenCalledTimes(3);
+		expect(mocks.publication).toHaveBeenCalledTimes(2);
+		expect(
+			mocks.query.mock.calls.length +
+				mocks.artifact.mock.calls.length +
+				mocks.publication.mock.calls.length,
+		).toBe(16);
+	});
+
+	it("caches legacy admission and S3 checks during preparation, invalidating on source changes", async () => {
+		mocks.flag.mockReturnValue(true);
+		mocks.publication.mockResolvedValue(null);
+		video.name = "preparing playback cache";
+		outboxRows = [
+			{ job: "source-prepare", payload: { phase: "preparing", attempts: 1 } },
+		];
+		const read = () => getEditReadiness("video" as never, false);
+		const queries = () =>
+			mocks.query.mock.calls.length +
+			mocks.liveRead.mock.calls.length +
+			mocks.publication.mock.calls.length +
+			4 * mocks.legacy.mock.calls.length;
+		const first = await read();
+		expect(first.status === "ready" && first.readiness.playbackAdmission).toBe(
+			true,
+		);
+		expect(queries()).toBe(21);
+		expect(mocks.head).toHaveBeenCalledTimes(1);
+		expect(mocks.legacy).toHaveBeenCalledTimes(1);
+		await read();
+		expect(queries()).toBe(38);
+		expect(mocks.head).toHaveBeenCalledTimes(1);
+		expect(mocks.legacy).toHaveBeenCalledTimes(1);
+		sourceRows = [{ videoId: "video", liveKey: "owner/video/changed.mp4" }];
+		await read();
+		expect(mocks.head).toHaveBeenCalledTimes(2);
+		expect(mocks.legacy).toHaveBeenCalledTimes(2);
+	});
+
 	it.each([false, true])(
 		"separates source admission from current playback with warm=%s",
 		async (warm) => {
@@ -205,6 +264,8 @@ describe("owner-only read-only projection", () => {
 		async (flag) => {
 			mocks.flag.mockReturnValue(flag);
 			mocks.publication.mockResolvedValue(null);
+			let now = Date.now();
+			const clock = vi.spyOn(Date, "now").mockReturnValue(now);
 			for (const metadata of [undefined, 0]) {
 				mocks.head.mockImplementation(() =>
 					Effect.succeed({ ContentLength: metadata }),
@@ -213,12 +274,16 @@ describe("owner-only read-only projection", () => {
 				expect(
 					result.status === "ready" && result.readiness.playbackAdmission,
 				).toBe(false);
+				now += 5000;
+				clock.mockReturnValue(now);
 			}
 			mocks.head.mockImplementation(() => Effect.fail(new Error("unreadable")));
 			const unreadable = await getEditReadiness("video" as never);
 			expect(
 				unreadable.status === "ready" && unreadable.readiness.playbackAdmission,
 			).toBe(false);
+			now += 5000;
+			clock.mockReturnValue(now);
 			mocks.head.mockImplementation(() =>
 				Effect.succeed({ ContentLength: 123 }),
 			);
@@ -333,9 +398,6 @@ describe("owner-only read-only projection", () => {
 			result.status === "ready" && result.readiness.playbackAdmission,
 		).toBe(true);
 		expect(mocks.artifact.mock.calls.map((call) => call[1])).toEqual([
-			"playlist",
-			"init",
-			"seg0",
 			"playlist",
 			"init",
 			"seg0",

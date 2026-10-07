@@ -4,19 +4,31 @@ import type { Video } from "@cap/web-domain";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Circle, CircleAlert, LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { retryVideoProcessing } from "@/actions/video/retry-processing";
-import type { EditReadiness } from "@/lib/video-edit-readiness";
+import type { VideoStatusResult } from "@/actions/videos/get-status";
+import {
+	deriveEditReadiness,
+	type EditReadiness,
+	processingProgress,
+} from "@/lib/video-edit-readiness";
+import type { VideoStatusPollingAvailability } from "@/lib/video-status-polling";
 import type { useEditReadiness } from "../../../../hooks/use-edit-readiness";
 
 type ProcessingStep = EditReadiness["rows"][number];
+
+export const VideoProcessingStatusContext = createContext<{
+	videoStatus: VideoStatusResult | undefined;
+	availability: VideoStatusPollingAvailability;
+} | null>(null);
 
 const stateIcons = {
 	waiting: Circle,
 	running: LoaderCircle,
 	done: CheckCircle2,
 	failed: CircleAlert,
+	unavailable: LoaderCircle,
 };
 
 export function ProcessingStatusPanel({
@@ -41,7 +53,45 @@ export function ProcessingStatusPanel({
 		openable: null as boolean | null,
 		toasted: false,
 	});
-	const readiness = state.readiness;
+	const status = useContext(VideoProcessingStatusContext);
+	let readiness = state.readiness;
+	if (readiness && status) {
+		const transcriptionStatus =
+			status.videoStatus?.transcriptionStatus ??
+			(status.availability.transcriptionGeneration ? null : "UNAVAILABLE");
+		const statusRows = deriveEditReadiness({
+			...readiness,
+			eligible: true,
+			isPro: false,
+			transcriptRead: "unavailable",
+			transcriptionStatus,
+			aiGenerationStatus:
+				status.videoStatus?.aiGenerationStatus ??
+				(status.availability.aiGeneration &&
+				!["ERROR", "SKIPPED", "NO_AUDIO", "UNAVAILABLE"].includes(
+					transcriptionStatus ?? "",
+				)
+					? "QUEUED"
+					: "UNAVAILABLE"),
+		}).rows;
+		const rows = readiness.rows.map((row) =>
+			row.id === "transcript" || row.id === "ai"
+				? (statusRows.find((candidate) => candidate.id === row.id) ?? row)
+				: row,
+		);
+		readiness = {
+			...readiness,
+			rows,
+			poll:
+				readiness.poll ||
+				statusRows.some(
+					(row) =>
+						(row.id === "transcript" || row.id === "ai") &&
+						(row.state === "waiting" || row.state === "running"),
+				),
+			...processingProgress(rows, transcriptionStatus),
+		};
+	}
 	const editorOpenable = readiness?.editorOpenable;
 
 	useEffect(() => {
@@ -148,7 +198,9 @@ export function ProcessingStatusPanel({
 								/>
 								<div className="min-w-0">
 									<p>{row.label}</p>
-									<p className="text-xs text-gray-10 capitalize">{row.state}</p>
+									<p className="text-xs text-gray-10 capitalize">
+										{row.state === "unavailable" ? "Checking…" : row.state}
+									</p>
 									{row.id === "sourcePrepare" && row.state === "running" && (
 										<p className="text-xs text-gray-10">
 											Usually takes about 1–2 min.

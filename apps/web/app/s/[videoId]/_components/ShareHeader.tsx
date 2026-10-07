@@ -189,11 +189,8 @@ export const ShareHeader = ({
 	const editReadiness = useEditReadiness(
 		data.id,
 		user?.id === data.owner.id && !data.isScreenshot,
-		JSON.stringify([
-			data.hasActiveUpload,
-			videoStatus?.transcriptionStatus,
-			data.hasPassword,
-		]),
+		JSON.stringify([data.hasActiveUpload, data.hasPassword]),
+		false,
 	);
 	const [isEditing, setIsEditing] = useState(false);
 	const [displayTitle, setDisplayTitle] = useState(data.name);

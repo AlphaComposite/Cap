@@ -9,9 +9,16 @@ export function useEditReadiness(
 	videoId: Video.VideoId,
 	enabled = true,
 	context = "",
+	includeTranscript = true,
 ) {
 	const [check, setCheck] = useState(0);
-	const key = JSON.stringify([videoId, enabled, context, check]);
+	const key = JSON.stringify([
+		videoId,
+		enabled,
+		context,
+		check,
+		includeTranscript,
+	]);
 	const [state, setState] = useState<{
 		key: string;
 		readiness: EditReadiness | null;
@@ -32,7 +39,11 @@ export function useEditReadiness(
 		const schedule = () => {
 			timer = setTimeout(
 				() => void read(),
-				Date.now() - started < 5 * 60 * 1000 ? 2000 : 5000,
+				failures
+					? Math.min(5000 * 2 ** Math.min(failures - 1, 3), 30_000)
+					: Date.now() - started < 5 * 60 * 1000
+						? 2000
+						: 5000,
 			);
 		};
 		setState({
@@ -45,7 +56,7 @@ export function useEditReadiness(
 			if (flight.current) await flight.current.catch(() => undefined);
 			if (cancelled) return;
 			setState((previous) => ({ ...previous, checking: true }));
-			const request = getEditReadiness(videoId);
+			const request = getEditReadiness(videoId, includeTranscript);
 			flight.current = request;
 			try {
 				const result = await request;
@@ -53,7 +64,11 @@ export function useEditReadiness(
 				if (result.status !== "ready" || result.readiness.videoId !== videoId) {
 					throw new Error("Unable to check readiness");
 				}
-				failures = 0;
+				failures = result.readiness.rows.some(
+					(row) => row.state === "unavailable",
+				)
+					? failures + 1
+					: 0;
 				setState({
 					key,
 					readiness: result.readiness,
@@ -70,7 +85,7 @@ export function useEditReadiness(
 						checking: false,
 						message: "Unable to check readiness",
 					});
-					if (failures < 12) schedule();
+					schedule();
 				}
 			} finally {
 				if (flight.current === request) flight.current = null;
@@ -81,7 +96,7 @@ export function useEditReadiness(
 			cancelled = true;
 			clearTimeout(timer);
 		};
-	}, [key, videoId, enabled]);
+	}, [key, videoId, enabled, includeTranscript]);
 	const current =
 		state.key === key
 			? state

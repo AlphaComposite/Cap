@@ -36,6 +36,7 @@ import {
 import { revisionDiscreteSeek } from "@/lib/revision-seek";
 import { shouldContinueVideoStatusPolling } from "@/lib/video-status-polling";
 import { CaptionProvider } from "./_components/CaptionContext";
+import { VideoProcessingStatusContext } from "./_components/ProcessingStatusPanel";
 import { PlaybackProvider } from "./_components/playback/PlaybackContext";
 import { ShareVideo } from "./_components/ShareVideo";
 import { type ShareView, ShareViewToggle } from "./_components/ShareViewToggle";
@@ -244,6 +245,10 @@ const useVideoStatus = (
 	},
 	enabled: boolean = true,
 ) => {
+	const started = useRef({ videoId, at: Date.now() });
+	if (started.current.videoId !== videoId) {
+		started.current = { videoId, at: Date.now() };
+	}
 	return useQuery({
 		queryKey: ["videoStatus", videoId],
 		queryFn: async (): Promise<VideoStatusResult> => {
@@ -267,15 +272,17 @@ const useVideoStatus = (
 			: undefined,
 		enabled,
 		refetchInterval: (query) => {
+			const interval =
+				Date.now() - started.current.at < 5 * 60_000 ? 2000 : 5000;
 			const data = query.state.data;
-			if (!data) return 2000;
+			if (!data) return interval;
 
 			const shouldContinuePolling = shouldContinueVideoStatusPolling(
 				data,
 				availability,
 			);
 
-			return shouldContinuePolling ? 2000 : false;
+			return shouldContinuePolling ? interval : false;
 		},
 		refetchIntervalInBackground: false,
 		staleTime: 1000,
@@ -791,7 +798,17 @@ export const Share = ({
 						view === "timeline" && "hidden",
 					)}
 				>
-					{header}
+					<VideoProcessingStatusContext
+						value={{
+							videoStatus,
+							availability: {
+								aiGeneration: aiGenerationAvailable,
+								transcriptionGeneration: transcriptionGenerationAvailable,
+							},
+						}}
+					>
+						{header}
+					</VideoProcessingStatusContext>
 				</div>
 
 				{/*

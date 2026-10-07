@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
 import { Provider as TooltipProvider } from "@radix-ui/react-tooltip";
-import { act, createElement } from "react";
+import { act, type ContextType, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProcessingStatusPanel } from "@/app/s/[videoId]/_components/ProcessingStatusPanel";
+import {
+	ProcessingStatusPanel,
+	VideoProcessingStatusContext,
+} from "@/app/s/[videoId]/_components/ProcessingStatusPanel";
 import { ShareHeader } from "@/app/s/[videoId]/_components/ShareHeader";
 import type { EditReadiness } from "@/lib/video-edit-readiness";
 
@@ -141,18 +144,23 @@ afterEach(async () => {
 const renderPanel = async (
 	value: EditReadiness | null,
 	videoId = "video-id",
+	status: ContextType<typeof VideoProcessingStatusContext> = null,
 ) => {
 	await act(async () => {
 		root.render(
-			createElement(ProcessingStatusPanel, {
-				videoId: videoId as never,
-				state: {
-					readiness: value,
-					checking: false,
-					message: "Checking readiness",
-					checkAgain: harness.checkAgain,
-				},
-			}),
+			createElement(
+				VideoProcessingStatusContext,
+				{ value: status },
+				createElement(ProcessingStatusPanel, {
+					videoId: videoId as never,
+					state: {
+						readiness: value,
+						checking: false,
+						message: "Checking readiness",
+						checkAgain: harness.checkAgain,
+					},
+				}),
+			),
 		);
 	});
 };
@@ -191,6 +199,68 @@ const editButton = () =>
 	);
 
 describe("ProcessingStatusPanel", () => {
+	it("shows transient unavailability as Checking without an alert or retry", async () => {
+		await renderPanel(
+			readiness({
+				sourcePrepare: "unavailable",
+				rows: [
+					{
+						id: "sourcePrepare",
+						label: "Preparing for editing",
+						state: "unavailable",
+					},
+				],
+			}),
+		);
+		expect(container.textContent).toContain("Checking…");
+		expect(container.querySelector('[role="alert"]')).toBeNull();
+		expect(container.querySelector("button")).toBeNull();
+	});
+
+	it("uses the existing video status result even after readiness polling stops", async () => {
+		const prepared = readiness({
+			editorOpenable: true,
+			poll: false,
+			allDone: true,
+			sourcePrepare: "done",
+			rows: readiness().rows.map((row) => ({ ...row, state: "done" })),
+		});
+		const status = {
+			videoStatus: {
+				transcriptionStatus: "PROCESSING",
+				aiGenerationStatus: "QUEUED",
+			} as never,
+			availability: { aiGeneration: true, transcriptionGeneration: true },
+		};
+		await renderPanel(prepared, "video-id", status);
+		expect(container.querySelectorAll("li")).toHaveLength(5);
+		expect(container.querySelectorAll("li")[2]?.textContent).toContain(
+			"running",
+		);
+		expect(container.querySelectorAll("li")[3]?.textContent).toContain(
+			"waiting",
+		);
+		await renderPanel(prepared, "video-id", {
+			...status,
+			videoStatus: {
+				transcriptionStatus: "COMPLETE",
+				aiGenerationStatus: "ERROR",
+			} as never,
+		});
+		expect(container.querySelectorAll("li")[2]?.textContent).toContain("done");
+		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+			"Summary and chapters",
+		);
+		await renderPanel(prepared, "video-id", {
+			...status,
+			videoStatus: {
+				transcriptionStatus: "COMPLETE",
+				aiGenerationStatus: "COMPLETE",
+			} as never,
+		});
+		expect(container.querySelector("ul")).toBeNull();
+	});
+
 	it("keeps the step list out of live announcements and shows the preparation estimate", async () => {
 		await renderPanel(readiness());
 		expect(container.querySelector("output")?.getAttribute("aria-live")).toBe(

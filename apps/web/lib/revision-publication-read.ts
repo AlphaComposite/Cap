@@ -568,8 +568,7 @@ export async function readEditorPreparation(
 	} catch {
 		return {
 			editorOpenable: false,
-			sourcePrepare: "failed" as const,
-			reason: "Unable to check preparation for editing",
+			sourcePrepare: "unavailable" as const,
 			identity: null,
 		};
 	}

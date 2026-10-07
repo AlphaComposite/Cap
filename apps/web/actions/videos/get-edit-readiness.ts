@@ -43,6 +43,11 @@ export type EditReadinessResult =
 	| { status: "unavailable" };
 
 const SHA256 = /^[a-f0-9]{64}$/;
+// ponytail: 100 process-local hints; use a shared cache only if worker churn repeats admission work.
+const preparingPlayback = new Map<
+	string,
+	{ admission: boolean; expiresAt: number }
+>();
 
 function finitePositive(value: unknown) {
 	return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -69,6 +74,7 @@ type OwnerSourceIdentity = {
 	relocationCount: number;
 	selectedOriginal: string | null;
 	verified: boolean;
+	preparationIdentity?: string;
 };
 
 type RelocationRow = {
@@ -238,6 +244,10 @@ async function readOwnerPrivateSource(
 			videoId?: string;
 			sourceKey?: string;
 		}>;
+		identity.preparationIdentity = JSON.stringify({
+			source: sources[0],
+			relocations,
+		});
 		const source = sources.length === 1 ? sources[0] : undefined;
 		identity.liveKey = live?.liveKey ?? source?.liveKey ?? null;
 		identity.sha256 = live?.sha256 ?? source?.sha256 ?? null;
@@ -339,14 +349,18 @@ async function objectHasPositiveLength<
 		.catch(() => false);
 }
 
-async function readFacts(videoId: Video.VideoId, ownerId: string) {
+async function readFacts(
+	videoId: Video.VideoId,
+	ownerId: string,
+	includeTranscript: boolean,
+) {
 	const [video] = await db()
 		.select()
 		.from(videos)
 		.where(eq(videos.id, videoId));
 	if (!video || video.ownerId !== ownerId) return null;
 	const [organization] =
-		video.orgId && video.transcriptionStatus === null
+		includeTranscript && video.orgId && video.transcriptionStatus === null
 			? await db()
 					.select({ settings: organizations.settings })
 					.from(organizations)
@@ -384,12 +398,17 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 	let publicationIdentity: unknown = null;
 	let sourceIdentity: OwnerSourceIdentity | null = null;
 	let ownerSourceKey: string | null = null;
+	let playbackCacheKey: string | undefined;
+	let cachedPlayback: boolean | undefined;
+	let publicationFence: Awaited<ReturnType<typeof readPublication>> = null;
+	let revisionFence: typeof editRevision.$inferSelect | undefined;
 	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
 	const editorPreparation = flagged
 		? await readEditorPreparation(db(), videoId)
 		: null;
 	if (flagged) {
 		const publication = await readPublication(videoId);
+		publicationFence = publication;
 		publicationIdentity = publication;
 		if (
 			publication &&
@@ -405,6 +424,7 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 					readArtifactReady(publication.currentRevisionId as string, artifact),
 				),
 			);
+			revisionFence = revision;
 			publicationIdentity = { publication, revision, artifacts };
 			playbackAdmission = Boolean(
 				revision &&
@@ -423,10 +443,6 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 					}),
 			);
 		} else if (publication !== "missing_table") {
-			legacyAdmission = await loadEligibleLegacy({
-				videoId,
-				ownerId: video.ownerId,
-			});
 			const ownerSource = await readOwnerPrivateSource(
 				videoId,
 				video.ownerId,
@@ -434,6 +450,27 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 			);
 			sourceIdentity = ownerSource.identity;
 			ownerSourceKey = ownerSource.key;
+			if (
+				editorPreparation?.sourcePrepare === "queued" ||
+				editorPreparation?.sourcePrepare === "running"
+			) {
+				playbackCacheKey = createHash("sha256")
+					.update(
+						JSON.stringify({ video, upload, publication, sourceIdentity }),
+					)
+					.digest("hex");
+				const cached = preparingPlayback.get(playbackCacheKey);
+				if (cached && cached.expiresAt > Date.now()) {
+					cachedPlayback = cached.admission;
+					playbackAdmission = cached.admission;
+				}
+			}
+			if (cachedPlayback === undefined) {
+				legacyAdmission = await loadEligibleLegacy({
+					videoId,
+					ownerId: video.ownerId,
+				});
+			}
 		}
 	} else {
 		legacyAdmission = true;
@@ -451,6 +488,7 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 		finitePositive(video.fps);
 	if (
 		!playbackAdmission &&
+		cachedPlayback === undefined &&
 		ownerSourceKey &&
 		eligible &&
 		videoState === "processed" &&
@@ -463,6 +501,16 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 		eligible &&
 		videoState === "processed" &&
 		geometryReady;
+	if (playbackCacheKey && cachedPlayback === undefined) {
+		if (preparingPlayback.size >= 100) {
+			const oldest = preparingPlayback.keys().next().value;
+			if (oldest) preparingPlayback.delete(oldest);
+		}
+		preparingPlayback.set(playbackCacheKey, {
+			admission: playbackAdmission,
+			expiresAt: Date.now() + (playbackAdmission ? 5 * 60_000 : 5000),
+		});
+	}
 	const identity = createHash("sha256")
 		.update(
 			JSON.stringify({
@@ -482,23 +530,98 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 		videoState,
 		playbackAdmission,
 		identity,
+		sourceIdentity,
+		fence: JSON.stringify({
+			video,
+			upload,
+			publication: publicationFence,
+			revision: revisionFence,
+			sourceIdentity,
+			preparationIdentity: editorPreparation?.identity
+				? JSON.stringify({
+						source: editorPreparation.identity.source,
+						relocations: editorPreparation.identity.relocations,
+					})
+				: undefined,
+		}),
 		transcriptAvailable,
 		editorPreparation,
 		upload,
 	};
 }
 
+async function readFence(
+	videoId: Video.VideoId,
+	facts: NonNullable<Awaited<ReturnType<typeof readFacts>>>,
+) {
+	const [video] = await db()
+		.select()
+		.from(videos)
+		.where(eq(videos.id, videoId));
+	const [upload] = await db()
+		.select()
+		.from(videoUploads)
+		.where(eq(videoUploads.videoId, videoId));
+	const publication = isInstantFinishEnabledForOwner(facts.video.ownerId)
+		? await readPublication(videoId)
+		: null;
+	const [revision] =
+		publication &&
+		publication !== "missing_table" &&
+		publication.currentRevisionId
+			? await db()
+					.select()
+					.from(editRevision)
+					.where(eq(editRevision.revisionId, publication.currentRevisionId))
+			: [];
+	const sourceIdentity = facts.sourceIdentity
+		? (
+				await readOwnerPrivateSource(
+					videoId,
+					facts.video.ownerId,
+					facts.video.source.type,
+				)
+			).identity
+		: null;
+	let preparationIdentity: string | undefined;
+	if (facts.editorPreparation?.identity) {
+		if (sourceIdentity) {
+			preparationIdentity = sourceIdentity.preparationIdentity;
+		} else {
+			const [source] = await db()
+				.select()
+				.from(sourceObject)
+				.where(eq(sourceObject.videoId, videoId));
+			const relocations = await db()
+				.select()
+				.from(sourceRelocation)
+				.where(eq(sourceRelocation.videoId, videoId));
+			preparationIdentity = JSON.stringify({ source, relocations });
+		}
+	}
+	return JSON.stringify({
+		video,
+		upload,
+		publication,
+		revision,
+		sourceIdentity,
+		preparationIdentity,
+	});
+}
+
 export async function getEditReadiness(
 	videoId: Video.VideoId,
+	includeTranscript = true,
 ): Promise<EditReadinessResult> {
 	try {
 		const user = await getCurrentUser();
 		if (!user) return { status: "unavailable" };
-		const facts = await readFacts(videoId, user.id);
+		const facts = await readFacts(videoId, user.id, includeTranscript);
 		if (!facts) return { status: "unavailable" };
 		const isPro = userIsPro(user);
 		let transcriptRead: TranscriptReadState = "unavailable";
 		if (
+			includeTranscript &&
 			facts.eligible &&
 			isPro &&
 			facts.video.transcriptionStatus === "COMPLETE"
@@ -510,8 +633,7 @@ export async function getEditReadiness(
 			else if (transcript.status === "processing")
 				transcriptRead = "processing";
 		}
-		const fresh = await readFacts(videoId, user.id);
-		if (!fresh || fresh.identity !== facts.identity)
+		if ((await readFence(videoId, facts)) !== facts.fence)
 			return { status: "unavailable" };
 		return {
 			status: "ready",
@@ -528,20 +650,23 @@ export async function getEditReadiness(
 				uploadPhase: facts.upload?.phase ?? null,
 				processingError: facts.upload?.processingError,
 				canRetryProcessing: Boolean(facts.upload?.rawFileKey),
-				aiGenerationStatus:
-					facts.video.metadata?.aiGenerationStatus ??
-					(isPro &&
-					isAiConfigured() &&
-					facts.transcriptAvailable &&
-					!["SKIPPED", "NO_AUDIO", "ERROR"].includes(
-						facts.video.transcriptionStatus ?? "",
-					)
-						? "QUEUED"
-						: "UNAVAILABLE"),
+				aiGenerationStatus: !includeTranscript
+					? "UNAVAILABLE"
+					: (facts.video.metadata?.aiGenerationStatus ??
+						(isPro &&
+						isAiConfigured() &&
+						facts.transcriptAvailable &&
+						!["SKIPPED", "NO_AUDIO", "ERROR"].includes(
+							facts.video.transcriptionStatus ?? "",
+						)
+							? "QUEUED"
+							: "UNAVAILABLE")),
 				sourcePrepare: facts.editorPreparation?.sourcePrepare,
 				sourcePrepareError: facts.editorPreparation?.reason,
 				transcriptionStatus:
-					!facts.transcriptAvailable && facts.video.transcriptionStatus === null
+					!includeTranscript ||
+					(!facts.transcriptAvailable &&
+						facts.video.transcriptionStatus === null)
 						? "UNAVAILABLE"
 						: facts.video.transcriptionStatus,
 				transcriptRead,

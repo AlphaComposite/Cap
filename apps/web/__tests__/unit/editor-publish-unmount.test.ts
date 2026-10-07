@@ -374,47 +374,86 @@ describe("editor publish unmount", () => {
 		},
 	);
 
-	it("retries Done once with fresh counters without changing the specs or session", async () => {
-		const { baseline } = seedDraft();
-		const done = await renderEditor(baseline);
-		harness.instant.mockResolvedValue({
-			enabled: true,
-			generation: 8,
-			draftVersion: 6,
-			draftSession: "another-session",
-		});
-		harness.post.mockImplementation((path: string) => {
-			if (path.endsWith("/prepare")) {
-				return Promise.resolve({ revisionId: "prepared", generation: 4 });
-			}
-			const publishes = harness.post.mock.calls.filter(([route]) =>
-				route.endsWith("/publish"),
+	it.each(["same", "empty"])(
+		"retries Done once with a %s session and fresh counters",
+		async (session) => {
+			const { baseline } = seedDraft();
+			const draftSession = "this-editor-session";
+			localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, draftSession);
+			const done = await renderEditor(baseline);
+			harness.instant.mockResolvedValue({
+				enabled: true,
+				generation: 8,
+				draftVersion: 6,
+				draftSession: session === "same" ? draftSession : "",
+			});
+			harness.post.mockImplementation((path: string) => {
+				if (path.endsWith("/prepare")) {
+					return Promise.resolve({ revisionId: "prepared", generation: 4 });
+				}
+				const publishes = harness.post.mock.calls.filter(([route]) =>
+					route.endsWith("/publish"),
+				);
+				return publishes.length === 1
+					? Promise.reject(
+							Object.assign(new Error("stale draft"), { status: 409 }),
+						)
+					: Promise.resolve({ success: true, playback: null });
+			});
+
+			await act(async () => done.click());
+
+			const publishes = harness.post.mock.calls.filter(([path]) =>
+				path.endsWith("/publish"),
 			);
-			return publishes.length === 1
-				? Promise.reject(
-						Object.assign(new Error("stale draft"), { status: 409 }),
-					)
-				: Promise.resolve({ success: true, playback: null });
-		});
+			expect(publishes).toHaveLength(2);
+			expect(publishes[0]?.[1]).toMatchObject({ draftSession });
+			expect(publishes[1]?.[1]).toEqual({
+				...publishes[0]?.[1],
+				baseGeneration: 8,
+				draftVersion: 7,
+			});
+			expect(harness.instant).toHaveBeenLastCalledWith({
+				videoId: VIDEO_ID,
+				ownerId: "owner-1",
+			});
+			expect(harness.instant).toHaveBeenCalledTimes(2);
+			expect(harness.push).toHaveBeenCalledWith(`/s/${VIDEO_ID}`);
+			expect(storedDraft()).toBeNull();
+			expect(toast.error).not.toHaveBeenCalled();
+		},
+	);
 
-		await act(async () => done.click());
-
-		const publishes = harness.post.mock.calls.filter(([path]) =>
-			path.endsWith("/publish"),
-		);
-		expect(publishes).toHaveLength(2);
-		expect(publishes[1]?.[1]).toEqual({
-			...publishes[0]?.[1],
-			baseGeneration: 8,
-			draftVersion: 7,
-		});
-		expect(harness.instant).toHaveBeenLastCalledWith({
-			videoId: VIDEO_ID,
-			ownerId: "owner-1",
-		});
-		expect(harness.instant).toHaveBeenCalledTimes(2);
-		expect(harness.push).toHaveBeenCalledWith(`/s/${VIDEO_ID}`);
-		expect(storedDraft()).toBeNull();
-		expect(toast.error).not.toHaveBeenCalled();
-	});
+	it.each(["stale draft", ""])(
+		"does not retry across sessions with server message %j",
+		async (message) => {
+			const { baseline, selectedSegmentId } = seedDraft();
+			const done = await renderEditor(baseline);
+			harness.instant.mockResolvedValue({
+				enabled: true,
+				generation: 8,
+				draftVersion: 6,
+				draftSession: "another-session",
+			});
+			await act(async () => done.click());
+			await act(async () => {
+				rejectPublish(Object.assign(new Error(message), { status: 409 }));
+			});
+			expect(
+				harness.post.mock.calls.filter(([path]) => path.endsWith("/publish")),
+			).toHaveLength(1);
+			expect(harness.instant).toHaveBeenCalledTimes(2);
+			expect(harness.push).not.toHaveBeenCalled();
+			expect(
+				container.querySelector("[data-editor-shell='editor']"),
+			).not.toBeNull();
+			expect(container.textContent).toContain("0:08");
+			expect(storedDraft()?.state.selectedSegmentId).toBe(selectedSegmentId);
+			expect(doneButton()?.disabled).toBe(false);
+			expect(toast.error).toHaveBeenCalledWith(
+				message ||
+					"This video was edited in another session. Reload before publishing.",
+			);
+		},
+	);
 });

@@ -10,6 +10,7 @@ import {
 	SOURCE_PREPARE_JOB,
 	stablePrivateSourceKey,
 } from "@/lib/source-prepare";
+import { deriveEditReadiness } from "@/lib/video-edit-readiness";
 
 vi.mock("server-only", () => ({}));
 
@@ -229,6 +230,60 @@ describe("pending editor join", () => {
 			expect(relocate).not.toHaveBeenCalled();
 		},
 	);
+
+	it("keeps a transient preparation read unavailable and polling until recovery", async () => {
+		const input = {
+			journalThrows: true,
+			pending: false,
+			stages: [],
+			source: {
+				videoId,
+				liveKey: journalKey,
+				sha256: sha,
+				relocationState: "PURGED",
+				codec: "h264",
+				timebase: "1/90000",
+				frameMode: "cfr",
+				a1Digest: sha,
+				indexId: "bound-index",
+				warmExpiresAt: warmUntil,
+			},
+		};
+		const harness = editorDb(input);
+		const { readEditorPreparation } = await import(
+			"@/lib/revision-publication-read"
+		);
+		const project = async () => {
+			const { sourcePrepare, editorOpenable } = await readEditorPreparation(
+				harness.db as never,
+				videoId,
+			);
+			return deriveEditReadiness({
+				videoId,
+				identity: "source",
+				eligible: true,
+				isPro: true,
+				playbackAdmission: true,
+				videoState: "processed",
+				transcriptionStatus: "COMPLETE",
+				aiGenerationStatus: "COMPLETE",
+				transcriptRead: "ready",
+				sourcePrepare,
+				editorOpenable,
+			});
+		};
+		const unavailable = await project();
+		expect(unavailable.sourcePrepare).toBe("unavailable");
+		expect(unavailable.poll).toBe(true);
+		expect(unavailable.editorOpenable).toBe(false);
+		expect(unavailable.rows[4]).toMatchObject({ state: "unavailable" });
+		input.journalThrows = false;
+		const recovered = await project();
+		expect(recovered.sourcePrepare).toBe("done");
+		expect(recovered.editorOpenable).toBe(true);
+		expect(recovered.allDone).toBe(true);
+		expect(recovered.poll).toBe(false);
+	});
 
 	it("re-prepares an expired PURGED source while the caption outbox remains open", async () => {
 		const source = {

@@ -13,7 +13,7 @@ export type TranscriptReadState =
 export type ProcessingStep = {
 	id: "upload" | "video" | "transcript" | "ai" | "sourcePrepare";
 	label: string;
-	state: "waiting" | "running" | "done" | "failed";
+	state: "waiting" | "running" | "done" | "failed" | "unavailable";
 	reason?: string;
 	retry?: "processing" | "transcript" | "ai";
 };
@@ -28,7 +28,7 @@ export type EditReadiness = {
 	uploadPhase: string | null;
 	transcriptionStatus: string | null;
 	aiGenerationStatus: string | null;
-	sourcePrepare: "queued" | "running" | "done" | "failed";
+	sourcePrepare: "queued" | "running" | "done" | "failed" | "unavailable";
 	rows: ProcessingStep[];
 	processingSummary: string;
 	allDone: boolean;
@@ -179,31 +179,22 @@ export function deriveEditReadiness(facts: {
 			id: "sourcePrepare",
 			label: "Preparing for editing",
 			state:
-				sourcePrepare === "failed"
-					? "failed"
-					: sourcePrepare === "done"
-						? "done"
-						: sourcePrepare === "running"
-							? "running"
-							: "waiting",
+				sourcePrepare === "unavailable"
+					? "unavailable"
+					: sourcePrepare === "failed"
+						? "failed"
+						: sourcePrepare === "done"
+							? "done"
+							: sourcePrepare === "running"
+								? "running"
+								: "waiting",
 			reason:
 				sourcePrepare === "failed"
 					? facts.sourcePrepareError || "Preparing for editing failed"
 					: undefined,
 		},
 	];
-	const allDone = rows.every((row) => row.state === "done");
-	const failed = rows.find((row) => row.state === "failed");
-	const active =
-		rows.find((row) => row.state === "running") ??
-		rows.find((row) => row.state === "waiting");
-	const processingSummary = allDone
-		? "Ready to edit"
-		: failed
-			? `${failed.label} failed.`
-			: active
-				? `${facts.transcriptionStatus === "COMPLETE" ? "Transcript ready. " : ""}${active.label}${active.state === "waiting" ? " waiting" : ""}.`
-				: "Ready to edit";
+	const progress = processingProgress(rows, facts.transcriptionStatus);
 	return {
 		videoId: facts.videoId,
 		identity: facts.identity,
@@ -216,8 +207,7 @@ export function deriveEditReadiness(facts: {
 		aiGenerationStatus: facts.aiGenerationStatus ?? null,
 		sourcePrepare,
 		rows,
-		allDone,
-		processingSummary,
+		...progress,
 		transcriptUsable,
 		videoState: facts.videoState,
 		videoLabel:
@@ -234,11 +224,36 @@ export function deriveEditReadiness(facts: {
 		poll:
 			rows.some(
 				(row) =>
+					row.state === "unavailable" ||
 					row.state === "running" ||
 					(facts.videoState !== "failed" &&
 						facts.videoState !== "unavailable" &&
 						row.state === "waiting"),
 			) || facts.transcriptRead === "processing",
+	};
+}
+
+export function processingProgress(
+	rows: ProcessingStep[],
+	transcriptionStatus: string | null,
+) {
+	const allDone = rows.every((row) => row.state === "done");
+	const failed = rows.find((row) => row.state === "failed");
+	const active =
+		rows.find((row) => row.state === "unavailable") ??
+		rows.find((row) => row.state === "running") ??
+		rows.find((row) => row.state === "waiting");
+	return {
+		allDone,
+		processingSummary: allDone
+			? "Ready to edit"
+			: failed
+				? `${failed.label} failed.`
+				: active?.state === "unavailable"
+					? `${active.label}: Checking…`
+					: active
+						? `${transcriptionStatus === "COMPLETE" ? "Transcript ready. " : ""}${active.label}${active.state === "waiting" ? " waiting" : ""}.`
+						: "Ready to edit",
 	};
 }
 

@@ -18,12 +18,14 @@ function Harness({
 	id = "video",
 	context = "first",
 	enabled = true,
+	includeTranscript = true,
 }: {
 	id?: string;
 	context?: string;
 	enabled?: boolean;
+	includeTranscript?: boolean;
 }) {
-	current = useEditReadiness(id as never, enabled, context);
+	current = useEditReadiness(id as never, enabled, context, includeTranscript);
 	return createElement(
 		"span",
 		null,
@@ -194,15 +196,18 @@ describe("serialized read-only polling", () => {
 		expect(mocks.read).toHaveBeenCalledTimes(2);
 		expect(current.readiness?.manualEditing).toBe(true);
 	});
-	it("stops unavailable retries at the existing attempt cap and starts a new cycle on Check again", async () => {
+	it("keeps unavailable retries at a thirty-second ceiling and resets on Check again", async () => {
 		mocks.read.mockResolvedValue({ status: "unavailable" });
 		await render();
 		await act(async () => vi.advanceTimersByTimeAsync(3600000));
-		expect(mocks.read).toHaveBeenCalledTimes(12);
+		const calls = mocks.read.mock.calls.length;
+		expect(calls).toBeGreaterThan(12);
 		expect(current.readiness).toBeNull();
 		expect(current.message).toBe("Unable to check readiness");
+		await act(async () => vi.advanceTimersByTimeAsync(30_000));
+		expect(mocks.read).toHaveBeenCalledTimes(calls + 1);
 		await act(async () => current.checkAgain());
-		expect(mocks.read).toHaveBeenCalledTimes(13);
+		expect(mocks.read).toHaveBeenCalledTimes(calls + 2);
 	});
 	it("does not overlap or continue unavailable retries after disable, unmount, or a video switch", async () => {
 		let resolve: (value: unknown) => void = () => {};
@@ -216,7 +221,7 @@ describe("serialized read-only polling", () => {
 		await act(async () => vi.advanceTimersByTimeAsync(5000));
 		expect(mocks.read).toHaveBeenCalledTimes(1);
 		await act(async () => resolve({ status: "unavailable" }));
-		await act(async () => vi.advanceTimersByTimeAsync(2000));
+		await act(async () => vi.advanceTimersByTimeAsync(5000));
 		expect(mocks.read).toHaveBeenCalledTimes(2);
 		await render({ enabled: false });
 		await act(async () => vi.advanceTimersByTimeAsync(3600000));
@@ -261,6 +266,42 @@ describe("serialized read-only polling", () => {
 		await act(async () => current.checkAgain());
 		expect(mocks.read).toHaveBeenCalledTimes(3);
 	});
+	it("backs off unavailable steps from five to thirty seconds, then recovers", async () => {
+		const unavailable = ready("video", "COMPLETE");
+		unavailable.readiness = deriveEditReadiness({
+			...unavailable.readiness,
+			eligible: true,
+			isPro: true,
+			transcriptRead: "ready",
+			editorOpenable: false,
+			sourcePrepare: "unavailable",
+		});
+		mocks.read.mockResolvedValue(unavailable);
+		await render();
+		for (const [index, delay] of [
+			5000, 10_000, 20_000, 30_000, 30_000,
+		].entries()) {
+			await act(async () => vi.advanceTimersByTimeAsync(delay - 1));
+			expect(mocks.read).toHaveBeenCalledTimes(index + 1);
+			await act(async () => vi.advanceTimersByTimeAsync(1));
+			expect(mocks.read).toHaveBeenCalledTimes(index + 2);
+		}
+		mocks.read.mockResolvedValue(ready("video", "COMPLETE"));
+		await act(async () => vi.advanceTimersByTimeAsync(30_000));
+		expect(current.readiness?.editorOpenable).toBe(true);
+		const calls = mocks.read.mock.calls.length;
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(mocks.read).toHaveBeenCalledTimes(calls);
+	});
+
+	it("leaves transcript and AI polling to the existing share status query", async () => {
+		mocks.read.mockResolvedValue(ready("video", "UNAVAILABLE"));
+		await render({ includeTranscript: false });
+		expect(mocks.read).toHaveBeenCalledExactlyOnceWith("video", false);
+		await act(async () => vi.advanceTimersByTimeAsync(3600000));
+		expect(mocks.read).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps the admitted state visible during a poll request", async () => {
 		await render();
 		mocks.read.mockImplementationOnce(() => new Promise(() => {}));

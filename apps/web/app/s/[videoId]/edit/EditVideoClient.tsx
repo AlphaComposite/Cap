@@ -1403,11 +1403,19 @@ export function EditVideoClient({
 						draftVersion: (publicationState.draftVersion ?? 0) + 1,
 						draftSession,
 					}),
-				async () => {
-					publicationState = await getEditorInstantFinishState({
+				async (error) => {
+					const fresh = await getEditorInstantFinishState({
 						videoId: video.id,
 						ownerId: video.ownerId,
 					});
+					if (fresh.draftSession && fresh.draftSession !== draftSession) {
+						throw error instanceof Error && error.message
+							? error
+							: new Error(
+									"This video was edited in another session. Reload before publishing.",
+								);
+					}
+					publicationState = fresh;
 					setInstantFinish(publicationState);
 				},
 			);

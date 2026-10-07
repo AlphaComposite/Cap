@@ -8,7 +8,7 @@ export type DoneRoute = "wait" | "save" | "publish";
 
 export async function publishDoneWithRetry<T>(
 	publish: () => Promise<T>,
-	refresh: () => Promise<void>,
+	refresh: (error: unknown) => Promise<void>,
 ): Promise<T> {
 	try {
 		return await publish();
@@ -21,8 +21,8 @@ export async function publishDoneWithRetry<T>(
 		) {
 			throw error;
 		}
+		await refresh(error);
 	}
-	await refresh();
 	return publish();
 }
 
