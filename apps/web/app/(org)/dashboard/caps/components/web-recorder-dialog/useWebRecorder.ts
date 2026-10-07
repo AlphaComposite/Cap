@@ -21,11 +21,13 @@ import type {
 	VideoId,
 } from "@cap/recorder-core/recorder-types";
 import {
+	describeRecordingCodecs,
 	detectCapabilities,
 	openShareUrlInNewTab,
 	type RecorderCapabilities,
 	type RecordingPipeline,
 	selectRecordingPipeline,
+	startRecorderWithFallback,
 } from "@cap/recorder-core/recorder-utils";
 import {
 	canUseRecordingSpool,
@@ -261,7 +263,7 @@ export const useWebRecorder = ({
 	const recoveredDownloadUrlsRef = useRef(new Map<string, string>());
 
 	const isStreamingPipelineActive = useCallback(
-		() => recordingPipelineRef.current?.mode === "streaming-webm",
+		() => recordingPipelineRef.current?.mode === "streaming",
 		[],
 	);
 
@@ -834,117 +836,132 @@ export const useWebRecorder = ({
 			const hasAudio = mixedStream.getAudioTracks().length > 0;
 			setHasAudioTrack(hasAudio);
 
-			const pipeline = selectRecordingPipeline(hasAudio);
-			if (!pipeline) {
+			const selectedPipeline = selectRecordingPipeline(hasAudio);
+			if (!selectedPipeline) {
 				throw new Error("No supported recording pipeline available");
 			}
 
-			recordedChunksRef.current = [];
-			totalRecordedBytesRef.current = 0;
-			await disposeRecordingSpool();
-			if (pipeline.mode === "streaming-webm") {
-				const spool = await createRecordingSpool(pipeline.mimeType);
-				if (spool) {
-					setLocalRecordingStrategy({ mode: "off" });
-				} else {
-					setLocalRecordingStrategy({ mode: "full" });
-					toast.warning(
-						"Durable local backup is unavailable. This recording will use in-memory recovery.",
-					);
-				}
-			} else {
-				setLocalRecordingStrategy({ mode: "full" });
-			}
-			instantUploaderRef.current = null;
-			recordingPipelineRef.current = pipeline;
+			const { pipeline, startedWithTimeslice } =
+				await startRecorderWithFallback(
+					mixedStream,
+					selectedPipeline,
+					selectedPipeline.mode === "streaming"
+						? INSTANT_UPLOAD_REQUEST_INTERVAL_MS
+						: 200,
+					async (recorder, pipeline) => {
+						recordedChunksRef.current = [];
+						totalRecordedBytesRef.current = 0;
+						await disposeRecordingSpool();
+						if (pipeline.mode === "streaming") {
+							const spool = await createRecordingSpool(pipeline.mimeType);
+							if (spool) {
+								setLocalRecordingStrategy({ mode: "off" });
+							} else {
+								setLocalRecordingStrategy({ mode: "full" });
+								toast.warning(
+									"Durable local backup is unavailable. This recording will use in-memory recovery.",
+								);
+							}
+						} else {
+							setLocalRecordingStrategy({ mode: "full" });
+						}
+						instantUploaderRef.current = null;
+						recordingPipelineRef.current = pipeline;
 
-			if (pipeline.mode === "streaming-webm") {
-				const width = dimensionsRef.current.width;
-				const height = dimensionsRef.current.height;
-				const resolution = width && height ? `${width}x${height}` : undefined;
-				const creation = unwrapExitOrThrow(
-					await videoInstantCreate.mutateAsync({
-						orgId: Organisation.OrganisationId.make(organisationId),
-						folderId: Option.none(),
-						resolution,
-						width,
-						height,
-						videoCodec: "h264",
-						audioCodec: hasAudio ? "aac" : undefined,
-						supportsUploadProgress: true,
-					}),
-				) as InstantVideoCreation;
-				const creationResult = {
-					id: creation.id,
-					shareUrl: creation.shareUrl,
-					upload: creation.upload,
-				};
-				videoCreationRef.current = creationResult;
-				setVideoId(creation.id);
-				pendingInstantVideoIdRef.current = creation.id;
+						if (pipeline.mode === "streaming") {
+							const { videoCodec, audioCodec } = describeRecordingCodecs(
+								pipeline.mimeType,
+								hasAudio,
+							);
+							const width = dimensionsRef.current.width;
+							const height = dimensionsRef.current.height;
+							const resolution =
+								width && height ? `${width}x${height}` : undefined;
+							const creation = unwrapExitOrThrow(
+								await videoInstantCreate.mutateAsync({
+									orgId: Organisation.OrganisationId.make(organisationId),
+									folderId: Option.none(),
+									resolution,
+									width,
+									height,
+									videoCodec,
+									audioCodec,
+									supportsUploadProgress: true,
+								}),
+							) as InstantVideoCreation;
+							const creationResult = {
+								id: creation.id,
+								shareUrl: creation.shareUrl,
+								upload: creation.upload,
+							};
+							videoCreationRef.current = creationResult;
+							setVideoId(creation.id);
+							pendingInstantVideoIdRef.current = creation.id;
 
-				const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
-				const uploadSession = await initiateMultipartUpload({
-					videoId: creationResult.id,
-					contentType: pipeline.mimeType,
-					subpath: rawSubpath,
-				});
-				instantUploaderRef.current = new InstantRecordingUploader({
-					videoId: creationResult.id,
-					uploadId: uploadSession.uploadId,
-					provider: uploadSession.provider,
-					mimeType: pipeline.mimeType,
-					subpath: rawSubpath,
-					setUploadStatus,
-					sendProgressUpdate: (uploaded, total) =>
-						sendProgressUpdate(creationResult.id, uploaded, total),
-					onChunkStateChange: setChunkUploads,
-					onFatalError: () => {
-						void stopRecordingRef.current?.();
+							const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
+							const uploadSession = await initiateMultipartUpload({
+								videoId: creationResult.id,
+								contentType: pipeline.mimeType,
+								subpath: rawSubpath,
+							});
+							instantUploaderRef.current = new InstantRecordingUploader({
+								videoId: creationResult.id,
+								uploadId: uploadSession.uploadId,
+								provider: uploadSession.provider,
+								mimeType: pipeline.mimeType,
+								subpath: rawSubpath,
+								setUploadStatus,
+								sendProgressUpdate: (uploaded, total) =>
+									sendProgressUpdate(creationResult.id, uploaded, total),
+								onChunkStateChange: setChunkUploads,
+								onFatalError: () => {
+									void stopRecordingRef.current?.();
+								},
+							});
+						}
+
+						recorder.ondataavailable = handleRecorderDataAvailable;
+						recorder.onstop = onRecorderStop;
+						recorder.onerror = onRecorderError;
+
+						mediaRecorderRef.current = recorder;
+						instantChunkModeRef.current = null;
+						lastInstantChunkAtRef.current = null;
+						clearInstantChunkGuard();
+						stopInstantChunkInterval();
 					},
-				});
-			}
-
-			const recorder = new MediaRecorder(mixedStream, {
-				mimeType: pipeline.mimeType,
-			});
-			recorder.ondataavailable = handleRecorderDataAvailable;
-			recorder.onstop = onRecorderStop;
-			recorder.onerror = onRecorderError;
-
-			const handleVideoEnded = () => {
-				window.focus();
-				stopRecordingRef.current?.().catch(() => {});
-			};
-
-			firstTrack?.addEventListener("ended", handleVideoEnded, { once: true });
-
-			mediaRecorderRef.current = recorder;
-			instantChunkModeRef.current = null;
-			lastInstantChunkAtRef.current = null;
-			clearInstantChunkGuard();
-			stopInstantChunkInterval();
-			if (pipeline.mode === "streaming-webm") {
-				let startedWithTimeslice = false;
-				try {
-					recorder.start(INSTANT_UPLOAD_REQUEST_INTERVAL_MS);
-					instantChunkModeRef.current = "timeslice";
-					startedWithTimeslice = true;
-				} catch (startError) {
-					console.warn(
-						"Failed to start recorder with timeslice chunks, falling back to manual flush",
-						startError,
-					);
-				}
-
+					async () => {
+						await instantUploaderRef.current?.cancel();
+						await disposeRecordingSpool();
+						const orphanVideoId = videoCreationRef.current?.id;
+						instantUploaderRef.current = null;
+						recordingPipelineRef.current = null;
+						videoCreationRef.current = null;
+						pendingInstantVideoIdRef.current = null;
+						mediaRecorderRef.current = null;
+						if (
+							orphanVideoId &&
+							!(await deletePendingVideoSafely(orphanVideoId))
+						) {
+							throw new Error("Failed to delete rejected MP4 recording");
+						}
+					},
+				);
+			firstTrack?.addEventListener(
+				"ended",
+				() => {
+					window.focus();
+					stopRecordingRef.current?.().catch(() => {});
+				},
+				{ once: true },
+			);
+			if (pipeline.mode === "streaming") {
 				if (startedWithTimeslice) {
+					instantChunkModeRef.current = "timeslice";
 					scheduleInstantChunkGuard();
 				} else {
-					recorder.start();
 					beginManualInstantChunking();
 				}
-			} else {
-				recorder.start(200);
 			}
 			onRecordingStart?.();
 
@@ -1073,6 +1090,10 @@ export const useWebRecorder = ({
 
 			let creationResult = videoCreationRef.current;
 			if (!creationResult) {
+				const { videoCodec, audioCodec } = describeRecordingCodecs(
+					pipeline.mimeType,
+					hasAudioTrack,
+				);
 				const result = unwrapExitOrThrow(
 					await videoInstantCreate.mutateAsync({
 						orgId: Organisation.OrganisationId.make(orgId),
@@ -1081,8 +1102,8 @@ export const useWebRecorder = ({
 						durationSeconds,
 						width,
 						height,
-						videoCodec: "h264",
-						audioCodec: hasAudioTrack ? "aac" : undefined,
+						videoCodec,
+						audioCodec,
 						supportsUploadProgress: true,
 					}),
 				) as InstantVideoCreation;
@@ -1106,7 +1127,7 @@ export const useWebRecorder = ({
 				thumbnailUrl: undefined,
 			});
 
-			if (pipeline.mode === "streaming-webm") {
+			if (pipeline.mode === "streaming") {
 				let uploader = instantUploader;
 				const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
 
@@ -1166,7 +1187,7 @@ export const useWebRecorder = ({
 						// The browser claimed it could encode MP4 but the conversion
 						// still failed (e.g. a stalled decoder). Rather than discarding
 						// the recording, upload the raw WebM and let the media server
-						// transcode it, mirroring the streaming-webm server path.
+						// transcode it, mirroring the streaming server path.
 						console.warn(
 							"In-browser conversion failed; falling back to server-side processing",
 							conversionError,
@@ -1316,7 +1337,7 @@ export const useWebRecorder = ({
 			setCompletedShareUrl(creationResult.shareUrl);
 			updatePhase("completed");
 			toast.success(
-				pipeline.mode === "streaming-webm"
+				pipeline.mode === "streaming"
 					? "Recording uploaded. Processing will continue shortly."
 					: "Recording uploaded.",
 			);

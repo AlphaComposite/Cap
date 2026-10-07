@@ -22,6 +22,13 @@ afterEach(() => {
 });
 
 describe("constraint builders", () => {
+	it("caps camera capture at 1080p and 30 fps", () => {
+		expect(cameraVideoConstraints()).toMatchObject({
+			width: { ideal: 1920, max: 1920 },
+			height: { ideal: 1080, max: 1080 },
+			frameRate: { ideal: 30, max: 30 },
+		});
+	});
 	it("uses exact deviceId when a device is chosen", () => {
 		expect(cameraVideoConstraints("cam-1").deviceId).toEqual({
 			exact: "cam-1",
@@ -37,6 +44,29 @@ describe("constraint builders", () => {
 });
 
 describe("acquireDisplayStream", () => {
+	it("keeps the 1080p/30 fps cap through TypeError and OverconstrainedError retries", async () => {
+		const getDisplayMedia = stubDisplayMedia(async () => {
+			if (getDisplayMedia.mock.calls.length === 1) {
+				throw new TypeError("Unsupported preferences");
+			}
+			if (getDisplayMedia.mock.calls.length === 2) {
+				throw domError("OverconstrainedError");
+			}
+			return { id: "display" };
+		});
+		await acquireDisplayStream({
+			mode: "fullscreen",
+			systemAudioEnabled: true,
+		});
+		expect(getDisplayMedia).toHaveBeenCalledTimes(3);
+		for (const [options] of getDisplayMedia.mock.calls) {
+			expect(options.video).toMatchObject({
+				width: { ideal: 1920, max: 1920 },
+				height: { ideal: 1080, max: 1080 },
+				frameRate: { ideal: 30, max: 30 },
+			});
+		}
+	});
 	it("passes surface preferences and system audio on the first attempt", async () => {
 		const stream = { id: "display" };
 		const getDisplayMedia = stubDisplayMedia(async () => stream);

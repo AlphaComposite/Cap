@@ -1,6 +1,7 @@
 import {
 	appendLocalRecordingChunk,
 	type ChunkUploadState,
+	cameraVideoConstraints,
 	DEFAULT_API_REQUEST_TIMEOUT_MS,
 	DISPLAY_MEDIA_IDEAL,
 	deleteRecoveredRecordingSpool,
@@ -17,6 +18,7 @@ import {
 	RecordingSpool,
 	recoverRecordingSpoolSession,
 	selectRecordingPipeline,
+	startRecorderWithFallback,
 	type VideoId,
 } from "@cap/recorder-core";
 
@@ -387,16 +389,19 @@ const getCameraMediaStream = async (
 	const constraints: MediaStreamConstraints[] = [];
 	if (webcam.deviceId && webcam.deviceId !== DEFAULT_CAMERA_DEVICE_ID) {
 		constraints.push({
-			video: { deviceId: { exact: webcam.deviceId } },
+			video: cameraVideoConstraints(webcam.deviceId),
 			audio,
 		});
 		constraints.push({
-			video: { deviceId: { ideal: webcam.deviceId } },
+			video: {
+				...cameraVideoConstraints(),
+				deviceId: { ideal: webcam.deviceId },
+			},
 			audio,
 		});
 	}
 	constraints.push({
-		video: true,
+		video: cameraVideoConstraints(),
 		audio,
 	});
 
@@ -431,6 +436,9 @@ const tabCaptureConstraints = (streamId: string, includeAudio: boolean) =>
 			mandatory: {
 				chromeMediaSource: "tab",
 				chromeMediaSourceId: streamId,
+				maxWidth: DEFAULT_WIDTH,
+				maxHeight: DEFAULT_HEIGHT,
+				maxFrameRate: DEFAULT_FPS,
 			},
 		},
 	}) as unknown as MediaStreamConstraints;
@@ -810,8 +818,12 @@ const startRecording = async (request: StartRecordingRequest) => {
 	// attempt is the one that set it.
 	const ownedStreams: MediaStream[] = [];
 	let ownedVideoId: string | null = null;
-	let ownedSpool: RecordingSpool | null = null;
+	const owned: {
+		spool: RecordingSpool | null;
+		uploader: InstantRecordingUploader | null;
+	} = { spool: null, uploader: null };
 	let ownedRecording: ActiveRecording | null = null;
+	let ownedAudioContext: AudioContext | undefined;
 	let countdownPromise: Promise<void> | null = null;
 
 	try {
@@ -847,247 +859,288 @@ const startRecording = async (request: StartRecordingRequest) => {
 			streams,
 			routeFirstStreamToSpeakers: request.mode === "tab",
 		});
+		ownedAudioContext = audioContext;
 		const hasAudio = recordingStream.getAudioTracks().length > 0;
-		const pipeline = selectRecordingPipeline(hasAudio);
-		if (!pipeline) throw new Error("No supported recorder format is available");
+		const selectedPipeline = selectRecordingPipeline(hasAudio);
+		if (!selectedPipeline)
+			throw new Error("No supported recorder format is available");
 
-		const { videoCodec, audioCodec } = describeRecordingCodecs(
-			pipeline.mimeType,
-			hasAudio,
-		);
-		const creation = await createInstantRecording({
-			settings: request.settings,
-			auth: request.auth,
-			input: {
-				orgId: request.bootstrap.organization.id,
-				folderId: undefined,
-				resolution: `${width}x${height}`,
-				width,
-				height,
-				videoCodec,
-				audioCodec,
-				supportsUploadProgress: true,
-			},
-		});
-		ownedVideoId = creation.id;
-		throwIfStartCanceled();
-		const subpath = `raw-upload.${pipeline.fileExtension}`;
-		const api = {
-			baseUrl: request.settings.apiBaseUrl,
-			authToken: request.auth.authApiKey,
-			requestTimeoutMs: DEFAULT_API_REQUEST_TIMEOUT_MS,
-		};
-		const uploadSession = await initiateMultipartUpload({
-			videoId: creation.id,
-			contentType: pipeline.mimeType,
-			subpath,
-			api,
-		});
-		throwIfStartCanceled();
-		const spool = await RecordingSpool.create({ mimeType: pipeline.mimeType });
-		ownedSpool = spool;
-		throwIfStartCanceled();
-		const uploader = new InstantRecordingUploader({
-			videoId: creation.id,
-			uploadId: uploadSession.uploadId,
-			provider: uploadSession.provider,
-			mimeType: pipeline.mimeType,
-			subpath,
-			api,
-			setUploadStatus: (uploadStatus) => {
-				if (
-					status.phase === "recording" ||
-					status.phase === "paused" ||
-					status.phase === "uploading"
-				) {
-					status = { ...status, uploadStatus };
-					broadcastProgressThrottled();
-				}
-			},
-			sendProgressUpdate: (uploaded, total) =>
-				updateUploadProgress({
-					settings: request.settings,
-					auth: request.auth,
-					videoId: creation.id,
-					uploaded,
-					total,
-				}).then(() => undefined),
-			onChunkStateChange: (nextChunks) => {
-				if (
-					status.phase === "recording" ||
-					status.phase === "paused" ||
-					status.phase === "uploading"
-				) {
-					status = { ...status, upload: summarizeChunks(nextChunks) };
-					broadcastProgressThrottled();
-				}
-			},
-			// Deliberately no onOverflow handler: when uploads fall 128MB behind
-			// (MAX_PENDING_UPLOAD_BYTES) the recording is stopped via
-			// onFatalError instead of degrading like the dashboard recorder.
-			// Every byte is already double-written to the IndexedDB spool, so
-			// the user keeps retry/download, and capping the buffer matters
-			// more in an offscreen document the browser can't page out.
-			onFatalError: (error) => {
-				status = {
-					phase: "error",
-					message: error.message,
-					videoId: creation.id,
-				};
-				broadcastStatus();
-				if (activeRecording?.recorder) {
-					stopRecorderAfterError(activeRecording.recorder);
-				}
-			},
-		});
+		const { prepared: recording, startedWithTimeslice } =
+			await startRecorderWithFallback(
+				recordingStream,
+				selectedPipeline,
+				RECORDING_TIMESLICE_MS,
+				async (recorder, pipeline) => {
+					throwIfStartCanceled();
+					const { videoCodec, audioCodec } = describeRecordingCodecs(
+						pipeline.mimeType,
+						hasAudio,
+					);
+					const creation = await createInstantRecording({
+						settings: request.settings,
+						auth: request.auth,
+						input: {
+							orgId: request.bootstrap.organization.id,
+							folderId: undefined,
+							resolution: `${width}x${height}`,
+							width,
+							height,
+							videoCodec,
+							audioCodec,
+							supportsUploadProgress: true,
+						},
+					});
+					ownedVideoId = creation.id;
+					throwIfStartCanceled();
+					const subpath = `raw-upload.${pipeline.fileExtension}`;
+					const api = {
+						baseUrl: request.settings.apiBaseUrl,
+						authToken: request.auth.authApiKey,
+						requestTimeoutMs: DEFAULT_API_REQUEST_TIMEOUT_MS,
+					};
+					const uploadSession = await initiateMultipartUpload({
+						videoId: creation.id,
+						contentType: pipeline.mimeType,
+						subpath,
+						api,
+					});
+					throwIfStartCanceled();
+					const spool = await RecordingSpool.create({
+						mimeType: pipeline.mimeType,
+					});
+					owned.spool = spool;
+					throwIfStartCanceled();
+					const uploader = new InstantRecordingUploader({
+						videoId: creation.id,
+						uploadId: uploadSession.uploadId,
+						provider: uploadSession.provider,
+						mimeType: pipeline.mimeType,
+						subpath,
+						api,
+						setUploadStatus: (uploadStatus) => {
+							if (
+								status.phase === "recording" ||
+								status.phase === "paused" ||
+								status.phase === "uploading"
+							) {
+								status = { ...status, uploadStatus };
+								broadcastProgressThrottled();
+							}
+						},
+						sendProgressUpdate: (uploaded, total) =>
+							updateUploadProgress({
+								settings: request.settings,
+								auth: request.auth,
+								videoId: creation.id,
+								uploaded,
+								total,
+							}).then(() => undefined),
+						onChunkStateChange: (nextChunks) => {
+							if (
+								status.phase === "recording" ||
+								status.phase === "paused" ||
+								status.phase === "uploading"
+							) {
+								status = { ...status, upload: summarizeChunks(nextChunks) };
+								broadcastProgressThrottled();
+							}
+						},
+						// Deliberately no onOverflow handler: when uploads fall 128MB behind
+						// (MAX_PENDING_UPLOAD_BYTES) the recording is stopped via
+						// onFatalError instead of degrading like the dashboard recorder.
+						// Every byte is already double-written to the IndexedDB spool, so
+						// the user keeps retry/download, and capping the buffer matters
+						// more in an offscreen document the browser can't page out.
+						onFatalError: (error) => {
+							status = {
+								phase: "error",
+								message: error.message,
+								videoId: creation.id,
+							};
+							broadcastStatus();
+							if (activeRecording?.recorder) {
+								stopRecorderAfterError(activeRecording.recorder);
+							}
+						},
+					});
 
-		const recorder = new MediaRecorder(recordingStream, {
-			mimeType: pipeline.mimeType,
-		});
+					owned.uploader = uploader;
 
-		await countdownPromise;
-		throwIfStartCanceled();
+					await countdownPromise;
+					throwIfStartCanceled();
 
-		const startedAt = Date.now();
-		const plan = request.bootstrap.plan;
-		const maxDurationMs =
-			!plan.isPro && plan.maxRecordingSeconds !== null
-				? plan.maxRecordingSeconds * 1000
-				: null;
+					const startedAt = Date.now();
+					const plan = request.bootstrap.plan;
+					const maxDurationMs =
+						!plan.isPro && plan.maxRecordingSeconds !== null
+							? plan.maxRecordingSeconds * 1000
+							: null;
 
-		const recording: ActiveRecording = {
-			recorder,
-			stopPromise: Promise.resolve(),
-			streams,
-			recordingStream,
-			statusTimer: null,
-			spool,
-			uploader,
-			startedAt,
-			durationMs: 0,
-			lastResumedAt: startedAt,
-			videoId: creation.id,
-			shareUrl: creation.shareUrl,
-			width,
-			height,
-			fps,
-			subpath,
-			mimeType: pipeline.mimeType,
-			maxDurationMs,
-			audioContext,
-			chunkChain: Promise.resolve(),
-			dataRequestInterval: null,
-			chunkStartGuard: null,
-			chunkingMode: null,
-			lastChunkAt: null,
-			recordedBytes: 0,
-			finalizePromise: null,
-			cleanedUp: false,
-			spoolFailed: false,
-			memoryBackup: initialLocalRecordingState(),
-		};
+					const recording: ActiveRecording = {
+						recorder,
+						stopPromise: Promise.resolve(),
+						streams,
+						recordingStream,
+						statusTimer: null,
+						spool,
+						uploader,
+						startedAt,
+						durationMs: 0,
+						lastResumedAt: startedAt,
+						videoId: creation.id,
+						shareUrl: creation.shareUrl,
+						width,
+						height,
+						fps,
+						subpath,
+						mimeType: pipeline.mimeType,
+						maxDurationMs,
+						audioContext,
+						chunkChain: Promise.resolve(),
+						dataRequestInterval: null,
+						chunkStartGuard: null,
+						chunkingMode: null,
+						lastChunkAt: null,
+						recordedBytes: 0,
+						finalizePromise: null,
+						cleanedUp: false,
+						spoolFailed: false,
+						memoryBackup: initialLocalRecordingState(),
+					};
 
-		ownedRecording = recording;
-		activeRecording = recording;
+					ownedRecording = recording;
+					activeRecording = recording;
+					// A crash from here on strands the spool; persisting the recording's
+					// identity alongside it lets the startup sweep surface a retryable
+					// failed-recording entry (videoId, subpath) instead of download-only.
+					await saveLiveRecordingManifest({
+						sessionId: spool.sessionId,
+						videoId: creation.id,
+						shareUrl: creation.shareUrl,
+						mimeType: pipeline.mimeType,
+						subpath,
+						width,
+						height,
+						fps,
+						startedAt,
+					}).catch(() => undefined);
+					recording.statusTimer = window.setInterval(
+						updateStatusDuration,
+						1000,
+					);
+					recording.stopPromise = new Promise<void>((resolve, reject) => {
+						recorder.onstop = () => resolve();
+						recorder.onerror = () => reject(new Error("MediaRecorder failed"));
+					});
+					// A mid-recording recorder failure must stop the session right away;
+					// without this the rejection sits unhandled while the timer keeps
+					// ticking over a recorder that no longer produces chunks, and nothing
+					// surfaces until the user stops manually.
+					recording.stopPromise.catch(() => {
+						if (activeRecording !== recording || recording.finalizePromise)
+							return;
+						status = {
+							phase: "error",
+							message: "Recording failed: the recorder stopped unexpectedly",
+							videoId: creation.id,
+						};
+						broadcastStatus();
+						stopRecorderAfterError(recorder);
+					});
+					recorder.ondataavailable = (event) => {
+						if (event.data.size === 0) return;
+						recording.lastChunkAt =
+							typeof performance !== "undefined"
+								? performance.now()
+								: Date.now();
+						if (
+							recording.chunkingMode === "timeslice" &&
+							recording.chunkStartGuard !== null
+						) {
+							window.clearTimeout(recording.chunkStartGuard);
+							recording.chunkStartGuard = null;
+						}
+						recording.recordedBytes += event.data.size;
+						const recordedBytes = recording.recordedBytes;
+						recording.chunkChain = recording.chunkChain.then(async () => {
+							if (recording.spoolFailed) {
+								appendMemoryBackupChunk(recording, event.data);
+								return;
+							}
+							try {
+								await spool.appendChunk(event.data);
+							} catch (error) {
+								// The local crash-recovery copy degrades to memory; the
+								// streaming upload still has every byte, so erroring the whole
+								// session here would throw away a healthy recording. The failed
+								// chunk is deliberately NOT added to the memory backup: the
+								// spool keeps it in its pending buffer and recoverBlob() returns
+								// it, so appending it here too would duplicate its bytes
+								// mid-file in every recovered blob.
+								recording.spoolFailed = true;
+								console.warn(
+									"Recording spool failed; keeping the local backup in memory",
+									error,
+								);
+							}
+						});
+						try {
+							uploader.handleChunk(event.data, recordedBytes);
+						} catch (error) {
+							status = {
+								phase: "error",
+								message: error instanceof Error ? error.message : String(error),
+								videoId: creation.id,
+							};
+							stopRecorderAfterError(recorder);
+						}
+					};
+
+					status = {
+						phase: "recording",
+						videoId: creation.id,
+						startedAt,
+						durationMs: 0,
+						updatedAt: startedAt,
+					};
+					throwIfStartCanceled();
+					return recording;
+				},
+				async () => {
+					status = { phase: "creating" };
+					if (ownedRecording) {
+						if (ownedRecording.statusTimer !== null)
+							window.clearInterval(ownedRecording.statusTimer);
+						stopManualChunking(ownedRecording);
+						if (activeRecording === ownedRecording) activeRecording = null;
+						ownedRecording = null;
+					}
+					await owned.uploader?.cancel();
+					owned.uploader = null;
+					if (owned.spool) {
+						await removeLiveRecordingManifest(owned.spool.sessionId);
+						await owned.spool.dispose();
+						owned.spool = null;
+					}
+					if (ownedVideoId) {
+						await deleteInstantRecording(
+							request.settings,
+							request.auth,
+							ownedVideoId,
+						);
+						ownedVideoId = null;
+					}
+				},
+			);
 		for (const track of mainStream.getVideoTracks()) {
 			track.addEventListener("ended", stopRecordingFromTrackEnd, {
 				once: true,
 			});
 		}
-		// A crash from here on strands the spool; persisting the recording's
-		// identity alongside it lets the startup sweep surface a retryable
-		// failed-recording entry (videoId, subpath) instead of download-only.
-		await saveLiveRecordingManifest({
-			sessionId: spool.sessionId,
-			videoId: creation.id,
-			shareUrl: creation.shareUrl,
-			mimeType: pipeline.mimeType,
-			subpath,
-			width,
-			height,
-			fps,
-			startedAt,
-		}).catch(() => undefined);
-		recording.statusTimer = window.setInterval(updateStatusDuration, 1000);
-		recording.stopPromise = new Promise<void>((resolve, reject) => {
-			recorder.onstop = () => resolve();
-			recorder.onerror = () => reject(new Error("MediaRecorder failed"));
-		});
-		// A mid-recording recorder failure must stop the session right away;
-		// without this the rejection sits unhandled while the timer keeps
-		// ticking over a recorder that no longer produces chunks, and nothing
-		// surfaces until the user stops manually.
-		recording.stopPromise.catch(() => {
-			if (activeRecording !== recording || recording.finalizePromise) return;
-			status = {
-				phase: "error",
-				message: "Recording failed: the recorder stopped unexpectedly",
-				videoId: creation.id,
-			};
-			broadcastStatus();
-			stopRecorderAfterError(recorder);
-		});
-		recorder.ondataavailable = (event) => {
-			if (event.data.size === 0) return;
-			recording.lastChunkAt =
-				typeof performance !== "undefined" ? performance.now() : Date.now();
-			if (
-				recording.chunkingMode === "timeslice" &&
-				recording.chunkStartGuard !== null
-			) {
-				window.clearTimeout(recording.chunkStartGuard);
-				recording.chunkStartGuard = null;
-			}
-			recording.recordedBytes += event.data.size;
-			const recordedBytes = recording.recordedBytes;
-			recording.chunkChain = recording.chunkChain.then(async () => {
-				if (recording.spoolFailed) {
-					appendMemoryBackupChunk(recording, event.data);
-					return;
-				}
-				try {
-					await spool.appendChunk(event.data);
-				} catch (error) {
-					// The local crash-recovery copy degrades to memory; the
-					// streaming upload still has every byte, so erroring the whole
-					// session here would throw away a healthy recording. The failed
-					// chunk is deliberately NOT added to the memory backup: the
-					// spool keeps it in its pending buffer and recoverBlob() returns
-					// it, so appending it here too would duplicate its bytes
-					// mid-file in every recovered blob.
-					recording.spoolFailed = true;
-					console.warn(
-						"Recording spool failed; keeping the local backup in memory",
-						error,
-					);
-				}
-			});
-			try {
-				uploader.handleChunk(event.data, recordedBytes);
-			} catch (error) {
-				status = {
-					phase: "error",
-					message: error instanceof Error ? error.message : String(error),
-					videoId: creation.id,
-				};
-				stopRecorderAfterError(recorder);
-			}
-		};
-
-		status = {
-			phase: "recording",
-			videoId: creation.id,
-			startedAt,
-			durationMs: 0,
-			updatedAt: startedAt,
-		};
-
-		try {
-			recorder.start(RECORDING_TIMESLICE_MS);
+		if (startedWithTimeslice) {
 			recording.chunkingMode = "timeslice";
 			scheduleTimesliceGuard(recording);
-		} catch {
-			recorder.start();
+		} else {
 			beginManualChunking(recording);
 		}
 		playRecordingSound("start-recording", request.settings);
@@ -1098,6 +1151,15 @@ const startRecording = async (request: StartRecordingRequest) => {
 		broadcastStatus();
 		return status;
 	} catch (error) {
+		if (activeRecording === ownedRecording) activeRecording = null;
+		if (!activeRecording) {
+			status = isUserCancellationError(error)
+				? { phase: "idle" }
+				: {
+						phase: "error",
+						message: error instanceof Error ? error.message : String(error),
+					};
+		}
 		chrome.runtime.sendMessage(
 			{
 				target: "service-worker",
@@ -1115,6 +1177,9 @@ const startRecording = async (request: StartRecordingRequest) => {
 		for (const stream of ownedStreams) {
 			stopTracks(stream);
 		}
+		await owned.uploader?.cancel().catch(() => undefined);
+		if (!ownedRecording)
+			await ownedAudioContext?.close().catch(() => undefined);
 		if (ownedVideoId) {
 			await deleteInstantRecording(
 				request.settings,
@@ -1123,26 +1188,16 @@ const startRecording = async (request: StartRecordingRequest) => {
 			).catch(() => undefined);
 		}
 		if (ownedRecording) {
-			if (activeRecording === ownedRecording) {
-				activeRecording = null;
-			}
 			await cleanupActiveRecording(ownedRecording);
 		}
-		if (ownedSpool) {
-			await removeLiveRecordingManifest(ownedSpool.sessionId).catch(
+		if (owned.spool) {
+			await removeLiveRecordingManifest(owned.spool.sessionId).catch(
 				() => undefined,
 			);
-			await ownedSpool.dispose().catch(() => undefined);
+			await owned.spool.dispose().catch(() => undefined);
 		}
-		// Reset the "creating" status so later status syncs do not report a
-		// phantom in-progress recording.
-		if (status.phase === "creating") {
-			status = isUserCancellationError(error)
-				? { phase: "idle" }
-				: {
-						phase: "error",
-						message: error instanceof Error ? error.message : String(error),
-					};
+		if (!activeRecording) {
+			broadcastStatus();
 		}
 		throw error;
 	} finally {

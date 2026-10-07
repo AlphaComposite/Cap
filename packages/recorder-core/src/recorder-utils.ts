@@ -2,6 +2,7 @@ import {
 	type DetectedDisplayRecordingMode,
 	DISPLAY_SURFACE_TO_RECORDING_MODE,
 	MP4_MIME_TYPES,
+	STREAMING_MP4_MIME_TYPES,
 	WEBM_MIME_TYPES,
 } from "./recorder-constants";
 
@@ -21,9 +22,9 @@ type RecorderEnvironment = {
 
 export type RecordingPipeline =
 	| {
-			mode: "streaming-webm";
+			mode: "streaming";
 			mimeType: string;
-			fileExtension: "webm";
+			fileExtension: "webm" | "mp4";
 			supportsProgressiveUpload: true;
 	  }
 	| {
@@ -137,6 +138,9 @@ export const selectRecordingPipelineFromSupport = (
 		preferStreamingUpload?: boolean;
 	},
 ): RecordingPipeline | null => {
+	const streamingMp4Candidates = hasAudio
+		? STREAMING_MP4_MIME_TYPES.withAudio
+		: STREAMING_MP4_MIME_TYPES.videoOnly;
 	const webmCandidates = hasAudio
 		? [...WEBM_MIME_TYPES.withAudio, ...WEBM_MIME_TYPES.videoOnly]
 		: [...WEBM_MIME_TYPES.videoOnly, ...WEBM_MIME_TYPES.withAudio];
@@ -149,12 +153,16 @@ export const selectRecordingPipelineFromSupport = (
 	const supportedFallbackMimeType = fallbackCandidates.find((candidate) =>
 		isMimeSupported(candidate),
 	);
+	const supportedStreamingMimeType =
+		streamingMp4Candidates.find(isMimeSupported) ?? supportedWebmMimeType;
 
-	if (supportedWebmMimeType && options?.preferStreamingUpload !== false) {
+	if (supportedStreamingMimeType && options?.preferStreamingUpload !== false) {
 		return {
-			mode: "streaming-webm",
-			mimeType: supportedWebmMimeType,
-			fileExtension: "webm",
+			mode: "streaming",
+			mimeType: supportedStreamingMimeType,
+			fileExtension: supportedStreamingMimeType.includes("mp4")
+				? "mp4"
+				: "webm",
 			supportsProgressiveUpload: true,
 		};
 	}
@@ -180,6 +188,73 @@ export const selectRecordingPipelineFromSupport = (
 	}
 
 	return null;
+};
+
+export const startRecorderWithFallback = async <T>(
+	stream: MediaStream,
+	initialPipeline: RecordingPipeline,
+	timeslice: number,
+	prepare: (recorder: MediaRecorder, pipeline: RecordingPipeline) => Promise<T>,
+	cleanup: () => Promise<void>,
+) => {
+	let pipeline = initialPipeline;
+	for (;;) {
+		let recorder: MediaRecorder | undefined;
+		let failure: unknown;
+		let receivedData = false;
+		const onData = (event: BlobEvent) => {
+			receivedData ||= event.data.size > 0;
+		};
+		try {
+			recorder = new MediaRecorder(stream, {
+				mimeType: pipeline.mimeType,
+				...(pipeline.fileExtension === "mp4"
+					? { videoKeyFrameIntervalDuration: 1000 }
+					: {}),
+			});
+		} catch (error) {
+			failure = error;
+		}
+		if (recorder) {
+			const prepared = await prepare(recorder, pipeline);
+			recorder.addEventListener("dataavailable", onData);
+			try {
+				try {
+					recorder.start(timeslice);
+					return { recorder, pipeline, prepared, startedWithTimeslice: true };
+				} catch (error) {
+					if (
+						pipeline.mode !== "streaming" ||
+						receivedData ||
+						recorder.state !== "inactive" ||
+						isUserCancellationError(error)
+					)
+						throw error;
+				}
+				recorder.start();
+				return { recorder, pipeline, prepared, startedWithTimeslice: false };
+			} catch (error) {
+				failure = error;
+			} finally {
+				recorder.removeEventListener("dataavailable", onData);
+			}
+		}
+		if (
+			pipeline.mode !== "streaming" ||
+			pipeline.fileExtension !== "mp4" ||
+			receivedData ||
+			(recorder && recorder.state !== "inactive") ||
+			isUserCancellationError(failure)
+		)
+			throw failure;
+		const fallback = selectRecordingPipelineFromSupport(
+			stream.getAudioTracks().length > 0,
+			(mime) => mime.includes("webm") && MediaRecorder.isTypeSupported(mime),
+		);
+		if (!fallback || fallback.mode !== "streaming") throw failure;
+		if (recorder) await cleanup();
+		pipeline = fallback;
+	}
 };
 
 export const selectRecordingPipeline = (
