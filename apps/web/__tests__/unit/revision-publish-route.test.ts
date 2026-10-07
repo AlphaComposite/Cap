@@ -130,6 +130,7 @@ describe("revision publish route", () => {
 	});
 
 	it("maps a publication 409 to the response status", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		publishOwnerRevision.mockRejectedValue(
 			new RevisionPublicationError(409, "generation 1 != 2"),
 		);
@@ -141,6 +142,10 @@ describe("revision publish route", () => {
 		await expect(response.json()).resolves.toEqual({
 			error: "generation 1 != 2",
 		});
+		expect(warnSpy).toHaveBeenCalledExactlyOnceWith(
+			"[revision/publish] conflict",
+			{ videoId: "video-1", message: "generation 1 != 2" },
+		);
 	});
 
 	it("returns 499 Prepare aborted for an aborted sibling prepare and logs the cause", async () => {
@@ -189,6 +194,28 @@ describe("revision prepare route", () => {
 			markedFailed: false,
 			joined: false,
 		});
+	});
+
+	it("logs a preparation 409 with only the video ID and message", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		prepareOwnerRevision.mockRejectedValue(
+			new RevisionPublicationError(
+				409,
+				"Registered source is not ready; retry",
+			),
+		);
+		const { POST } = await import("@/app/api/video/revision/prepare/route");
+		const response = await POST(
+			request("http://127.0.0.1:32120/api/video/revision/prepare", sameOrigin),
+		);
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toEqual({
+			error: "Registered source is not ready; retry",
+		});
+		expect(warnSpy).toHaveBeenCalledExactlyOnceWith(
+			"[revision/prepare] conflict",
+			{ videoId: "video-1", message: "Registered source is not ready; retry" },
+		);
 	});
 
 	it("returns only revisionId and generation", async () => {

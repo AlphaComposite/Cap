@@ -34,6 +34,7 @@ const tables = vi.hoisted(() => ({
 	sourceObject: { videoId: "sourceObject" },
 	sourceRelocation: { videoId: "sourceRelocation" },
 	videoEdits: { videoId: "videoEdit" },
+	revisionOutbox: { videoId: "outbox" },
 }));
 vi.mock("@cap/database", () => ({ db: mocks.db }));
 vi.mock("@cap/database/auth/session", () => ({ getCurrentUser: mocks.user }));
@@ -60,6 +61,7 @@ let sourceRows: Array<Record<string, unknown>> = [];
 let relocationRows: Array<Record<string, unknown>> = [];
 let editRows: Array<Record<string, unknown>> = [];
 let liveRows: Array<Record<string, unknown>> = [];
+let outboxRows: Array<Record<string, unknown>> = [];
 const privateSha = "ab".repeat(32);
 const privateKey = "private/source/video/opaque";
 beforeEach(() => {
@@ -88,6 +90,7 @@ beforeEach(() => {
 	relocationRows = [];
 	editRows = [];
 	liveRows = [];
+	outboxRows = [];
 	revision = {
 		revisionId: "rev",
 		videoId: "video",
@@ -130,7 +133,9 @@ beforeEach(() => {
 									? relocationRows
 									: table === tables.videoEdits
 										? editRows
-										: [revision],
+										: table === tables.revisionOutbox
+											? outboxRows
+											: [revision],
 			}),
 		}),
 		execute: async () => liveRows,
@@ -138,6 +143,63 @@ beforeEach(() => {
 });
 
 describe("owner-only read-only projection", () => {
+	it.each([false, true])(
+		"separates source admission from current playback with warm=%s",
+		async (warm) => {
+			mocks.flag.mockReturnValue(true);
+			sourceRows = [
+				{
+					liveKey: "owner/video/result.mp4",
+					sha256: privateSha,
+					relocationState: "LIVE",
+					codec: "h264",
+					timebase: "1/90000",
+					frameMode: "cfr",
+					a1Digest: privateSha,
+					indexId: "index",
+					warmExpiresAt: warm ? new Date(Date.now() + 60_000) : null,
+				},
+			];
+			relocationRows = [
+				{
+					oldKey: "owner/video/result.mp4",
+					newKey: privateKey,
+					sha256: privateSha,
+					state: "COPIED",
+				},
+			];
+			outboxRows = [
+				{
+					job: "source-prepare",
+					payload: { phase: "prepared", attempts: 1, finished: false },
+				},
+			];
+			const result = await getEditReadiness("video" as never);
+			if (result.status !== "ready") throw new Error("missing readiness");
+			expect(result.readiness.playbackAdmission).toBe(true);
+			expect(result.readiness.editorOpenable).toBe(warm);
+			expect(result.readiness.manualEditing).toBe(warm);
+			expect(result.readiness.sourcePrepare).toBe("running");
+			expect(result.readiness.poll).toBe(true);
+		},
+	);
+	it("reports source exhaustion without inventing a source retry", async () => {
+		mocks.flag.mockReturnValue(true);
+		outboxRows = [
+			{
+				job: "source-prepare",
+				payload: { exhausted: true, error: "captions unavailable" },
+			},
+		];
+		const result = await getEditReadiness("video" as never);
+		if (result.status !== "ready") throw new Error("missing readiness");
+		expect(result.readiness.rows[4]).toMatchObject({
+			state: "failed",
+			reason: "captions unavailable",
+		});
+		expect(result.readiness.rows[4]?.retry).toBeUndefined();
+		expect(result.readiness.editorOpenable).toBe(false);
+	});
 	it.each([false, true])(
 		"requires published metadata for legacy flag=%s",
 		async (flag) => {
@@ -242,7 +304,7 @@ describe("owner-only read-only projection", () => {
 		upload = {
 			phase: "processing",
 			processingProgress: 100,
-			processingError: "private failure details",
+			processingError: "Media processing failed",
 		};
 		video.transcriptionStatus = null;
 		const result = await getEditReadiness("video" as never);
@@ -252,7 +314,7 @@ describe("owner-only read-only projection", () => {
 		expect(result.readiness.playbackAdmission).toBe(false);
 		expect(result.readiness.manualEditing).toBe(false);
 		expect(result.readiness.poll).toBe(false);
-		expect(JSON.stringify(result)).not.toContain("private failure details");
+		expect(result.readiness.rows[1]?.reason).toBe("Media processing failed");
 		expect(mocks.storage).not.toHaveBeenCalled();
 	});
 	it("requires all current revision artifacts and never falls back from a current pointer", async () => {
@@ -296,6 +358,12 @@ describe("owner-only read-only projection", () => {
 				liveKey: privateKey,
 				sha256: privateSha,
 				relocationState: "PURGED",
+				codec: "h264",
+				timebase: "1/90000",
+				frameMode: "cfr",
+				a1Digest: privateSha,
+				indexId: "registered-index",
+				warmExpiresAt: new Date(Date.now() + 60_000),
 			},
 		];
 		relocationRows = [

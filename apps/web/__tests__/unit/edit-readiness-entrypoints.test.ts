@@ -52,6 +52,9 @@ vi.mock("@/actions/organization/shareable-link-icon", () => ({
 	selectShareableLinkBrandingOrganization: vi.fn(),
 }));
 vi.mock("@/actions/videos/edit-title", () => ({ editTitle: vi.fn() }));
+vi.mock("@/actions/video/retry-processing", () => ({
+	retryVideoProcessing: vi.fn(),
+}));
 vi.mock("@/app/(org)/dashboard/DashboardContext", () => ({
 	useDashboardContext: () => ({}),
 }));
@@ -165,17 +168,18 @@ describe("owner entrypoint presentation", () => {
 		expect(card()).toContain("Video processed · Transcribing");
 		expect(card()).toContain("Edit timeline");
 	});
-	it("renders the same honest timeline label for desktop and mobile header entries", () => {
+	it("renders one processing panel and Edit video for desktop and mobile header entries", () => {
 		const html = header();
-		expect(html).toContain("Video processed · Transcribing");
-		expect(html.match(/Edit timeline/g)).toHaveLength(2);
+		expect(html.match(/aria-label="Video processing"/g)).toHaveLength(1);
+		expect(html).toContain("Preparing for editing");
+		expect(html.match(/Edit video/g)).toHaveLength(2);
 	});
 	it.each(["ERROR", "SKIPPED", "NO_AUDIO", null])(
 		"keeps manual entrypoints for %s",
 		(status) => {
 			mocks.readiness.mockReturnValue(state(status));
 			expect(card()).toContain("Edit timeline");
-			expect(header()).toContain("Edit timeline");
+			expect(header()).toContain("Edit video");
 		},
 	);
 	it("does not expose owner readiness for nonowners", () => {
@@ -187,5 +191,6 @@ describe("owner entrypoint presentation", () => {
 		mocks.readiness.mockReturnValue(state("PROCESSING", false));
 		expect(card()).not.toContain("Edit timeline");
 		expect(header()).not.toContain("Edit timeline");
+		expect(header()).not.toContain("Edit video");
 	});
 });

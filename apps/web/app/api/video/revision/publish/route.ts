@@ -49,6 +49,12 @@ export async function POST(request: NextRequest) {
 		const published = await publishOwnerRevision(input, request.headers);
 		return NextResponse.json(published);
 	} catch (error) {
+		if (error instanceof RevisionPublicationError && error.status === 409) {
+			console.warn("[revision/publish] conflict", {
+				videoId: input.videoId,
+				message: error.message,
+			});
+		}
 		return revisionRouteError(error);
 	}
 }

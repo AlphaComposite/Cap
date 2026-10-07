@@ -10,6 +10,7 @@ import {
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
+import { editorOpenable } from "@/lib/editor-openable";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { relocateFlaggedSource } from "@/lib/instant-finish-source-relocate";
 import { ownerOriginalPath } from "@/lib/revision-media-grant";
@@ -324,7 +325,13 @@ export async function openInstantFinishEditor(
 		.where(eq(sourceObject.videoId, asVideoId(videoId)));
 	const alreadyPurged =
 		existingBeforePrepare?.relocationState === "PURGED" &&
-		existingBeforePrepare.liveKey.startsWith("private/source/");
+		editorOpenable({
+			videoId,
+			source: existingBeforePrepare,
+			relocations: [],
+			pending: false,
+			now,
+		});
 	const pending = await openSourcePrepare(app, videoId);
 	if (pending && !pending.exhausted && !alreadyPurged) {
 		const joined = await waitForJoinedStage(
@@ -507,64 +514,65 @@ async function waitForJoinedStage(
 }
 
 async function readJoinedStage(app: Database, videoId: string, now: Date) {
-	let sourceRows: Array<{
-		liveKey: string;
-		sha256: string;
-		codec: string | null;
-		timebase: string | null;
-		frameMode: string | null;
-		a1Digest: string | null;
-		indexId: string | null;
-		warmExpiresAt: Date | null;
-	}>;
-	let stages: Array<{
-		oldKey: string;
-		newKey: string;
-		sha256: string;
-		state: string;
-	}>;
+	const preparation = await readEditorPreparation(app, videoId, now);
+	return preparation.editorOpenable ? preparation : null;
+}
+
+export async function readEditorPreparation(
+	app: Database,
+	videoId: string,
+	now = new Date(),
+) {
 	try {
-		sourceRows = await app
+		const [source] = await app
 			.select()
 			.from(sourceObject)
 			.where(eq(sourceObject.videoId, asVideoId(videoId)));
-		stages = await app
+		const relocations = await app
 			.select()
 			.from(sourceRelocation)
 			.where(eq(sourceRelocation.videoId, asVideoId(videoId)));
-	} catch (error) {
-		if (error instanceof RevisionPublicationError) throw error;
-		throw new RevisionPublicationError(
-			409,
-			"Registered source is not ready; retry",
+		const rows = await app
+			.select()
+			.from(revisionOutbox)
+			.where(eq(revisionOutbox.videoId, asVideoId(videoId)));
+		const pending = rows.find(
+			(row) => row.job === SOURCE_PREPARE_JOB && row.payload?.finished !== true,
 		);
+		const openable = editorOpenable({
+			videoId,
+			source: source ?? null,
+			relocations,
+			pending: Boolean(pending && pending.payload?.exhausted !== true),
+			now,
+		});
+		const sourcePrepare =
+			pending?.payload?.exhausted === true
+				? ("failed" as const)
+				: !pending && openable
+					? ("done" as const)
+					: pending &&
+							(Number(pending.payload?.attempts) > 0 ||
+								pending.payload?.phase !== "queued")
+						? ("running" as const)
+						: ("queued" as const);
+		return {
+			editorOpenable: openable,
+			sourcePrepare,
+			reason:
+				sourcePrepare === "failed"
+					? String(pending?.payload?.error ?? "Preparing for editing failed")
+					: undefined,
+			identity: { source, relocations, pending, editorOpenable: openable },
+		};
+	} catch {
+		return {
+			editorOpenable: false,
+			sourcePrepare: "failed" as const,
+			reason: "Unable to check preparation for editing",
+			identity: null,
+		};
 	}
-	const source = sourceRows[0];
-	if (
-		!source?.sha256 ||
-		!/^[a-f0-9]{64}$/.test(source.sha256) ||
-		!source.codec ||
-		!source.timebase ||
-		(source.frameMode !== "cfr" && source.frameMode !== "vfr") ||
-		!source.a1Digest ||
-		!source.indexId ||
-		!source.warmExpiresAt ||
-		new Date(source.warmExpiresAt).getTime() <= now.getTime()
-	) {
-		return null;
-	}
-	const stage = stages.find(
-		(row) =>
-			row.sha256 === source.sha256 &&
-			(row.oldKey === source.liveKey || row.newKey === source.liveKey) &&
-			row.newKey.startsWith(`private/source/${videoId}/`) &&
-			!["*", "?", ".."].some((token) => row.newKey.includes(token)) &&
-			!row.newKey.startsWith("/") &&
-			["COPIED", "POINTER", "PURGED"].includes(row.state),
-	);
-	return stage
-		? { newKey: stage.newKey, sha256: stage.sha256, liveKey: source.liveKey }
-		: null;
 }
 
 async function openSourcePrepare(

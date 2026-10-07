@@ -85,6 +85,12 @@ export async function POST(request: NextRequest) {
 			generation: winner.value.generation,
 		});
 	} catch (error) {
+		if (error instanceof RevisionPublicationError && error.status === 409) {
+			console.warn("[revision/prepare] conflict", {
+				videoId: input.videoId,
+				message: error.message,
+			});
+		}
 		if (request.signal.aborted) {
 			const decision = await failUnjoinedInflightPrepare({
 				videoId: input.videoId,

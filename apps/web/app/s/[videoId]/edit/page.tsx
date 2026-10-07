@@ -20,6 +20,7 @@ import {
 } from "@/lib/editor-baseline";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { resolveRevisionChapters } from "@/lib/revision-metadata-snapshot";
+import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import {
 	openInstantFinishEditor,
 	selectEditorPlayback,
@@ -147,7 +148,19 @@ export default async function EditVideoPage(props: {
 		legacySpec: existingEdit ? parseVideoEditSpec(existingEdit.editSpec) : null,
 		sourceDuration: video.duration ?? 0,
 	});
-	const opened = flagged ? await openInstantFinishEditor(videoId) : null;
+	let opened: Awaited<ReturnType<typeof openInstantFinishEditor>> | null = null;
+	try {
+		opened = flagged ? await openInstantFinishEditor(videoId) : null;
+	} catch (error) {
+		if (
+			error instanceof RevisionPublicationError &&
+			error.status === 409 &&
+			/source.*not ready|source prepare status|warm expiry/i.test(error.message)
+		) {
+			return <EditReadinessGate videoId={videoId} />;
+		}
+		throw error;
+	}
 	const originalDownload =
 		!flagged && existingEdit
 			? await getVideoDownloadInfo(videoId, "original")

@@ -60,8 +60,8 @@ import {
 import { usePublicEnv } from "@/utils/public-env";
 import { navigateWithTransition } from "@/utils/view-transition";
 import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
-import { EditReadinessStatus } from "../edit/EditReadinessGate";
 import type { SharePageBranding, VideoData } from "../types";
+import { ProcessingStatusPanel } from "./ProcessingStatusPanel";
 import { describeShareAudience } from "./share-audience";
 import { useVideoDownload } from "./use-video-download";
 import { fromNow } from "./utils/from-now";
@@ -575,6 +575,7 @@ export const ShareHeader = ({
 		editReadiness.readiness?.playbackAdmission === true &&
 		(data.source.type === "desktopMP4" || data.source.type === "webMP4");
 	const handleEditVideo = () => {
+		if (!canEditVideo || !editReadiness.readiness?.editorOpenable) return;
 		if (userIsOwnerAndNotPro) {
 			setUpgradeModalOpen(true);
 			return;
@@ -819,6 +820,9 @@ export const ShareHeader = ({
 			    own padding rather than a top margin against the video. */}
 			<div className="py-4">
 				<div className="flex flex-col gap-4">
+					{isOwner && !data.isScreenshot && (
+						<ProcessingStatusPanel videoId={data.id} state={editReadiness} />
+					)}
 					<div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
 						{/* The title takes the row's slack rather than splitting it with
 						    the link button: `justify-between` on two shrinkable items had
@@ -1024,19 +1028,26 @@ export const ShareHeader = ({
 							<div className="flex flex-wrap items-center gap-2 ml-auto justify-end">
 								{isOwner && (
 									<>
-										<EditReadinessStatus state={editReadiness} />
 										{canEditVideo && (
-											<Button
-												variant="gray"
-												size="xs"
-												className="hidden h-8 gap-1.5 rounded-full px-2.5 text-xs sm:flex"
-												onClick={handleEditVideo}
+											<Tooltip
+												content="Available when 'Preparing for editing' finishes"
+												disable={
+													editReadiness.readiness?.editorOpenable === true
+												}
 											>
-												<Scissors className="size-3.5 text-gray-12" />
-												{editReadiness.readiness?.transcriptUsable
-													? "Edit video"
-													: "Edit timeline"}
-											</Button>
+												<Button
+													variant="gray"
+													size="xs"
+													className="hidden h-8 gap-1.5 rounded-full px-2.5 text-xs aria-disabled:opacity-50 sm:flex"
+													aria-disabled={
+														!editReadiness.readiness?.editorOpenable
+													}
+													onClick={handleEditVideo}
+												>
+													<Scissors className="size-3.5 text-gray-12" />
+													Edit video
+												</Button>
+											</Tooltip>
 										)}
 										<Button
 											variant="gray"
@@ -1071,17 +1082,27 @@ export const ShareHeader = ({
 												    `sm` up so nothing is offered twice. Share isn't
 												    among them: it keeps its own button at every width. */}
 												{canEditVideo && (
-													<DropdownMenuItem
-														onClick={handleEditVideo}
-														className="flex items-center gap-2 rounded-lg sm:hidden"
+													<Tooltip
+														content="Available when 'Preparing for editing' finishes"
+														disable={
+															editReadiness.readiness?.editorOpenable === true
+														}
 													>
-														<Scissors className="size-3.5" />
-														<p className="text-sm text-gray-12">
-															{editReadiness.readiness?.transcriptUsable
-																? "Edit video"
-																: "Edit timeline"}
-														</p>
-													</DropdownMenuItem>
+														<DropdownMenuItem
+															aria-disabled={
+																!editReadiness.readiness?.editorOpenable
+															}
+															onSelect={(event) => {
+																if (!editReadiness.readiness?.editorOpenable)
+																	event.preventDefault();
+																else handleEditVideo();
+															}}
+															className="flex items-center gap-2 rounded-lg aria-disabled:opacity-50 sm:hidden"
+														>
+															<Scissors className="size-3.5" />
+															<p className="text-sm text-gray-12">Edit video</p>
+														</DropdownMenuItem>
+													</Tooltip>
 												)}
 												<DropdownMenuItem
 													onClick={() => {

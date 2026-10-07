@@ -77,25 +77,28 @@ describe("serialized read-only polling", () => {
 			.mockResolvedValue(ready("video", "COMPLETE"));
 		await render();
 		expect(current.readiness?.transcriptLabel).toBe("Transcript not started");
-		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		await act(async () => vi.advanceTimersByTimeAsync(2000));
 		expect(current.readiness?.transcriptLabel).toBe("Transcribing");
-		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		await act(async () => vi.advanceTimersByTimeAsync(2000));
 		expect(current.readiness?.transcriptUsable).toBe(true);
 		await act(async () => vi.advanceTimersByTimeAsync(3600000));
 		expect(mocks.read).toHaveBeenCalledTimes(3);
 	});
-	it("caps null observation honestly and Check again only reads", async () => {
+	it("polls past twelve checks and slows to five seconds after five minutes", async () => {
 		mocks.read.mockResolvedValue(ready("video", null));
 		await render();
-		await act(async () => vi.advanceTimersByTimeAsync(3600000));
-		expect(mocks.read).toHaveBeenCalledTimes(12);
+		await act(async () => vi.advanceTimersByTimeAsync(300000));
+		const calls = mocks.read.mock.calls.length;
+		expect(calls).toBeGreaterThan(12);
 		expect(current.readiness?.transcriptLabel).toBe("Transcript not started");
 		expect(current.readiness?.transcriptUsable).toBe(false);
-		expect(current.message).toBe(
-			"Transcript not started. Check again for an update.",
-		);
+		expect(current.message).toBe("");
+		await act(async () => vi.advanceTimersByTimeAsync(4999));
+		expect(mocks.read).toHaveBeenCalledTimes(calls);
+		await act(async () => vi.advanceTimersByTimeAsync(1));
+		expect(mocks.read).toHaveBeenCalledTimes(calls + 1);
 		await act(async () => current.checkAgain());
-		expect(mocks.read).toHaveBeenCalledTimes(13);
+		expect(mocks.read).toHaveBeenCalledTimes(calls + 2);
 	});
 	it("does not poll disabled transcript capability", async () => {
 		mocks.read.mockResolvedValue(ready("video", "UNAVAILABLE"));
@@ -213,7 +216,7 @@ describe("serialized read-only polling", () => {
 		await act(async () => vi.advanceTimersByTimeAsync(5000));
 		expect(mocks.read).toHaveBeenCalledTimes(1);
 		await act(async () => resolve({ status: "unavailable" }));
-		await act(async () => vi.advanceTimersByTimeAsync(5000));
+		await act(async () => vi.advanceTimersByTimeAsync(2000));
 		expect(mocks.read).toHaveBeenCalledTimes(2);
 		await render({ enabled: false });
 		await act(async () => vi.advanceTimersByTimeAsync(3600000));
@@ -248,12 +251,21 @@ describe("serialized read-only polling", () => {
 		expect(current.readiness?.videoId).toBe("video");
 		expect(current.readiness?.manualEditing).toBe(true);
 	});
-	it("bounds automatic polling and leaves manual check available", async () => {
+	it("stops automatic polling when every step is terminal", async () => {
 		await render();
+		mocks.read.mockResolvedValue(ready("video", "COMPLETE"));
+		await act(async () => vi.advanceTimersByTimeAsync(2000));
 		await act(async () => vi.advanceTimersByTimeAsync(3600000));
-		expect(mocks.read).toHaveBeenCalledTimes(12);
-		expect(current.message).toBe("Still preparing. Check again for an update.");
+		expect(mocks.read).toHaveBeenCalledTimes(2);
+		expect(current.message).toBe("");
 		await act(async () => current.checkAgain());
-		expect(mocks.read).toHaveBeenCalledTimes(13);
+		expect(mocks.read).toHaveBeenCalledTimes(3);
+	});
+	it("keeps the admitted state visible during a poll request", async () => {
+		await render();
+		mocks.read.mockImplementationOnce(() => new Promise(() => {}));
+		await act(async () => vi.advanceTimersByTimeAsync(2000));
+		expect(current.checking).toBe(true);
+		expect(current.readiness?.videoId).toBe("video");
 	});
 });

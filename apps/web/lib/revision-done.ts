@@ -6,6 +6,26 @@ export type DonePlan = "leave" | "legacy" | "published" | "conflict" | "error";
 
 export type DoneRoute = "wait" | "save" | "publish";
 
+export async function publishDoneWithRetry<T>(
+	publish: () => Promise<T>,
+	refresh: () => Promise<void>,
+): Promise<T> {
+	try {
+		return await publish();
+	} catch (error) {
+		if (
+			typeof error !== "object" ||
+			error === null ||
+			!("status" in error) ||
+			error.status !== 409
+		) {
+			throw error;
+		}
+	}
+	await refresh();
+	return publish();
+}
+
 export function doneRoute(
 	state: { enabled: boolean } | null | undefined,
 ): DoneRoute {

@@ -71,6 +71,7 @@ import { EditUpgradeGate } from "../../app/s/[videoId]/edit/EditUpgradeGate";
 import { EditVideoClient } from "../../app/s/[videoId]/edit/EditVideoClient";
 import { EditRecovery } from "../../app/s/[videoId]/edit/edit-recovery";
 import Page from "../../app/s/[videoId]/edit/page";
+import { RevisionPublicationError } from "../../lib/revision-publication-metadata";
 
 let video: Record<string, unknown>;
 beforeEach(() => {
@@ -152,5 +153,25 @@ describe("direct editor admission before mutations", () => {
 	});
 	it("lets transcript-only pending enter the manual editor", async () => {
 		expect((await page()).type).toBe(EditVideoClient);
+	});
+	it("renders preparation on a source-not-ready race instead of throwing", async () => {
+		mocks.flag.mockReturnValue(true);
+		mocks.open.mockRejectedValue(
+			new RevisionPublicationError(
+				409,
+				"Registered source is not ready; retry",
+			),
+		);
+		expect((await page()).type).toBe(EditReadinessGate);
+	});
+	it("does not hide source integrity conflicts", async () => {
+		mocks.flag.mockReturnValue(true);
+		mocks.open.mockRejectedValue(
+			new RevisionPublicationError(
+				409,
+				"Source identity changed after it was recorded",
+			),
+		);
+		await expect(page()).rejects.toThrow("Source identity changed");
 	});
 });

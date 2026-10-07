@@ -197,33 +197,74 @@ describe("pending editor join", () => {
 	it.each([
 		{ pending: false, actionRefresh: true },
 		{ pending: true, actionRefresh: false },
-	])("reuses a warm PURGED source with pending=$pending, actionRefresh=$actionRefresh without prepare", async ({ pending, actionRefresh }) => {
-		const harness = editorDb({
-			pending,
-			source: {
-				videoId,
-				liveKey: `private/source/${videoId}/purged.mp4`,
-				sha256: sha,
-				relocationState: "PURGED",
-				codec: "h264",
-				timebase: "1/90000",
-				frameMode: "cfr",
-				a1Digest: sha,
-				indexId: "bound-index",
-				warmExpiresAt: warmUntil,
-			},
-			stages: [],
-		});
-		const { openInstantFinishEditor } = await import(
+	])(
+		"reuses a warm PURGED source with pending=$pending, actionRefresh=$actionRefresh without prepare",
+		async ({ pending, actionRefresh }) => {
+			const harness = editorDb({
+				pending,
+				source: {
+					videoId,
+					liveKey: `private/source/${videoId}/purged.mp4`,
+					sha256: sha,
+					relocationState: "PURGED",
+					codec: "h264",
+					timebase: "1/90000",
+					frameMode: "cfr",
+					a1Digest: sha,
+					indexId: "bound-index",
+					warmExpiresAt: warmUntil,
+				},
+				stages: [],
+			});
+			const { openInstantFinishEditor } = await import(
+				"@/lib/revision-publication-read"
+			);
+			await openInstantFinishEditor(videoId, harness.db, {
+				actionRefresh,
+				stageWaitMs: 0,
+				prepare,
+				relocate,
+			});
+			expect(prepare).not.toHaveBeenCalled();
+			expect(relocate).not.toHaveBeenCalled();
+		},
+	);
+
+	it("re-prepares an expired PURGED source while the caption outbox remains open", async () => {
+		const source = {
+			videoId,
+			liveKey: journalKey,
+			sha256: sha,
+			relocationState: "PURGED",
+			codec: "h264",
+			timebase: "1/90000",
+			frameMode: "cfr",
+			a1Digest: sha,
+			indexId: "bound-index",
+			warmExpiresAt: new Date(Date.now() - 60_000),
+		};
+		const harness = editorDb({ source, pending: true });
+		const { openInstantFinishEditor, readEditorPreparation } = await import(
 			"@/lib/revision-publication-read"
 		);
-		await openInstantFinishEditor(videoId, harness.db, {
-			actionRefresh,
+		expect(
+			(await readEditorPreparation(harness.db as never, videoId))
+				.editorOpenable,
+		).toBe(true);
+		const opened = await openInstantFinishEditor(videoId, harness.db, {
+			actionRefresh: false,
 			stageWaitMs: 0,
 			prepare,
 			relocate,
 		});
-		expect(prepare).not.toHaveBeenCalled();
+		expect(prepare).toHaveBeenCalledExactlyOnceWith({
+			videoId,
+			sourceKey: journalKey,
+		});
 		expect(relocate).not.toHaveBeenCalled();
+		expect(opened.generation).toBe(4);
+		expect(
+			harness.writes.find((write) => write.table === sourceObject)?.data,
+		).toMatchObject({ warmExpiresAt: warmUntil });
 	});
 });

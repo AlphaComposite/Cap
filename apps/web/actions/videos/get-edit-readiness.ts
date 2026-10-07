@@ -19,10 +19,12 @@ import { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { getEditTranscript } from "@/actions/videos/get-edit-transcript";
+import { isAiConfigured } from "@/lib/ai/provider";
 import { loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { resolveLiveOriginal } from "@/lib/private-source-read";
 import { readArtifactReady, readPublication } from "@/lib/revision-media-grant";
+import { readEditorPreparation } from "@/lib/revision-publication-read";
 import { runPromise } from "@/lib/server";
 import {
 	assertFinishSourceKey,
@@ -382,7 +384,11 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 	let publicationIdentity: unknown = null;
 	let sourceIdentity: OwnerSourceIdentity | null = null;
 	let ownerSourceKey: string | null = null;
-	if (isInstantFinishEnabledForOwner(video.ownerId)) {
+	const flagged = isInstantFinishEnabledForOwner(video.ownerId);
+	const editorPreparation = flagged
+		? await readEditorPreparation(db(), videoId)
+		: null;
+	if (flagged) {
 		const publication = await readPublication(videoId);
 		publicationIdentity = publication;
 		if (
@@ -466,6 +472,7 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 				sourceIdentity,
 				playbackAdmission,
 				transcriptAvailable,
+				editorPreparation,
 			}),
 		)
 		.digest("hex");
@@ -476,6 +483,8 @@ async function readFacts(videoId: Video.VideoId, ownerId: string) {
 		playbackAdmission,
 		identity,
 		transcriptAvailable,
+		editorPreparation,
+		upload,
 	};
 }
 
@@ -513,6 +522,24 @@ export async function getEditReadiness(
 				isPro,
 				playbackAdmission: facts.playbackAdmission,
 				videoState: facts.videoState,
+				editorOpenable:
+					facts.editorPreparation?.editorOpenable ??
+					!isInstantFinishEnabledForOwner(facts.video.ownerId),
+				uploadPhase: facts.upload?.phase ?? null,
+				processingError: facts.upload?.processingError,
+				canRetryProcessing: Boolean(facts.upload?.rawFileKey),
+				aiGenerationStatus:
+					facts.video.metadata?.aiGenerationStatus ??
+					(isPro &&
+					isAiConfigured() &&
+					facts.transcriptAvailable &&
+					!["SKIPPED", "NO_AUDIO", "ERROR"].includes(
+						facts.video.transcriptionStatus ?? "",
+					)
+						? "QUEUED"
+						: "UNAVAILABLE"),
+				sourcePrepare: facts.editorPreparation?.sourcePrepare,
+				sourcePrepareError: facts.editorPreparation?.reason,
 				transcriptionStatus:
 					!facts.transcriptAvailable && facts.video.transcriptionStatus === null
 						? "UNAVAILABLE"

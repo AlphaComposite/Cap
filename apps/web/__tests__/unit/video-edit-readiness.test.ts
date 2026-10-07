@@ -74,6 +74,131 @@ describe("independent editing readiness", () => {
 			false,
 		);
 	});
+	it("does not equate playable with editor-openable", () => {
+		const result = deriveEditReadiness({
+			...facts,
+			editorOpenable: false,
+			sourcePrepare: "running",
+		});
+		expect(result.playbackAdmission).toBe(true);
+		expect(result.manualEditing).toBe(false);
+		expect(result.rows[4]).toMatchObject({
+			label: "Preparing for editing",
+			state: "running",
+		});
+		expect(result.poll).toBe(true);
+	});
+	it("derives the five completed steps and collapses only after completion", () => {
+		const result = deriveEditReadiness({
+			...facts,
+			uploadPhase: "complete",
+			transcriptionStatus: "COMPLETE",
+			aiGenerationStatus: "COMPLETE",
+			sourcePrepare: "done",
+			editorOpenable: true,
+		});
+		expect(result.rows.map((row) => [row.label, row.state])).toEqual([
+			["Uploaded", "done"],
+			["Video processed", "done"],
+			["Transcript", "done"],
+			["Summary and chapters", "done"],
+			["Preparing for editing", "done"],
+		]);
+		expect(result.allDone).toBe(true);
+		expect(result.poll).toBe(false);
+	});
+	it("derives waiting and running states independently", () => {
+		const uploading = deriveEditReadiness({
+			...facts,
+			uploadPhase: "uploading",
+			videoState: "uploading",
+			playbackAdmission: false,
+			transcriptionStatus: null,
+			aiGenerationStatus: "QUEUED",
+			sourcePrepare: "queued",
+			editorOpenable: false,
+		});
+		expect(uploading.rows.map((row) => row.state)).toEqual([
+			"running",
+			"waiting",
+			"waiting",
+			"waiting",
+			"waiting",
+		]);
+		const processing = deriveEditReadiness({
+			...facts,
+			videoState: "processing",
+			aiGenerationStatus: "PROCESSING",
+			sourcePrepare: "running",
+			editorOpenable: false,
+		});
+		expect(processing.rows.map((row) => row.state)).toEqual([
+			"done",
+			"running",
+			"running",
+			"running",
+			"running",
+		]);
+	});
+	it("keeps failure reasons and only supported retries", () => {
+		const result = deriveEditReadiness({
+			...facts,
+			videoState: "failed",
+			processingError: "Media processing failed",
+			canRetryProcessing: true,
+			transcriptionStatus: "ERROR",
+			aiGenerationStatus: "ERROR",
+			sourcePrepare: "failed",
+			sourcePrepareError: "Source preparation exhausted",
+			editorOpenable: false,
+		});
+		expect(
+			result.rows.slice(1).map((row) => [row.state, row.reason, row.retry]),
+		).toEqual([
+			["failed", "Media processing failed", "processing"],
+			["failed", "Transcription failed", "transcript"],
+			["failed", "Summary and chapters generation failed", undefined],
+			["failed", "Source preparation exhausted", undefined],
+		]);
+		expect(result.allDone).toBe(false);
+		expect(result.poll).toBe(false);
+		expect(
+			deriveEditReadiness({
+				...facts,
+				transcriptionStatus: "COMPLETE",
+				aiGenerationStatus: "ERROR",
+			}).rows[3]?.retry,
+		).toBe("ai");
+	});
+});
+
+describe("upload failures", () => {
+	it("reports upload failure without inventing a retry for a missing raw object", () => {
+		const result = deriveEditReadiness({
+			...facts,
+			uploadPhase: "error",
+			videoState: "failed",
+			processingError: "Upload interrupted",
+			canRetryProcessing: false,
+		});
+		expect(result.rows[0]).toMatchObject({
+			state: "failed",
+			reason: "Upload interrupted",
+		});
+		expect(result.rows[0]?.retry).toBeUndefined();
+	});
+	it("keeps a pending source job visible even when the editor can join it", () => {
+		const result = deriveEditReadiness({
+			...facts,
+			editorOpenable: true,
+			sourcePrepare: "running",
+			transcriptionStatus: "COMPLETE",
+			aiGenerationStatus: "COMPLETE",
+		});
+		expect(result.rows[4]?.state).toBe("running");
+		expect(result.allDone).toBe(false);
+		expect(result.poll).toBe(true);
+	});
 });
 
 const publication = {

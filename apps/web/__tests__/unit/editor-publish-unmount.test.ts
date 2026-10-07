@@ -43,6 +43,19 @@ vi.mock("@/actions/videos/download", () => ({
 	getVideoDownloadInfo: vi.fn(),
 }));
 
+vi.mock("@/actions/videos/get-edit-transcript", () => ({
+	requestEditTranscript: vi.fn(),
+}));
+
+vi.mock("../../hooks/use-edit-readiness", () => ({
+	useEditReadiness: () => ({
+		readiness: { transcriptUsable: true },
+		checking: false,
+		message: "",
+		checkAgain: vi.fn(),
+	}),
+}));
+
 vi.mock("@/actions/videos/publish-revision", () => ({
 	getEditorInstantFinishState: (...args: unknown[]) => harness.instant(...args),
 }));
@@ -296,7 +309,18 @@ describe("editor publish unmount", () => {
 		{
 			name: "409",
 			error: Object.assign(new Error("generation mismatch"), { status: 409 }),
-			toast: "A newer draft exists. Retry Done.",
+			retryError: Object.assign(new Error("Draft version changed again"), {
+				status: 409,
+			}),
+			toast: "Draft version changed again",
+		},
+		{
+			name: "source not ready",
+			error: Object.assign(
+				new Error("Immutable source identity is not ready. Reopen the editor."),
+				{ status: 409 },
+			),
+			toast: "Still preparing for editing — try again in a moment.",
 		},
 		{
 			name: "500",
@@ -310,7 +334,7 @@ describe("editor publish unmount", () => {
 		},
 	])(
 		"restores cuts, selection, and draft after $name",
-		async ({ error, toast: toastMessage }) => {
+		async ({ error, retryError, toast: toastMessage }) => {
 			const { baseline, selectedSegmentId } = seedDraft();
 			const done = await renderEditor(baseline);
 			const cutsBefore =
@@ -324,6 +348,7 @@ describe("editor publish unmount", () => {
 			expect(container.textContent).toContain("Saving / Publishing");
 			expect(harness.push).not.toHaveBeenCalled();
 
+			if (retryError) harness.post.mockRejectedValueOnce(retryError);
 			await act(async () => {
 				rejectPublish(error);
 			});
@@ -341,6 +366,55 @@ describe("editor publish unmount", () => {
 			expect(doneButton()?.disabled).toBe(false);
 			expect(toast.error).toHaveBeenCalledWith(toastMessage);
 			expect(harness.push).not.toHaveBeenCalled();
+			const retried = "status" in error && error.status === 409;
+			expect(harness.instant).toHaveBeenCalledTimes(retried ? 2 : 1);
+			expect(
+				harness.post.mock.calls.filter(([path]) => path.endsWith("/publish")),
+			).toHaveLength(retried ? 2 : 1);
 		},
 	);
+
+	it("retries Done once with fresh counters without changing the specs or session", async () => {
+		const { baseline } = seedDraft();
+		const done = await renderEditor(baseline);
+		harness.instant.mockResolvedValue({
+			enabled: true,
+			generation: 8,
+			draftVersion: 6,
+			draftSession: "another-session",
+		});
+		harness.post.mockImplementation((path: string) => {
+			if (path.endsWith("/prepare")) {
+				return Promise.resolve({ revisionId: "prepared", generation: 4 });
+			}
+			const publishes = harness.post.mock.calls.filter(([route]) =>
+				route.endsWith("/publish"),
+			);
+			return publishes.length === 1
+				? Promise.reject(
+						Object.assign(new Error("stale draft"), { status: 409 }),
+					)
+				: Promise.resolve({ success: true, playback: null });
+		});
+
+		await act(async () => done.click());
+
+		const publishes = harness.post.mock.calls.filter(([path]) =>
+			path.endsWith("/publish"),
+		);
+		expect(publishes).toHaveLength(2);
+		expect(publishes[1]?.[1]).toEqual({
+			...publishes[0]?.[1],
+			baseGeneration: 8,
+			draftVersion: 7,
+		});
+		expect(harness.instant).toHaveBeenLastCalledWith({
+			videoId: VIDEO_ID,
+			ownerId: "owner-1",
+		});
+		expect(harness.instant).toHaveBeenCalledTimes(2);
+		expect(harness.push).toHaveBeenCalledWith(`/s/${VIDEO_ID}`);
+		expect(storedDraft()).toBeNull();
+		expect(toast.error).not.toHaveBeenCalled();
+	});
 });

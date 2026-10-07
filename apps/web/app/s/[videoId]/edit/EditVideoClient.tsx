@@ -50,6 +50,7 @@ import {
 } from "@/lib/instant-finish-playback-handoff";
 import {
 	doneRoute,
+	publishDoneWithRetry,
 	readOrCreateDraftSession,
 	restoreRoute,
 } from "@/lib/revision-done";
@@ -1380,25 +1381,36 @@ export function EditVideoClient({
 				router.refresh();
 				return;
 			}
-			const published = await postRevisionRoute<{
-				success: boolean;
-				revisionId: string;
-				generation: number;
-				playback: {
-					playlistUrl: string;
-					grantExpiresAt: number;
-					revisionMetadata: Parameters<
-						typeof stashInstantFinishPlayback
-					>[0]["revisionMetadata"];
-				} | null;
-			}>("/api/video/revision/publish", {
-				videoId: video.id,
-				editSpec,
-				expectedEditSpec: initialEditSpec,
-				baseGeneration: instantFinish.generation ?? 0,
-				draftVersion: (instantFinish.draftVersion ?? 0) + 1,
-				draftSession,
-			});
+			let publicationState = instantFinish;
+			const published = await publishDoneWithRetry(
+				() =>
+					postRevisionRoute<{
+						success: boolean;
+						revisionId: string;
+						generation: number;
+						playback: {
+							playlistUrl: string;
+							grantExpiresAt: number;
+							revisionMetadata: Parameters<
+								typeof stashInstantFinishPlayback
+							>[0]["revisionMetadata"];
+						} | null;
+					}>("/api/video/revision/publish", {
+						videoId: video.id,
+						editSpec,
+						expectedEditSpec: initialEditSpec,
+						baseGeneration: publicationState.generation ?? 0,
+						draftVersion: (publicationState.draftVersion ?? 0) + 1,
+						draftSession,
+					}),
+				async () => {
+					publicationState = await getEditorInstantFinishState({
+						videoId: video.id,
+						ownerId: video.ownerId,
+					});
+					setInstantFinish(publicationState);
+				},
+			);
 			if (published.success) {
 				if (published.playback && typeof sessionStorage !== "undefined") {
 					stashInstantFinishPlayback(
@@ -1429,18 +1441,20 @@ export function EditVideoClient({
 					? error.status
 					: 0;
 			const message =
-				status === 409
-					? "A newer draft exists. Retry Done."
-					: error instanceof Error
+				error instanceof Error
+					? error.message
+					: typeof error === "object" &&
+							error !== null &&
+							"message" in error &&
+							typeof error.message === "string" &&
+							error.message.length > 0
 						? error.message
-						: typeof error === "object" &&
-								error !== null &&
-								"message" in error &&
-								typeof error.message === "string" &&
-								error.message.length > 0
-							? error.message
-							: "Failed to start video edit";
-			toast.error(message);
+						: "Failed to start video edit";
+			toast.error(
+				status === 409 && /source.*not ready/i.test(message)
+					? "Still preparing for editing — try again in a moment."
+					: message,
+			);
 			restoreEditor();
 		}
 	}, [
@@ -1452,6 +1466,7 @@ export function EditVideoClient({
 		isSaving,
 		router,
 		video.id,
+		video.ownerId,
 	]);
 
 	const handleCancel = useCallback(() => {

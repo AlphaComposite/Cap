@@ -37,7 +37,7 @@ export function EditReadinessStatus({
 }
 
 export function EditReadinessGate({ videoId }: { videoId: Video.VideoId }) {
-	const state = useEditReadiness(videoId, true, "", true);
+	const state = useEditReadiness(videoId);
 	const router = useRouter();
 	const refreshed = useRef<string | null>(null);
 	// router.refresh() is void, and a remount clears refs. Record the identity before refresh so a still-preparing server cannot loop.
@@ -47,7 +47,7 @@ export function EditReadinessGate({ videoId }: { videoId: Video.VideoId }) {
 		}
 		const readiness = state.readiness;
 		if (!readiness || readiness.videoId !== videoId) return;
-		if (readiness.manualEditing !== true) return;
+		if (readiness.editorOpenable !== true) return;
 		const token = `${videoId}\0${readiness.identity}`;
 		if (refreshed.current === token) return;
 		const storageKey = `cap.edit-readiness.reentry.${videoId}`;
@@ -74,17 +74,20 @@ export function EditReadinessGate({ videoId }: { videoId: Video.VideoId }) {
 	}, [state.readiness, videoId, router]);
 	return (
 		<main className="mx-auto flex max-w-xl flex-col gap-4 p-8">
-			<h1 className="text-xl font-medium">Preparing your video editor</h1>
+			<h1 className="text-xl font-medium">Preparing for editing…</h1>
+			<output className="text-sm text-gray-11">
+				{state.readiness?.processingSummary || state.message}
+			</output>
 			<EditReadinessStatus state={state} />
 			<p className="text-sm text-gray-11">
-				Video preparation is separate from transcription. Once the video is
-				processed, manual timeline editing does not require a transcript.
+				This usually takes about 1–2 min. The editor will open automatically
+				when preparation finishes. You can keep using the share page meanwhile.
 			</p>
 			<p className="text-sm text-gray-11">
 				If preparation failed, use the existing recovery controls on the share
 				page.
 			</p>
-			{state.readiness?.manualEditing && (
+			{state.readiness?.editorOpenable && (
 				<button
 					type="button"
 					className="self-start rounded-lg bg-gray-12 px-4 py-2 text-gray-1"
