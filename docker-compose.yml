@@ -2,7 +2,7 @@ name: cap
 services:
   cap-web:
     container_name: cap-web
-    image: cap-web:sol61-mutefix-QWtEd6pZ36eIHcOtFVXH-
+    image: cap-web:sol61-b6c-ibhNPJnhyXAuld47SylGi
     pull_policy: never
     restart: unless-stopped
     depends_on:
@@ -63,7 +63,7 @@ services:
     - /path/to/shared/cap/transcript59-workflow-data:/app/apps/web/.workflow-data
   media-server:
     container_name: cap-media-server
-    image: cap-media-server:chapters-fc5ea21f4b-ol10cpu6
+    image: cap-media-server:b6c3-fmp4dur-f4bfe17ce0
     build:
       context: ./apps/media-server
       dockerfile: Dockerfile.standalone
