@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/check-public-hygiene.sh
+        env:
+          PUBLIC_HYGIENE_EXTRA_PATTERN: ${{ secrets.PUBLIC_HYGIENE_EXTRA_PATTERN }}
 
   changes:
     name: Detect Changes
