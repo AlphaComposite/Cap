@@ -37,7 +37,10 @@ import {
 import { toast } from "sonner";
 import { getVideoDownloadInfo } from "@/actions/videos/download";
 import { requestEditTranscript } from "@/actions/videos/get-edit-transcript";
-import { getEditorInstantFinishState } from "@/actions/videos/publish-revision";
+import {
+	getEditorInstantFinishState,
+	rewarmEditorSource,
+} from "@/actions/videos/publish-revision";
 import {
 	restoreVideoToOriginal,
 	saveVideoEdits,
@@ -1406,6 +1409,13 @@ export function EditVideoClient({
 						...(expectedDraftSession !== undefined && { expectedDraftSession }),
 					}),
 				async (error) => {
+					if (
+						error instanceof Error &&
+						error.message === "Editor-open warm expired. Reopen the editor."
+					) {
+						const warmed = await rewarmEditorSource(video.id);
+						if (!warmed.success) throw new Error(warmed.error);
+					}
 					const fresh = await getEditorInstantFinishState({
 						videoId: video.id,
 						ownerId: video.ownerId,
@@ -1462,9 +1472,11 @@ export function EditVideoClient({
 						? error.message
 						: "Failed to start video edit";
 			toast.error(
-				status === 409 && /source.*not ready/i.test(message)
-					? "Still preparing for editing — try again in a moment."
-					: message,
+				/Failed to find Server Action/i.test(message)
+					? "Cap was updated. Reload the page to continue — your edits are saved."
+					: status === 409 && /source.*not ready/i.test(message)
+						? "Still preparing for editing — try again in a moment."
+						: message,
 			);
 			restoreEditor();
 		}

@@ -23,6 +23,7 @@ import {
 const harness = vi.hoisted(() => ({
 	post: vi.fn(),
 	instant: vi.fn(),
+	rewarm: vi.fn(),
 	push: vi.fn(),
 	refresh: vi.fn(),
 }));
@@ -58,6 +59,7 @@ vi.mock("../../hooks/use-edit-readiness", () => ({
 
 vi.mock("@/actions/videos/publish-revision", () => ({
 	getEditorInstantFinishState: (...args: unknown[]) => harness.instant(...args),
+	rewarmEditorSource: (...args: unknown[]) => harness.rewarm(...args),
 }));
 
 vi.mock("@/actions/videos/save-edits", () => ({
@@ -242,6 +244,8 @@ beforeEach(() => {
 	localStorage.clear();
 	harness.post.mockReset();
 	harness.instant.mockReset();
+	harness.rewarm.mockReset();
+	harness.rewarm.mockResolvedValue({ success: true });
 	harness.push.mockReset();
 	harness.refresh.mockReset();
 	vi.mocked(toast.error).mockReset();
@@ -374,7 +378,7 @@ describe("editor publish unmount", () => {
 		},
 	);
 
-	it.each(["same", "empty"])(
+	it.each(["same", "empty", "warm-expired"])(
 		"retries Done once with a %s session and fresh counters",
 		async (session) => {
 			const { baseline } = seedDraft();
@@ -385,7 +389,7 @@ describe("editor publish unmount", () => {
 				enabled: true,
 				generation: 8,
 				draftVersion: 6,
-				draftSession: session === "same" ? draftSession : "",
+				draftSession: session === "empty" ? "" : draftSession,
 			});
 			harness.post.mockImplementation((path: string) => {
 				if (path.endsWith("/prepare")) {
@@ -396,7 +400,14 @@ describe("editor publish unmount", () => {
 				);
 				return publishes.length === 1
 					? Promise.reject(
-							Object.assign(new Error("stale draft"), { status: 409 }),
+							Object.assign(
+								new Error(
+									session === "warm-expired"
+										? "Editor-open warm expired. Reopen the editor."
+										: "stale draft",
+								),
+								{ status: 409 },
+							),
 						)
 					: Promise.resolve({ success: true, playback: null });
 			});
@@ -413,16 +424,72 @@ describe("editor publish unmount", () => {
 				...publishes[0]?.[1],
 				baseGeneration: 8,
 				draftVersion: 7,
-				expectedDraftSession: session === "same" ? draftSession : "",
+				expectedDraftSession: session === "empty" ? "" : draftSession,
 			});
 			expect(harness.instant).toHaveBeenLastCalledWith({
 				videoId: VIDEO_ID,
 				ownerId: "owner-1",
 			});
 			expect(harness.instant).toHaveBeenCalledTimes(2);
+			if (session === "warm-expired") {
+				expect(harness.rewarm).toHaveBeenCalledExactlyOnceWith(VIDEO_ID);
+				expect(harness.rewarm.mock.invocationCallOrder[0]).toBeLessThan(
+					harness.instant.mock.invocationCallOrder[1] ?? 0,
+				);
+			} else {
+				expect(harness.rewarm).not.toHaveBeenCalled();
+			}
 			expect(harness.push).toHaveBeenCalledWith(`/s/${VIDEO_ID}`);
 			expect(storedDraft()).toBeNull();
 			expect(toast.error).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["prepare failure", "stale action"])(
+		"preserves the draft after re-warm %s and restores it on reload",
+		async (failure) => {
+			const { baseline, selectedSegmentId } = seedDraft();
+			const done = await renderEditor(baseline);
+			const draftBefore = storedDraft();
+			const message = "Source identity changed after it was recorded";
+			if (failure === "stale action") {
+				harness.rewarm.mockRejectedValueOnce(
+					new Error('Failed to find Server Action "old-action".'),
+				);
+			} else {
+				harness.rewarm.mockResolvedValueOnce({
+					success: false,
+					error: message,
+				});
+			}
+			await act(async () => done.click());
+			await act(async () => {
+				rejectPublish(
+					Object.assign(
+						new Error("Editor-open warm expired. Reopen the editor."),
+						{ status: 409 },
+					),
+				);
+			});
+			expect(harness.rewarm).toHaveBeenCalledExactlyOnceWith(VIDEO_ID);
+			expect(harness.instant).toHaveBeenCalledTimes(1);
+			expect(
+				harness.post.mock.calls.filter(([path]) => path.endsWith("/publish")),
+			).toHaveLength(1);
+			expect(toast.error).toHaveBeenCalledWith(
+				failure === "stale action"
+					? "Cap was updated. Reload the page to continue — your edits are saved."
+					: message,
+			);
+			expect(harness.push).not.toHaveBeenCalled();
+			expect(doneButton()?.disabled).toBe(false);
+			expect(container.textContent).toContain("0:08");
+			expect(storedDraft()).toEqual(draftBefore);
+			await act(async () => root.unmount());
+			root = createRoot(container);
+			await renderEditor(baseline);
+			expect(container.textContent).toContain("0:08");
+			expect(storedDraft()?.state.selectedSegmentId).toBe(selectedSegmentId);
 		},
 	);
 

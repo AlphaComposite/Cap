@@ -39,3 +39,28 @@ export async function recordServerEditDraft(input: {
 	}
 	return recordServerDraft(db(), input);
 }
+
+export async function rewarmEditorSource(videoId: Video.VideoId) {
+	try {
+		const { video } = await loadOwnerVideo(videoId);
+		if (!isInstantFinishEnabledForOwner(video.ownerId)) {
+			throw new RevisionPublicationError(
+				403,
+				"Instant finish is not enabled for this video",
+			);
+		}
+		const { openInstantFinishEditor } = await import(
+			"@/lib/revision-publication-read"
+		);
+		await openInstantFinishEditor(videoId);
+		return { success: true };
+	} catch (error) {
+		return {
+			success: false,
+			error:
+				error instanceof Error
+					? error.message
+					: "Failed to prepare video for editing",
+		};
+	}
+}
