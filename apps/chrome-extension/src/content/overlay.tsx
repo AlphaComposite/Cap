@@ -349,7 +349,6 @@ const isPanelFrameMessage = (value: unknown): value is PanelFrameMessage => {
 	);
 };
 
-// Open state is owned by OverlayApp (shared session flag); this only renders the iframe.
 function RecorderPanelOverlay({ open }: { open: boolean }) {
 	const [pageVisible, setPageVisible] = useState(
 		() => document.visibilityState === "visible",
