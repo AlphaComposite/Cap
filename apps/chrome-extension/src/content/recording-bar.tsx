@@ -293,8 +293,10 @@ export function RecordingBarOverlay({
 					return false;
 				}
 				if (message.type === "overlay-hide") {
-					clearCountdownTimer();
-					setCountdownValue(null);
+					if (!message.previewOnly) {
+						clearCountdownTimer();
+						setCountdownValue(null);
+					}
 					refresh();
 					return false;
 				}

@@ -1701,7 +1701,7 @@ const handleRequest = async (
 				isRecordingPreviewStatus(recordingStatus),
 			);
 		} else {
-			await broadcastOverlayHide();
+			await broadcastOverlayHide(true);
 		}
 		return { ok: true, settings: message.settings };
 	}
@@ -1709,7 +1709,7 @@ const handleRequest = async (
 	if (message.type === "close-webcam-preview") {
 		const settings = await loadSettings();
 		await saveWebcamPreviewDismissed(true);
-		await broadcastOverlayHide();
+		await broadcastOverlayHide(true);
 		return { ok: true, settings };
 	}
 
