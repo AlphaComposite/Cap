@@ -10,6 +10,15 @@ import {
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/actions/videos/get-edit-transcript", () => ({
+	requestEditTranscript: vi.fn(),
+}));
+vi.mock("../../hooks/use-edit-readiness", () => ({
+	useEditReadiness: () => ({
+		readiness: { transcriptUsable: true },
+		checkAgain: () => {},
+	}),
+}));
 vi.mock("next/navigation", () => ({
 	useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn() }),
 }));
@@ -177,6 +186,14 @@ afterEach(() => {
 describe("editor source timeline", () => {
 	it("keeps a middle deletion in place instead of collapsing the filmstrip", async () => {
 		await renderEditor();
+		expect(container.querySelector("[data-waveform-toolbar]")).not.toBeNull();
+		expect(container.querySelector("[data-hide-waveform]")).not.toBeNull();
+		expect(container.querySelector("[data-zoom-out]")).not.toBeNull();
+		expect(container.querySelector("[data-whole-video]")).not.toBeNull();
+		expect(container.querySelector("[data-chapter-lane]")).not.toBeNull();
+		expect(container.querySelector("[data-playhead]")).not.toBeNull();
+		expect(container.querySelector("[data-hover-ghost]")).not.toBeNull();
+		expect(container.querySelector("[data-waveform-canvas]")).not.toBeNull();
 		const deleted = container.querySelector("[data-timeline-deleted]");
 		const clips = keptClipBoxes(container);
 

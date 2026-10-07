@@ -369,6 +369,45 @@ export async function prepareSourceOnEditorOpen(input: {
 	};
 }
 
+export async function requestSourcePeaks(input: {
+	videoId: string;
+	sourceKey: string;
+	sourceSha256: string;
+	sourceDuration?: number;
+}): Promise<{ status: number; body: unknown; responseBytes: number }> {
+	const path = `/internal/sources/${input.videoId}/peaks`;
+	const payload: {
+		videoId: string;
+		sourceId: string;
+		sourceKey: string;
+		sourceSha256: string;
+		sourceDuration?: number;
+	} = {
+		videoId: input.videoId,
+		sourceId: originSourceId(input.sourceKey),
+		sourceKey: input.sourceKey,
+		sourceSha256: input.sourceSha256,
+	};
+	if (input.sourceDuration !== undefined) {
+		payload.sourceDuration = input.sourceDuration;
+	}
+	const encoded = JSON.stringify(payload);
+	const response = await signedFetch(path, "POST", encoded);
+	const text = await response.text();
+	if (text.length > 8_000_000) {
+		throw new Error("peaks response exceeds the size bound");
+	}
+	let body: unknown = null;
+	if (text) {
+		try {
+			body = JSON.parse(text);
+		} catch {
+			body = null;
+		}
+	}
+	return { status: response.status, body, responseBytes: text.length };
+}
+
 export function digestMatches(body: Buffer, expected: string): boolean {
 	return sha256Hex(body) === expected;
 }

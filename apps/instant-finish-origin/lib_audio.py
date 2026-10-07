@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import queue
 import subprocess
@@ -143,13 +144,17 @@ def _sha256(path: Path) -> str:
     found = _SHA.get(key)
     if found is not None:
         return found
+    found = _sha256_fresh(path)
+    _SHA[key] = found
+    return found
+
+
+def _sha256_fresh(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
-    found = digest.hexdigest()
-    _SHA[key] = found
-    return found
+    return digest.hexdigest()
 
 
 def _owned(source: Path) -> bool:
@@ -364,6 +369,8 @@ def _reusable_presentation(dest: Path, meta: Path, source_sha: str) -> dict | No
         return None
     if record.get("resampled_from") != (None if input_rate == SR else input_rate):
         return None
+    if _sha256_fresh(dest) != pcm_sha:
+        return None
     return record
 
 
@@ -404,6 +411,7 @@ def prepare_presentation(source: Path) -> dict:
     if nbytes % 8:
         raise RuntimeError(f"presentation pcm length {nbytes} is not a stereo frame")
     source_sha = _sha256(source)
+    _SHA.pop(str(dest), None)
     record = {
         "pcm": dest.name,
         "pcm_sha256": _sha256(dest),
@@ -1352,3 +1360,178 @@ def add_audio_elst(init: bytes, segment_duration: int) -> bytes:
     out[audio[0]:audio[0] + 4] = (audio[1] + len(edts)).to_bytes(4, "big")
     out[moov[0]:moov[0] + 4] = (moov[1] + len(edts)).to_bytes(4, "big")
     return bytes(out)
+
+
+PEAKS_MAGIC = b"CAPW1"
+PEAKS_PAIRS_PER_SEC = 100
+PEAKS_SAMPLES_PER_PAIR = 480
+PEAKS_HEADER_BYTES = 64
+PEAKS_DB_FLOOR = -60.0
+PEAKS_CHUNK_FRAMES = 480 * 64
+PEAKS_MAX_PAIR_COUNT = math.ceil(14_400 * PEAKS_PAIRS_PER_SEC) + 1
+PEAKS_MAX_SOURCE_SECONDS = 14_400
+
+
+def quantize_peak_sample(sample: float) -> int:
+    if isinstance(sample, bool):
+        return 0
+    try:
+        value = float(sample)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(value) or value == 0.0:
+        return 0
+    db = 20.0 * math.log10(abs(value))
+    if db < PEAKS_DB_FLOOR:
+        db = PEAKS_DB_FLOOR
+    elif db > 0.0:
+        db = 0.0
+    mag = math.floor(((db - PEAKS_DB_FLOOR) / -PEAKS_DB_FLOOR) * 127.0 + 0.5)
+    mag = max(0, min(127, int(mag)))
+    if mag == 0:
+        return 0
+    return -mag if value < 0.0 else mag
+
+
+def encode_no_audio_peaks(source_sha256: str) -> bytes:
+    _require_peaks_sha(source_sha256)
+    out = bytearray(PEAKS_HEADER_BYTES)
+    _write_peaks_header(out, source_sha256, 0, no_audio=True)
+    return bytes(out)
+
+
+def audio_track_status(source: Path) -> str:
+    """Return present or absent. Unsupported rate stays AudioRejected. Probe failure is not absence."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=sample_rate", "-of", "json", str(source),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=limits.PROBE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("audio probe failed") from exc
+    if result.returncode != 0:
+        raise RuntimeError("audio probe failed")
+    try:
+        payload = json.loads(result.stdout.decode() or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("audio probe failed") from exc
+    streams = payload.get("streams")
+    if not isinstance(streams, list):
+        raise RuntimeError("audio probe failed")
+    if not streams:
+        return "absent"
+    rate = streams[0].get("sample_rate") if isinstance(streams[0], dict) else None
+    if isinstance(rate, str) and rate.isdigit():
+        rate = int(rate)
+    audio_rate_policy(rate)
+    return "present"
+
+
+def peaks_source_window(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError("peaks source duration is not a finite positive bound")
+    if not math.isfinite(value) or value <= 0 or value > PEAKS_MAX_SOURCE_SECONDS:
+        raise RuntimeError("peaks source duration is not a finite positive bound")
+    return float(value)
+
+
+def peaks_window_samples(duration: float) -> int:
+    scaled = duration * SR
+    nearest = round(scaled)
+    if math.isfinite(scaled) and abs(scaled - nearest) <= 1e-6:
+        count = int(nearest)
+    else:
+        count = math.ceil(scaled)
+    if count <= 0 or count > PEAKS_MAX_SOURCE_SECONDS * SR:
+        raise RuntimeError("peaks source duration is not a finite positive bound")
+    return count
+
+
+def reduce_presentation_peaks(
+    source: Path,
+    source_sha256: str,
+    *,
+    chunk_frames: int = PEAKS_CHUNK_FRAMES,
+    source_duration: float | None = None,
+) -> bytes:
+    _require_peaks_sha(source_sha256)
+    if (
+        isinstance(chunk_frames, bool)
+        or not isinstance(chunk_frames, int)
+        or chunk_frames <= 0
+        or chunk_frames > PEAKS_CHUNK_FRAMES
+        or chunk_frames % PEAKS_SAMPLES_PER_PAIR != 0
+    ):
+        raise RuntimeError("peaks chunk is not bounded")
+    window_samples = None
+    if source_duration is not None:
+        window_samples = peaks_window_samples(peaks_source_window(source_duration))
+    dest = presentation_pcm_path(source)
+    if _reusable_presentation(dest, presentation_meta_path(source), source_sha256) is None:
+        raise RuntimeError(f"presentation pcm is not bound to {source.name}")
+    if not dest.is_file():
+        raise RuntimeError(f"presentation pcm missing for {source.name}")
+    nbytes = dest.stat().st_size
+    if nbytes % 8:
+        raise RuntimeError(f"presentation pcm length {nbytes} is not a stereo frame")
+    pcm_frames = nbytes // 8
+    frames = pcm_frames if window_samples is None else window_samples
+    pair_count = math.ceil(frames / PEAKS_SAMPLES_PER_PAIR) if frames else 0
+    if pair_count > PEAKS_MAX_PAIR_COUNT:
+        raise RuntimeError("peaks pair count exceeds the source bound")
+    out = bytearray(PEAKS_HEADER_BYTES + pair_count * 2)
+    _write_peaks_header(out, source_sha256, pair_count, no_audio=False)
+    readable = pcm_frames if window_samples is None else min(pcm_frames, window_samples)
+    if readable == 0:
+        return bytes(out)
+    mapped = np.memmap(dest, dtype="<f4", mode="r")
+    try:
+        for start in range(0, readable, chunk_frames):
+            end = min(readable, start + chunk_frames)
+            window = np.array(mapped[start * 2 : end * 2], dtype=np.float32, copy=True)
+            left = window[0::2]
+            right = window[1::2]
+            mono = (left + right) * np.float32(0.5)
+            finite = np.isfinite(mono)
+            if not bool(np.any(finite)):
+                cleaned = np.zeros(mono.shape, np.float32)
+            else:
+                cleaned = np.where(finite, mono, np.float32(0.0))
+            offset = 0
+            count = int(cleaned.shape[0])
+            while offset < count:
+                bucket_end = min(offset + PEAKS_SAMPLES_PER_PAIR, count)
+                bucket = cleaned[offset:bucket_end]
+                pair_index = (start + offset) // PEAKS_SAMPLES_PER_PAIR
+                pos = PEAKS_HEADER_BYTES + pair_index * 2
+                out[pos] = quantize_peak_sample(float(bucket.min())) & 0xFF
+                out[pos + 1] = quantize_peak_sample(float(bucket.max())) & 0xFF
+                offset = bucket_end
+    finally:
+        del mapped
+    return bytes(out)
+
+
+def _require_peaks_sha(source_sha256: str) -> None:
+    if (
+        not isinstance(source_sha256, str)
+        or len(source_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in source_sha256)
+    ):
+        raise RuntimeError("peaks source sha is not 64 lowercase hex")
+
+
+def _write_peaks_header(out: bytearray, source_sha256: str, pair_count: int, *, no_audio: bool) -> None:
+    out[0:5] = PEAKS_MAGIC
+    out[5] = 1
+    out[6] = 1 if no_audio else 0
+    out[7] = PEAKS_PAIRS_PER_SEC
+    struct_bytes = (SR).to_bytes(4, "little") + PEAKS_SAMPLES_PER_PAIR.to_bytes(2, "little") + pair_count.to_bytes(4, "little")
+    out[8:18] = struct_bytes
+    out[18:50] = bytes.fromhex(source_sha256)

@@ -4,6 +4,15 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/actions/videos/get-edit-transcript", () => ({
+	requestEditTranscript: vi.fn(),
+}));
+vi.mock("../../hooks/use-edit-readiness", () => ({
+	useEditReadiness: () => ({
+		readiness: { transcriptUsable: true },
+		checkAgain: () => {},
+	}),
+}));
 vi.mock("server-only", () => ({}));
 
 import { toast } from "sonner";
@@ -127,7 +136,11 @@ vi.mock("@/app/s/[videoId]/_components/video-frame-thumbnail", () => ({
 
 vi.mock("@/app/s/[videoId]/edit/EditorChapterPreview", () => ({
 	EditorChapterMarkers: () => null,
-	useEditorChapterPreview: () => ({ chaptersUrl: null, projectedChapters: [] }),
+	useEditorChapterPreview: () => ({
+		chaptersUrl: null,
+		playbackChapters: [],
+		projectedChapters: [],
+	}),
 }));
 
 vi.mock("@/app/s/[videoId]/edit/TranscriptSidebar", async () => {

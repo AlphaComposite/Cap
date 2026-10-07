@@ -61,7 +61,8 @@ vi.mock("@/app/s/[videoId]/edit/EditorChapterPreview", () => ({
 	}),
 }));
 vi.mock("@/app/s/[videoId]/edit/TranscriptSidebar", () => ({
-	TranscriptSidebar: () => null,
+	TranscriptSidebar: () =>
+		createElement("aside", { "data-transcript-sidebar": "" }),
 }));
 vi.mock("@/app/s/[videoId]/edit/use-renewing-playback-source", () => ({
 	useRenewingPlaybackSource: ({ initialSrc }: { initialSrc: string }) =>
@@ -69,72 +70,64 @@ vi.mock("@/app/s/[videoId]/edit/use-renewing-playback-source", () => ({
 }));
 
 import { EditVideoClient } from "@/app/s/[videoId]/edit/EditVideoClient";
-import { createIdentityEditSpec, normalizeKeepRanges } from "@/lib/video-edits";
+import { createIdentityEditSpec } from "@/lib/video-edits";
 
-const editedRecording = {
-	sourceDuration: 1_037.622333,
-	outputDuration: 745.331,
-};
-
-function renderEditor(
-	duration: number,
-	initialEditSpec: ReturnType<typeof createIdentityEditSpec>,
-) {
+function renderEditor(transcriptionStatus: string | null) {
+	const duration = 142.94;
 	const html = renderToStaticMarkup(
 		createElement(EditVideoClient, {
 			video: {
-				id: "video-1" as never,
-				name: "Timing fixture",
+				id: "video-readability" as never,
+				name: "Waveform readability",
 				ownerId: "owner-1",
 				duration,
 				width: 1920,
 				height: 1080,
-				transcriptionStatus: null,
+				transcriptionStatus,
 			},
 			chapters: [],
-			hasExistingEdits: true,
-			initialEditSpec,
+			hasExistingEdits: false,
+			initialEditSpec: createIdentityEditSpec(duration),
 			playbackSrc: "/original.mp4",
-			usesOriginalSource: true,
+			usesOriginalSource: false,
 		}),
 	);
 	return new JSDOM(html).window.document;
 }
 
-describe("editor duration labels", () => {
-	it("labels a shortened output clock Edited beside 12:25", () => {
-		const initialEditSpec = normalizeKeepRanges(
-			[
-				{ start: 0, end: 400 },
-				{ start: 500, end: 845.331 },
-			],
-			editedRecording.sourceDuration,
-		);
-		const document = renderEditor(
-			editedRecording.sourceDuration,
-			initialEditSpec,
-		);
-		const label = [...document.querySelectorAll("span")].find(
-			(span) => span.textContent?.trim() === "Edited",
-		);
+describe("editor waveform dock", () => {
+	it("places the timeline, toolbar, and split/delete below both columns", () => {
+		const document = renderEditor("COMPLETE");
+		const shell = document.querySelector("[data-editor-shell='editor']");
+		const main = document.querySelector("main");
+		const dock = document.querySelector("[data-editor-dock]");
+		const timeline = document.querySelector("[data-editor-timeline]");
+		const sidebar = document.querySelector("[data-transcript-sidebar]");
+		const player = document.querySelector("[style*='view-transition-name']");
 
-		expect(label).toBeDefined();
-		expect(label?.parentElement?.textContent?.replace(/\s+/g, " ").trim()).toBe(
-			"Edited 12:25",
+		expect(dock).not.toBeNull();
+		expect(dock?.contains(timeline)).toBe(true);
+		expect(main?.contains(timeline)).toBe(false);
+		expect(
+			dock?.contains(document.querySelector("[data-waveform-toolbar]")),
+		).toBe(true);
+		expect(dock?.contains(document.querySelector("[data-chapter-lane]"))).toBe(
+			true,
 		);
-		expect(label?.parentElement?.parentElement?.textContent).toContain("0:00");
-	});
-
-	it("labels an unedited output clock Original", () => {
-		const duration = 1_972.9;
-		const document = renderEditor(duration, createIdentityEditSpec(duration));
-		const label = [...document.querySelectorAll("span")].find(
-			(span) => span.textContent?.trim() === "Original",
+		expect(dock?.textContent).toContain("Split");
+		expect(dock?.textContent).toContain("Delete");
+		expect(main?.textContent).not.toContain("Split");
+		expect(main?.contains(player)).toBe(true);
+		expect(main?.className).toContain("xl:pr-[640px]");
+		expect(dock?.className ?? "").not.toContain("xl:pr-[640px]");
+		expect(shell?.getAttribute("style") ?? "").toContain(
+			"--editor-dock-height",
 		);
-
-		expect(label).toBeDefined();
-		expect(label?.parentElement?.textContent?.replace(/\s+/g, " ").trim()).toBe(
-			"Original 32:52",
-		);
+		expect(sidebar).not.toBeNull();
+		const position = document.defaultView?.Node.DOCUMENT_POSITION_PRECEDING;
+		if (!dock || !sidebar || position === undefined) {
+			throw new Error("missing dock geometry");
+		}
+		expect(dock.compareDocumentPosition(sidebar) & position).not.toBe(0);
 	});
 });

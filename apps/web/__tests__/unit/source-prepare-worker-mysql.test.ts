@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import * as schema from "@cap/database/schema";
 import { Organisation, User, Video } from "@cap/web-domain";
-import { getTableName } from "drizzle-orm";
+import { eq, getTableName } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/mysql-core";
 import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
 import { createPool, type Pool } from "mysql2/promise";
@@ -25,6 +25,12 @@ import {
 	isUntouchedEditorSpec,
 	untouchedEditorSpec,
 } from "@/lib/source-prepare";
+import {
+	decodePeaksObject,
+	encodePeaksObject,
+	PEAKS_PAIRS_PER_SEC,
+	peaksObjectKey,
+} from "@/lib/waveform-peaks";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/env", () => ({
@@ -38,6 +44,20 @@ const runtime = vi.hoisted(() => ({
 	refreshPolicy: vi.fn(async () => undefined),
 	deletes: [] as string[],
 	deleteThrows: 0,
+	peaksExistsThrows: false,
+	requestPeaks: vi.fn(
+		async (_input: {
+			videoId: string;
+			sourceKey: string;
+			sourceSha256: string;
+		}): Promise<{
+			status: number;
+			body: unknown;
+			responseBytes: number;
+		}> => {
+			throw new Error("origin peaks not seamed");
+		},
+	),
 }));
 vi.mock("@/lib/instant-finish-source-relocate", async (original) => ({
 	...(await original<typeof import("@/lib/instant-finish-source-relocate")>()),
@@ -59,7 +79,11 @@ vi.mock("@/lib/instant-finish-source-relocate", async (original) => ({
 			runtime.deletes.push(key);
 			runtime.objects.delete(key);
 		},
-		exists: async (key: string) => runtime.objects.has(key),
+		exists: async (key: string) => {
+			if (runtime.peaksExistsThrows && key.startsWith("private/peaks/"))
+				throw new Error("optional peaks probe failed");
+			return runtime.objects.has(key);
+		},
 		request: async () => 404,
 		presignGet: async () => "http://127.0.0.1/not-used",
 		list: async (prefix: string) =>
@@ -76,7 +100,32 @@ vi.mock("@/lib/instant-finish-source-relocate", async (original) => ({
 vi.mock("@/lib/revision-publication-origin", async (original) => ({
 	...(await original<typeof import("@/lib/revision-publication-origin")>()),
 	prepareSourceOnEditorOpen: runtime.prepare,
+	requestSourcePeaks: (input: {
+		videoId: string;
+		sourceKey: string;
+		sourceSha256: string;
+	}) => runtime.requestPeaks(input),
 }));
+vi.mock("@/lib/waveform-peaks-store", async () => {
+	const { PEAKS_MAX_OBJECT_BYTES, peaksObjectKey } = await import(
+		"@/lib/waveform-peaks"
+	);
+	return {
+		putPeaksObject: async (
+			videoId: string,
+			sourceSha256: string,
+			bytes: Uint8Array,
+		) => {
+			const key = peaksObjectKey(videoId, sourceSha256);
+			if (!key || bytes.byteLength > PEAKS_MAX_OBJECT_BYTES) {
+				throw new Error("peaks object refused");
+			}
+			runtime.objects.set(key, Buffer.from(bytes));
+		},
+		headPeaksObject: async () => null,
+		readPeaksObject: async (key: string) => runtime.objects.get(key) ?? null,
+	};
+});
 vi.mock("@/lib/revision-publication", async (original) => ({
 	...(await original<typeof import("@/lib/revision-publication")>()),
 	publishInstantFinishRevision: runtime.publish,
@@ -93,6 +142,31 @@ if (url) {
 			"worker fixture requires explicitly isolated cap57_test_worker on loopback",
 		);
 	}
+}
+function peaksRegressionUrl() {
+	const raw = process.env.CAP_SOURCE_PREPARE_MYSQL;
+	if (!raw) return undefined;
+	try {
+		const target = new URL(raw);
+		if (
+			target.hostname === "127.0.0.1" &&
+			target.pathname === "/cap57_test_regression"
+		) {
+			return raw;
+		}
+	} catch {
+		return undefined;
+	}
+	return undefined;
+}
+const peaksDurationDatabase = peaksRegressionUrl();
+if (
+	process.env.CAP_SOURCE_PREPARE_REQUIRE_REGRESSION === "1" &&
+	!peaksDurationDatabase
+) {
+	throw new Error(
+		"peaks duration fixture requires loopback cap57_test_regression",
+	);
 }
 const ownerId = User.UserId.make("u57parent00001");
 const videoId = Video.VideoId.make("v57parent00001");
@@ -122,6 +196,31 @@ const tables = [
 	schema.revisionOutbox,
 	schema.comments,
 ];
+
+async function expectCoreAndPeaksJobs(coreCount: number) {
+	const rows = await database.select().from(schema.revisionOutbox);
+	const isPeaks = (row: (typeof rows)[number]) =>
+		(row.payload as { peaksOnly?: boolean }).peaksOnly === true;
+	const peaks = rows.filter(isPeaks);
+	expect(rows.filter((row) => !isPeaks(row))).toHaveLength(coreCount);
+	expect(peaks).toHaveLength(1);
+	const [registered] = await database.select().from(schema.sourceObject);
+	if (!registered) throw new Error("registered peaks fixture missing");
+	expect(peaks[0]).toMatchObject({
+		videoId,
+		revisionId: "srcprep",
+		job: "source-prepare",
+		payload: {
+			videoId,
+			ownerId,
+			phase: "peaks",
+			peaksOnly: true,
+			sha256: registered.sha256,
+			sourceObjectKey: registered.liveKey,
+			stableKey: registered.liveKey,
+		},
+	});
+}
 
 async function setJob(overrides: Record<string, unknown> = {}) {
 	await database.delete(schema.revisionOutbox);
@@ -189,61 +288,53 @@ async function seedCurrent() {
 		});
 	runtime.objects.set(`private/source/${videoId}/${sha}`, source);
 	runtime.objects.delete(oldKey);
-	await database
-		.insert(schema.sourceRelocation)
-		.values({
-			videoId,
-			revisionId: "source",
-			oldKey,
-			newKey: `private/source/${videoId}/${sha}`,
-			sha256: sha,
-			state: "PURGED",
-			createdAt: new Date(),
-		});
-	await database
-		.update(schema.videoPublication)
-		.set({
-			currentRevisionId: revisionId,
-			currentGeneration: 1,
-			generation: 1,
-			publicationEpoch: 1,
-		});
-	await database
-		.insert(schema.editIntent)
-		.values({
-			intentId: "parent57identity",
-			videoId,
-			sourceId: boundSourceId,
-			generation: 1,
-			draftVersion: 0,
-			canonicalSpec: untouchedEditorSpec(20),
-			mappingVersion: 1,
-			encoderProfile: ENCODER_PROFILE,
-			draftSession: "source-prepare",
-			createdAt: new Date(),
-		});
-	await database
-		.insert(schema.editRevision)
-		.values({
-			revisionId,
-			videoId,
-			intentId: "parent57identity",
-			sourceId: boundSourceId,
-			generation: 1,
-			state: "CURRENT",
-			attempt: 1,
-			createdAt: new Date(),
-			updatedAt: new Date(),
-			metadataSnapshot: {
-				captionsVtt: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nkeep\n",
-				chapters: [],
-				summaryStatus: "persisted",
-				summaryDerived: false,
-				summaryText: null,
-				thumbnail: "unavailable",
-				durationSeconds: 20,
-			},
-		});
+	await database.insert(schema.sourceRelocation).values({
+		videoId,
+		revisionId: "source",
+		oldKey,
+		newKey: `private/source/${videoId}/${sha}`,
+		sha256: sha,
+		state: "PURGED",
+		createdAt: new Date(),
+	});
+	await database.update(schema.videoPublication).set({
+		currentRevisionId: revisionId,
+		currentGeneration: 1,
+		generation: 1,
+		publicationEpoch: 1,
+	});
+	await database.insert(schema.editIntent).values({
+		intentId: "parent57identity",
+		videoId,
+		sourceId: boundSourceId,
+		generation: 1,
+		draftVersion: 0,
+		canonicalSpec: untouchedEditorSpec(20),
+		mappingVersion: 1,
+		encoderProfile: ENCODER_PROFILE,
+		draftSession: "source-prepare",
+		createdAt: new Date(),
+	});
+	await database.insert(schema.editRevision).values({
+		revisionId,
+		videoId,
+		intentId: "parent57identity",
+		sourceId: boundSourceId,
+		generation: 1,
+		state: "CURRENT",
+		attempt: 1,
+		createdAt: new Date(),
+		updatedAt: new Date(),
+		metadataSnapshot: {
+			captionsVtt: "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nkeep\n",
+			chapters: [],
+			summaryStatus: "persisted",
+			summaryDerived: false,
+			summaryText: null,
+			thumbnail: "unavailable",
+			durationSeconds: 20,
+		},
+	});
 }
 
 describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
@@ -276,32 +367,29 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		runtime.refreshPolicy.mockClear();
 		runtime.deletes = [];
 		runtime.deleteThrows = 0;
+		runtime.peaksExistsThrows = false;
 		origin.writeCaptions.mockClear();
 		origin.prepareRevision.mockClear();
 		captionBody = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nkeep\n";
 		finishInventoryProbe.getObject = async () => null;
-		await database
-			.insert(schema.videos)
-			.values({
-				id: videoId,
-				ownerId,
-				orgId: Organisation.OrganisationId.make("o57parent00001"),
-				name: "worker fixture",
-				source: { type: "desktopMP4" },
-				duration: 20,
-			});
-		await database
-			.insert(schema.videoPublication)
-			.values({
-				videoId,
-				currentRevisionId: null,
-				currentGeneration: null,
-				generation: 0,
-				latestDraftVersion: 0,
-				draftSession: "",
-				publicationEpoch: 0,
-				policyEpoch: 0,
-			});
+		await database.insert(schema.videos).values({
+			id: videoId,
+			ownerId,
+			orgId: Organisation.OrganisationId.make("o57parent00001"),
+			name: "worker fixture",
+			source: { type: "desktopMP4" },
+			duration: 20,
+		});
+		await database.insert(schema.videoPublication).values({
+			videoId,
+			currentRevisionId: null,
+			currentGeneration: null,
+			generation: 0,
+			latestDraftVersion: 0,
+			draftSession: "",
+			publicationEpoch: 0,
+			policyEpoch: 0,
+		});
 		runtime.prepare.mockImplementation(
 			async ({ sourceKey }: { sourceKey: string }) => ({
 				sourceKey,
@@ -329,6 +417,48 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		if (pool) await pool.end();
 	});
 
+	it.each(["warm", "cold"] as const)(
+		"continues %s core preparation when only the optional peaks probe fails",
+		async (state) => {
+			await seedCurrent();
+			if (state === "cold") {
+				await database.delete(schema.editRevision);
+				await database.delete(schema.editIntent);
+				await database.update(schema.sourceObject).set({
+					a1Digest: null,
+					indexId: null,
+					warmExpiresAt: null,
+				});
+				await database.update(schema.videoPublication).set({
+					currentRevisionId: null,
+					currentGeneration: null,
+				});
+			}
+			const rawKey = `${ownerId}/${videoId}/raw-upload.mp4`;
+			runtime.objects.set(rawKey, Buffer.from("leftover fixture"));
+			runtime.peaksExistsThrows = true;
+			const { drainSourcePrepare } = await import(
+				"@/lib/source-prepare-worker"
+			);
+			await drainSourcePrepare(database as never, origin as never);
+			await expectCoreAndPeaksJobs(0);
+			expect(runtime.objects.has(rawKey)).toBe(false);
+			expect(runtime.prepare).toHaveBeenCalledTimes(state === "cold" ? 1 : 0);
+			expect(runtime.publish).toHaveBeenCalledTimes(state === "cold" ? 1 : 0);
+			const [registered] = await database.select().from(schema.sourceObject);
+			expect(registered).toMatchObject({
+				sha256: sha,
+				liveKey: `private/source/${videoId}/${sha}`,
+				relocationState: "PURGED",
+			});
+			expect(runtime.objects.get(registered?.liveKey ?? "")).toEqual(source);
+			expect(
+				(await database.select().from(schema.videoPublication))[0],
+			).toMatchObject({ currentRevisionId: revisionId });
+			expect(origin.prepareRevision).not.toHaveBeenCalled();
+		},
+	);
+
 	it("clears full inventory on a warm PURGED identity without native preparation", async () => {
 		await seedCurrent();
 		await database.update(schema.sourceObject).set({
@@ -349,7 +479,8 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		const beforeCurrent = (
 			await database.select().from(schema.videoPublication)
 		)[0];
-		if (!beforeSource || !beforeCurrent) throw new Error("warm fixture missing");
+		if (!beforeSource || !beforeCurrent)
+			throw new Error("warm fixture missing");
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
 		for (const suffix of leftovers)
@@ -364,7 +495,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			beforeCurrent,
 		);
 		expect(runtime.objects.get(beforeSource.liveKey)).toEqual(source);
-		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(0);
+		await expectCoreAndPeaksJobs(0);
 		expect(runtime.prepare).not.toHaveBeenCalled();
 		expect(runtime.publish).not.toHaveBeenCalled();
 		expect(origin.prepareRevision).not.toHaveBeenCalled();
@@ -393,7 +524,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		});
 		await drainSourcePrepare(database as never, origin as never);
 		expect(runtime.objects.has(rawKey)).toBe(false);
-		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(0);
+		await expectCoreAndPeaksJobs(0);
 		const rows = await database.select().from(schema.sourceRelocation);
 		expect(rows.filter((row) => row.oldKey === rawKey)).toHaveLength(1);
 		expect(rows.every((row) => row.state === "PURGED")).toBe(true);
@@ -484,25 +615,21 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 	it("after a private COPIED crash, resumes that row instead of creating a second unregistered copy", async () => {
 		const key = `private/source/${videoId}/${sha}`;
 		runtime.objects.set(key, source);
-		await database
-			.insert(schema.sourceObject)
-			.values({
-				videoId,
-				liveKey: oldKey,
-				sha256: sha,
-				relocationState: "LIVE",
-			});
-		await database
-			.insert(schema.sourceRelocation)
-			.values({
-				videoId,
-				revisionId: "source",
-				oldKey,
-				newKey: key,
-				sha256: sha,
-				state: "COPIED",
-				createdAt: new Date(),
-			});
+		await database.insert(schema.sourceObject).values({
+			videoId,
+			liveKey: oldKey,
+			sha256: sha,
+			relocationState: "LIVE",
+		});
+		await database.insert(schema.sourceRelocation).values({
+			videoId,
+			revisionId: "source",
+			oldKey,
+			newKey: key,
+			sha256: sha,
+			state: "COPIED",
+			createdAt: new Date(),
+		});
 		runtime.prepare.mockImplementationOnce(
 			async ({ sourceKey: preparedKey }: { sourceKey: string }) => {
 				expect.soft(preparedKey).toBe(key);
@@ -520,14 +647,12 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 	async function waitingCaptions() {
 		await seedCurrent();
 		const [revision] = await database.select().from(schema.editRevision);
-		await database
-			.update(schema.editRevision)
-			.set({
-				metadataSnapshot: {
-					...revision!.metadataSnapshot!,
-					captionsVtt: "WEBVTT\n",
-				},
-			});
+		await database.update(schema.editRevision).set({
+			metadataSnapshot: {
+				...revision!.metadataSnapshot!,
+				captionsVtt: "WEBVTT\n",
+			},
+		});
 		await database
 			.update(schema.videos)
 			.set({ transcriptionStatus: "COMPLETE" });
@@ -567,7 +692,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		)[0]!.metadataSnapshot!;
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
-		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(0);
+		await expectCoreAndPeaksJobs(0);
 		expect(origin.writeCaptions).toHaveBeenCalledTimes(1);
 		expect(captionBody).toContain("genuine fixture words");
 		expect(captionBody).toContain("-->");
@@ -601,9 +726,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 				"@/lib/source-prepare-worker"
 			);
 			await drainSourcePrepare(database as never, origin as never);
-			expect(await database.select().from(schema.revisionOutbox)).toHaveLength(
-				1,
-			);
+			await expectCoreAndPeaksJobs(1);
 			expect(
 				(await database.select().from(schema.editRevision))[0]!
 					.metadataSnapshot!.captionsVtt,
@@ -683,13 +806,11 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		finishInventoryProbe.getObject = async () => encryptedWords();
 		origin.writeCaptions.mockImplementationOnce(async (input) => {
 			captionBody = input.captionsVtt;
-			await database
-				.update(schema.videoPublication)
-				.set({
-					currentRevisionId: "racing-cut",
-					currentGeneration: 2,
-					publicationEpoch: 2,
-				});
+			await database.update(schema.videoPublication).set({
+				currentRevisionId: "racing-cut",
+				currentGeneration: 2,
+				publicationEpoch: 2,
+			});
 			return { sha256: createHash("sha256").update(captionBody).digest("hex") };
 		});
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
@@ -715,19 +836,17 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		await database
 			.update(schema.videos)
 			.set({ transcriptionStatus: "COMPLETE" });
-		await database
-			.update(schema.editRevision)
-			.set({
-				metadataSnapshot: {
-					captionsVtt: "WEBVTT\n",
-					chapters: [],
-					summaryStatus: "persisted",
-					summaryDerived: false,
-					summaryText: null,
-					thumbnail: "unavailable",
-					durationSeconds: 20,
-				},
-			});
+		await database.update(schema.editRevision).set({
+			metadataSnapshot: {
+				captionsVtt: "WEBVTT\n",
+				chapters: [],
+				summaryStatus: "persisted",
+				summaryDerived: false,
+				summaryText: null,
+				thumbnail: "unavailable",
+				durationSeconds: 20,
+			},
+		});
 		await setJob({ phase: "captions", captionDeadlineMs: Date.now() - 60_000 });
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
@@ -758,74 +877,64 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			manualKeepRanges: [{ start: 0, end: 10 }],
 			keepRanges: [{ start: 0, end: 10 }],
 		};
-		await database
-			.insert(schema.editIntent)
-			.values({
-				videoId,
-				generation: 2,
-				intentId: "parentcut",
-				sourceId: boundSourceId,
-				canonicalSpec: spec,
-				mappingVersion: 1,
-				encoderProfile: ENCODER_PROFILE,
-				draftVersion: 1,
-				draftSession: "owner-session",
-				createdAt: new Date(),
-			});
-		await database
-			.insert(schema.editRevision)
-			.values({
-				videoId,
-				generation: 2,
-				intentId: "parentcut",
-				sourceId: boundSourceId,
-				revisionId: "parentcut",
-				state: "CURRENT",
-				attempt: 1,
-				metadataSnapshot: {
-					captionsVtt: "WEBVTT\n",
-					chapters: [],
-					summaryStatus: "persisted",
-					summaryDerived: false,
-					summaryText: "old cut summary",
-					thumbnail: "unavailable",
-					durationSeconds: 10,
-				},
-				createdAt: new Date(),
-				updatedAt: new Date(),
-			});
-		await database
-			.update(schema.videoPublication)
-			.set({
-				currentRevisionId: "parentcut",
-				currentGeneration: 2,
-				generation: 3,
-				publicationEpoch: 2,
-				policyEpoch: 2,
-			});
-		await database
-			.insert(schema.editRevision)
-			.values({
-				videoId,
-				generation: 3,
-				intentId: "inflightcut",
-				sourceId: boundSourceId,
-				revisionId: "inflightcut",
-				state: "PUBLISHING",
-				attempt: 1,
-				createdAt: new Date(),
-				updatedAt: new Date(),
-			});
-		await database
-			.update(schema.videos)
-			.set({
-				metadata: {
-					summary: "latest owner summary",
-					sourceChapters: [],
-					chapters: [{ title: "must not resurrect", start: 0 }],
-					chaptersRevisionId: "parentcut",
-				},
-			});
+		await database.insert(schema.editIntent).values({
+			videoId,
+			generation: 2,
+			intentId: "parentcut",
+			sourceId: boundSourceId,
+			canonicalSpec: spec,
+			mappingVersion: 1,
+			encoderProfile: ENCODER_PROFILE,
+			draftVersion: 1,
+			draftSession: "owner-session",
+			createdAt: new Date(),
+		});
+		await database.insert(schema.editRevision).values({
+			videoId,
+			generation: 2,
+			intentId: "parentcut",
+			sourceId: boundSourceId,
+			revisionId: "parentcut",
+			state: "CURRENT",
+			attempt: 1,
+			metadataSnapshot: {
+				captionsVtt: "WEBVTT\n",
+				chapters: [],
+				summaryStatus: "persisted",
+				summaryDerived: false,
+				summaryText: "old cut summary",
+				thumbnail: "unavailable",
+				durationSeconds: 10,
+			},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		});
+		await database.update(schema.videoPublication).set({
+			currentRevisionId: "parentcut",
+			currentGeneration: 2,
+			generation: 3,
+			publicationEpoch: 2,
+			policyEpoch: 2,
+		});
+		await database.insert(schema.editRevision).values({
+			videoId,
+			generation: 3,
+			intentId: "inflightcut",
+			sourceId: boundSourceId,
+			revisionId: "inflightcut",
+			state: "PUBLISHING",
+			attempt: 1,
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		});
+		await database.update(schema.videos).set({
+			metadata: {
+				summary: "latest owner summary",
+				sourceChapters: [],
+				chapters: [{ title: "must not resurrect", start: 0 }],
+				chaptersRevisionId: "parentcut",
+			},
+		});
 	}
 
 	it("Restore Done requires native readable retained media and does not point to a missing artifact", async () => {
@@ -916,7 +1025,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		const before = (await database.select().from(schema.videoPublication))[0];
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
-		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(0);
+		await expectCoreAndPeaksJobs(0);
 		expect(runtime.prepare).not.toHaveBeenCalled();
 		expect(runtime.publish).not.toHaveBeenCalled();
 		expect((await database.select().from(schema.videoPublication))[0]).toEqual(
@@ -992,14 +1101,12 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 				durationSeconds: 20,
 			},
 		});
-		await database
-			.update(schema.videoPublication)
-			.set({
-				currentRevisionId: revisionId,
-				currentGeneration: 1,
-				generation: 1,
-				publicationEpoch: 1,
-			});
+		await database.update(schema.videoPublication).set({
+			currentRevisionId: revisionId,
+			currentGeneration: 1,
+			generation: 1,
+			publicationEpoch: 1,
+		});
 		if (!readable) {
 			origin.fetchArtifact.mockImplementation(async () => ({
 				status: 404,
@@ -1071,21 +1178,19 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			.update(schema.videos)
 			.set({ transcriptionStatus: "COMPLETE" });
 		const [revision] = await database.select().from(schema.editRevision);
-		await database
-			.update(schema.editRevision)
-			.set({
-				metadataSnapshot: {
-					...revision!.metadataSnapshot!,
-					captionsVtt: "WEBVTT\n",
-				},
-			});
+		await database.update(schema.editRevision).set({
+			metadataSnapshot: {
+				...revision!.metadataSnapshot!,
+				captionsVtt: "WEBVTT\n",
+			},
+		});
 		captionBody = "WEBVTT\n";
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
 		expect(runtime.deletes).toEqual([]);
 		expect(runtime.objects.has(oldKey)).toBe(true);
 		expect(runtime.objects.has(privateKey)).toBe(true);
-		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(1);
+		await expectCoreAndPeaksJobs(1);
 	});
 
 	it("prepares a copied key when the public row is already warm and does not encode a warm purge", async () => {
@@ -1169,13 +1274,11 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			createdAt: new Date(),
 		});
 		await seedCurrent();
-		await database
-			.update(schema.sourceObject)
-			.set({
-				warmExpiresAt: new Date(Date.now() + 600_000),
-				liveKey: privateKey,
-				relocationState: "PURGED",
-			});
+		await database.update(schema.sourceObject).set({
+			warmExpiresAt: new Date(Date.now() + 600_000),
+			liveKey: privateKey,
+			relocationState: "PURGED",
+		});
 		const held = await database.select().from(schema.revisionOutbox);
 		const due = held[0];
 		if (!due) {
@@ -1385,3 +1488,597 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		});
 	});
 });
+
+const durationOwnerId = User.UserId.make("u48srcdur000001");
+const durationVideoId = Video.VideoId.make("v48srcdur000001");
+const durationOrgId = Organisation.OrganisationId.make("o48srcdur000001");
+const durationSource = Buffer.from("source-clock peaks fixture");
+const durationSha = createHash("sha256").update(durationSource).digest("hex");
+const durationLiveKey = `private/source/${durationVideoId}/${durationSha}`;
+const durationOutputSeconds = 8;
+const durationSourceSeconds = 20;
+const durationLegacySeconds = 12;
+const durationRevisionId = "srcdur48current";
+const durationStaleRevisionId = "srcdur48stale";
+
+function durationSpec(sourceSeconds: number, outputSeconds = sourceSeconds) {
+	return {
+		...untouchedEditorSpec(sourceSeconds),
+		manualKeepRanges: [{ start: 0, end: outputSeconds }],
+		keepRanges: [{ start: 0, end: outputSeconds }],
+	};
+}
+
+function originPeaks(pairCount: number, providerDuration: number) {
+	const bytes = encodePeaksObject({
+		sourceSha256: durationSha,
+		pairs: Array.from({ length: pairCount }, () => ({ min: -4, max: 4 })),
+	});
+	const body = {
+		audio: "peaks",
+		peaks: Buffer.from(bytes).toString("base64"),
+		peaksSha256: createHash("sha256").update(bytes).digest("hex"),
+		sourceSha256: durationSha,
+		duration: providerDuration,
+		sourceDuration: providerDuration,
+	};
+	return {
+		status: 200,
+		body,
+		responseBytes: JSON.stringify(body).length,
+		bytes,
+	};
+}
+
+describe.skipIf(!peaksDurationDatabase)(
+	"peaks duration uses the current source clock",
+	() => {
+		let durationPool: Pool;
+		let durationDb: MySql2Database<Record<string, unknown>>;
+		const outputMeta = {
+			captionsVtt: "WEBVTT\n\n00:00:00.000 --> 00:00:08.000\nkept\n",
+			chapters: [{ title: "Kept", start: 0 }],
+			summaryStatus: "persisted" as const,
+			summaryDerived: false as const,
+			summaryText: "output summary stays",
+			thumbnail: "unavailable" as const,
+			durationSeconds: durationOutputSeconds,
+		};
+		const videoMeta = {
+			summary: "output summary stays",
+			chapters: [{ title: "Kept", start: 0 }],
+			durationSeconds: durationOutputSeconds,
+		};
+
+		async function deleteDurationFixture() {
+			const statements = [
+				"DELETE FROM `outbox` WHERE videoId = ?",
+				"DELETE FROM `source_relocation` WHERE videoId = ?",
+				"DELETE FROM `source_object` WHERE videoId = ?",
+				"DELETE FROM `video_edits` WHERE videoId = ?",
+				"DELETE FROM `edit_revision` WHERE videoId = ?",
+				"DELETE FROM `edit_intent` WHERE videoId = ?",
+				"DELETE FROM `video_publication` WHERE videoId = ?",
+				"DELETE FROM `videos` WHERE id = ?",
+			];
+			for (const statement of statements) {
+				await durationPool.query(statement, [durationVideoId]);
+			}
+		}
+
+		async function coreSnapshot() {
+			const [video] = await durationDb
+				.select()
+				.from(schema.videos)
+				.where(eq(schema.videos.id, durationVideoId));
+			const [sourceRow] = await durationDb
+				.select()
+				.from(schema.sourceObject)
+				.where(eq(schema.sourceObject.videoId, durationVideoId));
+			const [publication] = await durationDb
+				.select()
+				.from(schema.videoPublication)
+				.where(eq(schema.videoPublication.videoId, durationVideoId));
+			const intents = await durationDb
+				.select()
+				.from(schema.editIntent)
+				.where(eq(schema.editIntent.videoId, durationVideoId));
+			const revisions = await durationDb
+				.select()
+				.from(schema.editRevision)
+				.where(eq(schema.editRevision.videoId, durationVideoId));
+			const [legacy] = await durationDb
+				.select()
+				.from(schema.videoEdits)
+				.where(eq(schema.videoEdits.videoId, durationVideoId));
+			const relocations = await durationDb
+				.select()
+				.from(schema.sourceRelocation)
+				.where(eq(schema.sourceRelocation.videoId, durationVideoId));
+			return {
+				video: {
+					ownerId: video?.ownerId,
+					duration: video?.duration,
+					metadata: video?.metadata,
+					source: video?.source,
+				},
+				source: {
+					liveKey: sourceRow?.liveKey,
+					sha256: sourceRow?.sha256,
+					relocationState: sourceRow?.relocationState,
+				},
+				publication: {
+					currentRevisionId: publication?.currentRevisionId,
+					currentGeneration: publication?.currentGeneration,
+					generation: publication?.generation,
+					publicationEpoch: publication?.publicationEpoch,
+				},
+				intents: intents
+					.map((row) => ({
+						generation: row.generation,
+						intentId: row.intentId,
+						canonicalSpec: row.canonicalSpec,
+					}))
+					.sort((left, right) => left.generation - right.generation),
+				revisions: revisions
+					.map((row) => ({
+						revisionId: row.revisionId,
+						generation: row.generation,
+						state: row.state,
+						metadataSnapshot: row.metadataSnapshot,
+					}))
+					.sort((left, right) => left.generation - right.generation),
+				legacy: legacy?.editSpec ?? null,
+				relocations: relocations.map((row) => ({
+					oldKey: row.oldKey,
+					newKey: row.newKey,
+					state: row.state,
+					sha256: row.sha256,
+				})),
+			};
+		}
+
+		async function seedEditedSource() {
+			await deleteDurationFixture();
+			const boundSourceId = sourceIdFromIdentity({
+				key: durationLiveKey,
+				sha256: durationSha,
+				codec: "h264",
+				timebase: "1/90000",
+				frameMode: "cfr",
+			});
+			await durationDb.insert(schema.videos).values({
+				id: durationVideoId,
+				ownerId: durationOwnerId,
+				orgId: durationOrgId,
+				name: "source clock fixture",
+				source: { type: "desktopMP4" },
+				duration: durationOutputSeconds,
+				metadata: videoMeta,
+			});
+			await durationDb.insert(schema.sourceObject).values({
+				videoId: durationVideoId,
+				liveKey: durationLiveKey,
+				sha256: durationSha,
+				codec: "h264",
+				timebase: "1/90000",
+				frameMode: "cfr",
+				relocationState: "PURGED",
+				a1Digest: durationSha,
+				indexId: "bound-index",
+				warmExpiresAt: new Date("2026-01-01T00:00:00.000Z"),
+			});
+			await durationDb.insert(schema.sourceRelocation).values({
+				videoId: durationVideoId,
+				revisionId: "source",
+				oldKey: `${durationOwnerId}/${durationVideoId}/result.mp4`,
+				newKey: durationLiveKey,
+				sha256: durationSha,
+				state: "PURGED",
+				createdAt: new Date("2026-01-01T00:00:00.000Z"),
+			});
+			await durationDb.insert(schema.videoPublication).values({
+				videoId: durationVideoId,
+				currentRevisionId: durationRevisionId,
+				currentGeneration: 1,
+				generation: 1,
+				latestDraftVersion: 1,
+				draftSession: "source-clock",
+				publicationEpoch: 1,
+				policyEpoch: 0,
+			});
+			await durationDb.insert(schema.editIntent).values([
+				{
+					intentId: "srcdur48older",
+					videoId: durationVideoId,
+					sourceId: boundSourceId,
+					generation: 0,
+					draftVersion: 0,
+					canonicalSpec: untouchedEditorSpec(durationOutputSeconds),
+					mappingVersion: 1,
+					encoderProfile: ENCODER_PROFILE,
+					draftSession: "older",
+					createdAt: new Date("2026-01-01T00:00:00.000Z"),
+				},
+				{
+					intentId: "srcdur48current",
+					videoId: durationVideoId,
+					sourceId: boundSourceId,
+					generation: 1,
+					draftVersion: 1,
+					canonicalSpec: durationSpec(
+						durationSourceSeconds,
+						durationOutputSeconds,
+					),
+					mappingVersion: 1,
+					encoderProfile: ENCODER_PROFILE,
+					draftSession: "current",
+					createdAt: new Date("2026-01-02T00:00:00.000Z"),
+				},
+				{
+					intentId: "srcdur48newer",
+					videoId: durationVideoId,
+					sourceId: boundSourceId,
+					generation: 3,
+					draftVersion: 3,
+					canonicalSpec: untouchedEditorSpec(durationOutputSeconds),
+					mappingVersion: 1,
+					encoderProfile: ENCODER_PROFILE,
+					draftSession: "newer",
+					createdAt: new Date("2026-01-03T00:00:00.000Z"),
+				},
+			]);
+			await durationDb.insert(schema.editRevision).values([
+				{
+					revisionId: durationRevisionId,
+					videoId: durationVideoId,
+					intentId: "srcdur48current",
+					sourceId: boundSourceId,
+					generation: 1,
+					state: "CURRENT",
+					attempt: 1,
+					createdAt: new Date("2026-01-02T00:00:00.000Z"),
+					updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+					metadataSnapshot: outputMeta,
+				},
+				{
+					revisionId: durationStaleRevisionId,
+					videoId: durationVideoId,
+					intentId: "srcdur48newer",
+					sourceId: boundSourceId,
+					generation: 3,
+					state: "CURRENT",
+					attempt: 1,
+					createdAt: new Date("2026-01-03T00:00:00.000Z"),
+					updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+					metadataSnapshot: outputMeta,
+				},
+			]);
+			await durationDb.insert(schema.videoEdits).values({
+				videoId: durationVideoId,
+				sourceKey: durationLiveKey,
+				editSpec: untouchedEditorSpec(durationLegacySeconds),
+			});
+			await durationDb.insert(schema.revisionOutbox).values({
+				videoId: durationVideoId,
+				revisionId: "srcprep",
+				job: "source-prepare",
+				createdAt: new Date("2026-01-04T00:00:00.000Z"),
+				payload: {
+					videoId: durationVideoId,
+					ownerId: durationOwnerId,
+					sourceObjectKey: durationLiveKey,
+					stableKey: durationLiveKey,
+					sha256: durationSha,
+					attempts: 0,
+					peaksOnly: true,
+					phase: "peaks",
+					notBeforeMs: 0,
+				},
+			});
+		}
+
+		async function deferOtherPrepareJobs() {
+			const [rows] = await durationPool.query(
+				"SELECT id, payload FROM outbox WHERE job = ? AND videoId <> ?",
+				["source-prepare", durationVideoId],
+			);
+			const saved = (rows as Array<{ id: number; payload: unknown }>).map(
+				(row) => ({
+					id: row.id,
+					payload: row.payload,
+				}),
+			);
+			for (const row of saved) {
+				const payload =
+					typeof row.payload === "string"
+						? (JSON.parse(row.payload) as Record<string, unknown>)
+						: { ...(row.payload as Record<string, unknown>) };
+				payload.notBeforeMs = Date.now() + 3_600_000;
+				await durationPool.query("UPDATE outbox SET payload = ? WHERE id = ?", [
+					JSON.stringify(payload),
+					row.id,
+				]);
+			}
+			return saved;
+		}
+
+		async function restoreOtherPrepareJobs(
+			saved: Array<{ id: number; payload: unknown }>,
+		) {
+			for (const row of saved) {
+				const payload =
+					typeof row.payload === "string"
+						? row.payload
+						: JSON.stringify(row.payload);
+				await durationPool.query("UPDATE outbox SET payload = ? WHERE id = ?", [
+					payload,
+					row.id,
+				]);
+			}
+		}
+
+		beforeAll(async () => {
+			vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", durationOwnerId);
+			if (!peaksDurationDatabase) {
+				throw new Error(
+					"peaks duration fixture requires loopback cap57_test_regression",
+				);
+			}
+			durationPool = createPool(peaksDurationDatabase);
+			const [selected] = await durationPool.query("SELECT DATABASE() AS db");
+			const connected = (selected as Array<{ db: string }>)[0]?.db;
+			if (connected !== "cap57_test_regression") {
+				throw new Error(
+					"refusing peaks duration fixture outside cap57_test_regression",
+				);
+			}
+			durationDb = drizzle(durationPool);
+		});
+		beforeEach(async () => {
+			runtime.objects.clear();
+			runtime.prepare.mockReset();
+			runtime.publish.mockReset();
+			runtime.requestPeaks.mockReset();
+			origin.writeCaptions.mockClear();
+			origin.prepareRevision.mockClear();
+			origin.selectFrames.mockClear();
+			origin.fetchArtifact.mockClear();
+			runtime.refreshPolicy.mockClear();
+			await seedEditedSource();
+		});
+		afterAll(async () => {
+			if (durationPool) {
+				await deleteDurationFixture();
+				await durationPool.end();
+			}
+			vi.unstubAllEnvs();
+		});
+
+		it("persists source-length peaks when the current edit output is shorter than the source", async () => {
+			const produced = originPeaks(
+				durationSourceSeconds * PEAKS_PAIRS_PER_SEC,
+				durationOutputSeconds,
+			);
+			runtime.requestPeaks.mockResolvedValue(produced);
+			const before = await coreSnapshot();
+			const held = await deferOtherPrepareJobs();
+			try {
+				const { drainSourcePrepare } = await import(
+					"@/lib/source-prepare-worker"
+				);
+				await expect(
+					drainSourcePrepare(durationDb as never, origin as never),
+				).resolves.toEqual({ claimed: 1, encoded: 0 });
+			} finally {
+				await restoreOtherPrepareJobs(held);
+			}
+			const key = peaksObjectKey(durationVideoId, durationSha);
+			expect(key).toBe(`private/peaks/${durationVideoId}/${durationSha}`);
+			const stored = key ? runtime.objects.get(key) : undefined;
+			if (!stored) throw new Error("source-length peaks were not stored");
+			expect(createHash("sha256").update(stored).digest("hex")).toBe(
+				produced.body.peaksSha256,
+			);
+			const decoded = decodePeaksObject(stored, durationSha);
+			expect(decoded.ok).toBe(true);
+			if (decoded.ok) {
+				expect(decoded.pairs).toHaveLength(
+					durationSourceSeconds * PEAKS_PAIRS_PER_SEC,
+				);
+				expect(decoded.noAudio).toBe(false);
+			}
+			expect(runtime.requestPeaks).toHaveBeenCalledWith(
+				expect.objectContaining({
+					videoId: durationVideoId,
+					ownerId: durationOwnerId,
+					sourceKey: durationLiveKey,
+					sourceSha256: durationSha,
+				}),
+			);
+			expect(
+				await durationDb
+					.select()
+					.from(schema.revisionOutbox)
+					.where(eq(schema.revisionOutbox.videoId, durationVideoId)),
+			).toHaveLength(0);
+			expect(await coreSnapshot()).toEqual(before);
+			expect(runtime.prepare).not.toHaveBeenCalled();
+			expect(runtime.publish).not.toHaveBeenCalled();
+			expect(origin.writeCaptions).not.toHaveBeenCalled();
+			expect(origin.prepareRevision).not.toHaveBeenCalled();
+			expect(origin.selectFrames).not.toHaveBeenCalled();
+			expect(origin.fetchArtifact).not.toHaveBeenCalled();
+			expect(runtime.refreshPolicy).not.toHaveBeenCalled();
+		});
+
+		it("rejects peaks whose length matches the edited output instead of the source", async () => {
+			const produced = originPeaks(
+				durationOutputSeconds * PEAKS_PAIRS_PER_SEC,
+				durationSourceSeconds,
+			);
+			runtime.requestPeaks.mockResolvedValue(produced);
+			const before = await coreSnapshot();
+			const held = await deferOtherPrepareJobs();
+			try {
+				const { drainSourcePrepare } = await import(
+					"@/lib/source-prepare-worker"
+				);
+				await expect(
+					drainSourcePrepare(durationDb as never, origin as never),
+				).resolves.toEqual({ claimed: 1, encoded: 0 });
+			} finally {
+				await restoreOtherPrepareJobs(held);
+			}
+			const key = peaksObjectKey(durationVideoId, durationSha);
+			expect(key ? runtime.objects.has(key) : false).toBe(false);
+			const [job] = await durationDb
+				.select()
+				.from(schema.revisionOutbox)
+				.where(eq(schema.revisionOutbox.videoId, durationVideoId));
+			expect(job?.payload).toMatchObject({
+				peaksOnly: true,
+				ownerId: durationOwnerId,
+				sha256: durationSha,
+				sourceObjectKey: durationLiveKey,
+				attempts: 1,
+			});
+			expect((job?.payload as { exhausted?: boolean }).exhausted).not.toBe(
+				true,
+			);
+			expect(await coreSnapshot()).toEqual(before);
+			expect(runtime.prepare).not.toHaveBeenCalled();
+			expect(runtime.publish).not.toHaveBeenCalled();
+			expect(origin.prepareRevision).not.toHaveBeenCalled();
+			expect(origin.fetchArtifact).not.toHaveBeenCalled();
+		});
+
+		it("preserves no-audio peaks when source duration is unavailable", async () => {
+			await durationPool.query(
+				"UPDATE videos SET duration = NULL WHERE id = ?",
+				[durationVideoId],
+			);
+			await durationPool.query(
+				"UPDATE edit_intent SET canonicalSpec = 'null' WHERE videoId = ?",
+				[durationVideoId],
+			);
+			await durationPool.query(
+				"UPDATE video_edits SET editSpec = 'null' WHERE videoId = ?",
+				[durationVideoId],
+			);
+			const bytes = encodePeaksObject({
+				sourceSha256: durationSha,
+				pairs: [],
+				noAudio: true,
+			});
+			runtime.requestPeaks.mockImplementation(
+				async (input: {
+					videoId: string;
+					sourceKey: string;
+					sourceSha256: string;
+					sourceDuration?: number;
+				}) => {
+					if (input.sourceDuration !== undefined)
+						return { status: 400, body: null, responseBytes: 0 };
+					const body = {
+						audio: "none",
+						peaks: Buffer.from(bytes).toString("base64"),
+						peaksSha256: createHash("sha256").update(bytes).digest("hex"),
+						sourceSha256: durationSha,
+					};
+					return {
+						status: 200,
+						body,
+						responseBytes: JSON.stringify(body).length,
+					};
+				},
+			);
+			const before = await coreSnapshot();
+			const held = await deferOtherPrepareJobs();
+			try {
+				const { drainSourcePrepare } = await import(
+					"@/lib/source-prepare-worker"
+				);
+				await expect(
+					drainSourcePrepare(durationDb as never, origin as never),
+				).resolves.toEqual({ claimed: 1, encoded: 0 });
+			} finally {
+				await restoreOtherPrepareJobs(held);
+			}
+			const key = peaksObjectKey(durationVideoId, durationSha);
+			const stored = key ? runtime.objects.get(key) : undefined;
+			expect(stored).toEqual(Buffer.from(bytes));
+			expect(runtime.requestPeaks).toHaveBeenCalledWith(
+				expect.objectContaining({ sourceDuration: undefined }),
+			);
+			const jobs = await durationDb
+				.select()
+				.from(schema.revisionOutbox)
+				.where(eq(schema.revisionOutbox.videoId, durationVideoId));
+			expect(jobs).toHaveLength(0);
+			expect(await coreSnapshot()).toEqual(before);
+			expect(runtime.prepare).not.toHaveBeenCalled();
+			expect(runtime.publish).not.toHaveBeenCalled();
+			expect(origin.prepareRevision).not.toHaveBeenCalled();
+			expect(origin.fetchArtifact).not.toHaveBeenCalled();
+		});
+
+		it("sends the resolved full source duration to the producer", async () => {
+			const seen: Array<number | undefined> = [];
+			runtime.requestPeaks.mockImplementation(
+				async (input: {
+					videoId: string;
+					sourceKey: string;
+					sourceSha256: string;
+					sourceDuration?: number;
+				}) => {
+					seen.push(input.sourceDuration);
+					return originPeaks(
+						durationSourceSeconds * PEAKS_PAIRS_PER_SEC,
+						durationSourceSeconds,
+					);
+				},
+			);
+			const before = await coreSnapshot();
+			const held = await deferOtherPrepareJobs();
+			try {
+				const { drainSourcePrepare } = await import(
+					"@/lib/source-prepare-worker"
+				);
+				await expect(
+					drainSourcePrepare(durationDb as never, origin as never),
+				).resolves.toEqual({ claimed: 1, encoded: 0 });
+			} finally {
+				await restoreOtherPrepareJobs(held);
+			}
+			expect(seen).toEqual([durationSourceSeconds]);
+			expect(seen[0]).not.toBe(durationOutputSeconds);
+			expect(seen[0]).not.toBe(durationLegacySeconds);
+			expect(runtime.requestPeaks).toHaveBeenCalledTimes(1);
+			expect(runtime.requestPeaks).toHaveBeenCalledWith(
+				expect.objectContaining({
+					videoId: durationVideoId,
+					ownerId: durationOwnerId,
+					sourceKey: durationLiveKey,
+					sourceSha256: durationSha,
+					sourceDuration: durationSourceSeconds,
+				}),
+			);
+			const key = peaksObjectKey(durationVideoId, durationSha);
+			const stored = key ? runtime.objects.get(key) : undefined;
+			if (!stored) throw new Error("full-source peaks were not stored");
+			const decoded = decodePeaksObject(stored, durationSha);
+			expect(decoded.ok).toBe(true);
+			if (decoded.ok) {
+				expect(decoded.pairs).toHaveLength(
+					durationSourceSeconds * PEAKS_PAIRS_PER_SEC,
+				);
+			}
+			expect(await coreSnapshot()).toEqual(before);
+			expect(runtime.prepare).not.toHaveBeenCalled();
+			expect(runtime.publish).not.toHaveBeenCalled();
+			expect(origin.prepareRevision).not.toHaveBeenCalled();
+			expect(origin.fetchArtifact).not.toHaveBeenCalled();
+		});
+	},
+);

@@ -51,7 +51,7 @@ vi.mock("@/app/s/[videoId]/edit/TranscriptSidebar", async () => {
 });
 vi.mock("@/app/s/[videoId]/edit/EditorChapterPreview", () => ({
 	EditorChapterMarkers: () => null,
-	useEditorChapterPreview: () => ({}),
+	useEditorChapterPreview: () => ({ playbackChapters: [] }),
 }));
 vi.mock("@cap/ui", async () => {
 	const React = await import("react");

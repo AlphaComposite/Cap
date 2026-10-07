@@ -1,6 +1,7 @@
 """Private origin. Public /media grants, internal prepare, no source route."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -21,7 +22,7 @@ import lib_audio
 import lib_origin
 import limits
 import service_auth
-from mezzanine import MezzanineError, build_mezzanine, load_source_bind
+from mezzanine import MezzanineError, _A1_SLOT, build_mezzanine, load_source_bind
 from publication import PublicationStore
 from storage import ObjectIdentity, ObjectStore, ShaIdentityCache, StorageError, atomic_write, private
 
@@ -30,6 +31,7 @@ MEDIA_RE = re.compile(
     r"(?P<kind>playlist\.m3u8|init\.mp4|seg/(?P<n>\d+)\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg|download\.mp4)$"
 )
 SOURCE_PREPARE_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/prepare$")
+SOURCE_PEAKS_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/peaks$")
 SOURCE_SELECT_RE = re.compile(r"^/internal/sources/(?P<video>[A-Za-z0-9_-]{8,64})/select-frames$")
 REVISION_PREPARE_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/prepare$")
 REVISION_DOWNLOAD_RE = re.compile(r"^/internal/revisions/(?P<rev>[A-Za-z0-9_-]{8,128})/download$")
@@ -95,6 +97,12 @@ def _dispatch_failure_target(raw_path: str) -> tuple[str, dict[str, str]]:
         if video is None:
             return "dispatch", {}
         return "source-prepare", {"video": video}
+    peaks = SOURCE_PEAKS_RE.match(path)
+    if peaks is not None:
+        video = peaks.group("video")
+        if video is None:
+            return "dispatch", {}
+        return "source-peaks", {"video": video}
     selected = SOURCE_SELECT_RE.match(path)
     if selected is not None:
         video = selected.group("video")
@@ -221,6 +229,15 @@ def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> No
                 path.unlink()
 
 
+def _peaks_source_duration(body: object) -> float | None:
+    if not isinstance(body, dict) or "sourceDuration" not in body:
+        return None
+    try:
+        return lib_audio.peaks_source_window(body["sourceDuration"])
+    except RuntimeError as exc:
+        raise ValueError("bad duration") from exc
+
+
 class OriginApp:
     def __init__(
         self,
@@ -312,6 +329,9 @@ class OriginApp:
         source = SOURCE_PREPARE_RE.match(path)
         if source:
             return self._prepare_source(source.group("video"), headers)
+        peaks = SOURCE_PEAKS_RE.match(path)
+        if peaks:
+            return self._prepare_peaks(peaks.group("video"), headers)
         selected = SOURCE_SELECT_RE.match(path)
         if selected:
             return self._select_frames(selected.group("video"), headers)
@@ -432,6 +452,84 @@ class OriginApp:
                 found = threading.Lock()
                 self._prepare_locks[cache_id] = found
             return found
+
+    def _prepare_peaks(self, video_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            body = json.loads(headers.get("_body") or b"{}")
+            source_id = str(body["sourceId"])
+            key = str(body["sourceKey"])
+            expected = str(body["sourceSha256"])
+            source_duration = _peaks_source_duration(body)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return self._text(400, b"bad request")
+        if (
+            not source_id
+            or len(source_id) > 4096
+            or not _sha64(expected)
+            or not self._admit_prepare_key(video_id, key)
+        ):
+            if not self._admit_prepare_key(video_id, key):
+                return self._json(409, {"error": "source_key_mismatch"})
+            return self._text(400, b"bad request")
+        row = self.store.source(video_id)
+        if row is None or row.sha256 != expected:
+            return self._json(409, {"error": "source_key_mismatch"})
+        cache_id = cache_source_id(source_id)
+        with self._source_prepare_lock(cache_id):
+            return self._peaks_locked(video_id, cache_id, key, expected, source_duration)
+
+    def _peaks_locked(
+        self,
+        video_id: str,
+        cache_id: str,
+        key: str,
+        expected: str,
+        source_duration: float | None = None,
+    ) -> tuple[int, bytes, str, dict[str, str]]:
+        try:
+            original = self._materialize_original(cache_id, key)
+            file_sha = lib_origin.sha256_file(original)
+            if file_sha != expected:
+                return self._json(409, {"error": "source_key_mismatch"})
+            dest = lib_audio.presentation_pcm_path(original)
+            meta = lib_audio.presentation_meta_path(original)
+            if dest.is_file() and meta.is_file():
+                if lib_audio._reusable_presentation(dest, meta, file_sha) is None:
+                    raise RuntimeError("presentation pcm failed integrity check")
+            else:
+                status = lib_audio.audio_track_status(original)
+                if status == "absent":
+                    return self._peaks_body(file_sha, "none", lib_audio.encode_no_audio_peaks(file_sha))
+                with _A1_SLOT:
+                    lib_audio.prepare_presentation(original)
+            peaks = lib_audio.reduce_presentation_peaks(
+                original, file_sha, source_duration=source_duration
+            )
+        except lib_audio.AudioRejected:
+            return self._json(409, {"error": "audio_rejected"})
+        except limits.InputRejected:
+            return self._text(400, b"bad media")
+        except Exception as exc:
+            _log_failed("source-peaks", exc, video=video_id)
+            return self._text(500, b"unavailable")
+        return self._peaks_body(file_sha, "peaks", peaks)
+
+    def _peaks_body(self, source_sha: str, audio: str, peaks: bytes) -> tuple[int, bytes, str, dict[str, str]]:
+        if (
+            len(peaks) < lib_audio.PEAKS_HEADER_BYTES
+            or len(peaks) > lib_audio.PEAKS_HEADER_BYTES + lib_audio.PEAKS_MAX_PAIR_COUNT * 2
+        ):
+            return self._text(413, b"too large")
+        encoded = base64.b64encode(peaks).decode("ascii")
+        return self._json(
+            200,
+            {
+                "audio": audio,
+                "peaks": encoded,
+                "peaksSha256": hashlib.sha256(peaks).hexdigest(),
+                "sourceSha256": source_sha,
+            },
+        )
 
     def _prepare_source(self, video_id: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
         """POST /internal/sources/{videoId}/prepare.

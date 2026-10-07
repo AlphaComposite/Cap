@@ -8,6 +8,7 @@ import {
 	createTimelineState,
 	getTimelineEditSpec,
 } from "@/lib/video-edits";
+import { peaksObjectKey } from "@/lib/waveform-peaks";
 import { isCanonicalIdentitySpec } from "../../../packages/web-backend/src/identity-edit-spec";
 
 export const SOURCE_PREPARE_JOB = "source-prepare";
@@ -34,8 +35,9 @@ export type SourcePreparePayload = {
 	leaseUntilMs?: number;
 	leaseToken?: string;
 	notBeforeMs?: number;
-	phase?: "queued" | "prepared" | "published" | "captions";
+	phase?: "queued" | "prepared" | "published" | "captions" | "peaks";
 	captionDeadlineMs?: number;
+	peaksOnly?: boolean;
 };
 
 export type SourcePrepareInsert = {
@@ -362,6 +364,7 @@ export type PrepareSnapshot = {
 	sourceIndexed: boolean;
 	sourceWarm?: boolean;
 	sourceSha256?: string;
+	peaksPresent?: boolean;
 	bindMatches: boolean;
 	transcriptReady: boolean;
 	captionsClaimed: boolean;
@@ -395,7 +398,54 @@ export type PrepareEffects = {
 	refreshCaptions: (input: {
 		videoId: string;
 	}) => Promise<"ready" | "pending" | "unavailable">;
+	ensurePeaks?: (input: {
+		videoId: string;
+		ownerId?: string;
+		sourceKey: string;
+		sourceSha256: string;
+		required?: boolean;
+	}) => Promise<void>;
+	readRegisteredSource?: (videoId: string) => Promise<{
+		ownerId: string;
+		liveKey: string;
+		sha256: string;
+	} | null>;
+	schedulePeaks?: (input: {
+		videoId: string;
+		ownerId: string;
+		sourceObjectKey: string;
+		sourceSha256: string;
+	}) => Promise<void>;
 };
+
+async function scheduleOptionalPeaks(
+	snapshot: PrepareSnapshot,
+	effects: PrepareEffects,
+) {
+	if (snapshot.peaksPresent === true) return;
+	if (!effects.readRegisteredSource || !effects.schedulePeaks) return;
+	try {
+		const registered = await effects.readRegisteredSource(snapshot.videoId);
+		if (
+			!registered ||
+			registered.ownerId !== snapshot.ownerId ||
+			!/^[a-f0-9]{64}$/.test(registered.sha256) ||
+			!registered.liveKey.startsWith("private/") ||
+			registered.liveKey.includes("raw-upload") ||
+			registered.liveKey.includes("..")
+		) {
+			return;
+		}
+		await effects.schedulePeaks({
+			videoId: snapshot.videoId,
+			ownerId: registered.ownerId,
+			sourceObjectKey: registered.liveKey,
+			sourceSha256: registered.sha256,
+		});
+	} catch {
+		return;
+	}
+}
 
 export async function advanceSourcePrepare(
 	snapshot: PrepareSnapshot,
@@ -459,6 +509,7 @@ export async function advanceSourcePrepare(
 			});
 			if (claim !== "pending" && (snapshot.relocated || resumeDeletion))
 				await effects.completeInventory({ videoId: snapshot.videoId });
+			await scheduleOptionalPeaks(snapshot, effects);
 			return {
 				done: claim !== "pending",
 				exhaustedSafe: true,
@@ -468,6 +519,7 @@ export async function advanceSourcePrepare(
 		}
 		if (snapshot.currentReadable && (snapshot.relocated || resumeDeletion))
 			await effects.completeInventory({ videoId: snapshot.videoId });
+		await scheduleOptionalPeaks(snapshot, effects);
 		return { done: true, exhaustedSafe: true, calls, playback };
 	}
 	if (snapshot.currentIsIdentity && snapshot.currentReadable) {
@@ -491,10 +543,12 @@ export async function advanceSourcePrepare(
 				videoId: snapshot.videoId,
 			});
 			if (claim === "pending") {
+				await scheduleOptionalPeaks(snapshot, effects);
 				return { done: false, exhaustedSafe: true, calls, playback: "hls" };
 			}
 		}
 		await effects.completeInventory({ videoId: snapshot.videoId });
+		await scheduleOptionalPeaks(snapshot, effects);
 		return { done: true, exhaustedSafe: true, calls, playback: "hls" };
 	}
 	const sourceKey = snapshot.relocated
@@ -538,6 +592,7 @@ export async function advanceSourcePrepare(
 		});
 	}
 	if (deferPublicDeletion) {
+		await scheduleOptionalPeaks(snapshot, effects);
 		return {
 			done: false,
 			exhaustedSafe: true,
@@ -549,6 +604,7 @@ export async function advanceSourcePrepare(
 	if (!snapshot.captionsClaimed) {
 		const claim = await effects.refreshCaptions({ videoId: snapshot.videoId });
 		if (claim === "pending") {
+			await scheduleOptionalPeaks(snapshot, effects);
 			return {
 				done: false,
 				exhaustedSafe: true,
@@ -561,6 +617,7 @@ export async function advanceSourcePrepare(
 		}
 	}
 	await effects.completeInventory({ videoId: snapshot.videoId });
+	await scheduleOptionalPeaks(snapshot, effects);
 	return {
 		done: true,
 		exhaustedSafe: true,
@@ -673,6 +730,156 @@ export function hookEnqueueDecision(input: {
 		existing: input.existing,
 		now: input.now,
 	});
+}
+
+export function planPeaksOnlyInsert(input: {
+	videoId: string;
+	ownerId: string;
+	sourceObjectKey: string;
+	sourceSha256: string;
+	existing: Array<{
+		id?: number;
+		videoId: string;
+		job: string;
+		payload?: SourcePreparePayload;
+	}>;
+}):
+	| { action: "insert"; row: SourcePrepareInsert }
+	| { action: "reactivate"; id: number; payload: SourcePreparePayload }
+	| { action: "skip" } {
+	if (!/^[a-f0-9]{64}$/.test(input.sourceSha256)) return { action: "skip" };
+	if (!input.sourceObjectKey || input.sourceObjectKey.includes("raw-upload")) {
+		return { action: "skip" };
+	}
+	const peaks = input.existing.filter(
+		(row) =>
+			row.videoId === input.videoId &&
+			row.job === SOURCE_PREPARE_JOB &&
+			row.payload?.peaksOnly === true,
+	);
+	const open = peaks.find(
+		(row) => row.payload?.finished !== true && row.payload?.exhausted !== true,
+	);
+	if (open) return { action: "skip" };
+	const completed = peaks.find((row) => typeof row.id === "number");
+	if (completed?.id && completed.payload) {
+		return {
+			action: "reactivate",
+			id: completed.id,
+			payload: {
+				...completed.payload,
+				videoId: input.videoId,
+				ownerId: input.ownerId,
+				sourceObjectKey: input.sourceObjectKey,
+				stableKey: input.sourceObjectKey,
+				peaksOnly: true,
+				phase: "peaks",
+				sha256: input.sourceSha256,
+				finished: undefined,
+				exhausted: undefined,
+				leaseToken: undefined,
+				leaseUntilMs: undefined,
+				notBeforeMs: undefined,
+				attempts: 0,
+			},
+		};
+	}
+	return {
+		action: "insert",
+		row: {
+			videoId: input.videoId,
+			revisionId: SOURCE_PREPARE_REVISION_ID,
+			job: SOURCE_PREPARE_JOB,
+			payload: {
+				videoId: input.videoId,
+				ownerId: input.ownerId,
+				sourceObjectKey: input.sourceObjectKey,
+				attempts: 0,
+				stableKey: input.sourceObjectKey,
+				sha256: input.sourceSha256,
+				peaksOnly: true,
+				phase: "peaks",
+			},
+		},
+	};
+}
+
+export async function enqueuePeaksOnly(
+	tx: OutboxTx,
+	input: {
+		videoId: string;
+		ownerId: string;
+		sourceObjectKey: string;
+		sourceSha256: string;
+		now?: Date;
+	},
+): Promise<"inserted" | "reactivated" | "skipped"> {
+	const run = async (
+		locked: OutboxTx,
+	): Promise<"inserted" | "reactivated" | "skipped"> => {
+		await lockParentVideo(locked, input.videoId);
+		const existing = await rowsFrom(
+			locked
+				.select()
+				.from(revisionOutbox)
+				.where(
+					and(
+						eq(revisionOutbox.videoId, input.videoId as never),
+						eq(revisionOutbox.job, SOURCE_PREPARE_JOB),
+					),
+				),
+		);
+		const planned = planPeaksOnlyInsert({
+			videoId: input.videoId,
+			ownerId: input.ownerId,
+			sourceObjectKey: input.sourceObjectKey,
+			sourceSha256: input.sourceSha256,
+			existing: existing.map((row) => ({
+				id: row.id,
+				videoId: input.videoId,
+				job: SOURCE_PREPARE_JOB,
+				payload: (row.payload ?? {}) as SourcePreparePayload,
+			})),
+		});
+		if (planned.action === "skip") return "skipped";
+		if (planned.action === "reactivate") {
+			if (!locked.update) return "skipped";
+			await locked
+				.update(revisionOutbox)
+				.set({ payload: planned.payload })
+				.where(eq(revisionOutbox.id, planned.id));
+			return "reactivated";
+		}
+		await locked.insert(revisionOutbox).values({
+			videoId: input.videoId,
+			revisionId: planned.row.revisionId,
+			job: planned.row.job,
+			payload: planned.row.payload,
+			createdAt: input.now ?? new Date(),
+		});
+		return "inserted";
+	};
+	if (tx.transaction) return tx.transaction(run);
+	return run(tx);
+}
+
+export async function scheduleMissingEditorPeaks(
+	tx: OutboxTx,
+	input: {
+		videoId: string;
+		ownerId: string;
+		sourceObjectKey: string;
+		sourceSha256: string;
+	},
+	probe: { exists(key: string): Promise<boolean> },
+): Promise<"enqueued" | "present" | "skipped"> {
+	const key = peaksObjectKey(input.videoId, input.sourceSha256);
+	if (!key) return "skipped";
+	if (await probe.exists(key)) return "present";
+	const result = await enqueuePeaksOnly(tx, input);
+	return result === "inserted" || result === "reactivated"
+		? "enqueued"
+		: "skipped";
 }
 
 export async function enqueueSourcePrepare(
@@ -888,6 +1095,11 @@ export async function sweepSourcePrepare(
 		now?: Date;
 		effects: PrepareEffects;
 		load: (payload: SourcePreparePayload) => Promise<PrepareSnapshot>;
+		bindSource?: (videoId: string) => Promise<{
+			ownerId: string;
+			liveKey: string;
+			sha256: string;
+		} | null>;
 	},
 ): Promise<{ claimed: number; encoded: number }> {
 	const now = input.now ?? new Date();
@@ -926,6 +1138,57 @@ export async function sweepSourcePrepare(
 		void beat().catch(() => false);
 	}, 30_000);
 	try {
+		if (claimed.payload.peaksOnly === true) {
+			try {
+				if (!input.effects.ensurePeaks) {
+					throw new Error("peaks job has no effect");
+				}
+				const sourceSha256 = claimed.payload.sha256 ?? "";
+				if (!/^[a-f0-9]{64}$/.test(sourceSha256)) {
+					throw new Error("peaks job requires the registered source sha");
+				}
+				const bound = input.bindSource
+					? await input.bindSource(claimed.payload.videoId)
+					: null;
+				if (
+					!bound ||
+					bound.ownerId !== claimed.payload.ownerId ||
+					bound.liveKey !== claimed.payload.sourceObjectKey ||
+					bound.sha256 !== sourceSha256 ||
+					!bound.liveKey.startsWith("private/") ||
+					bound.liveKey.includes("raw-upload") ||
+					bound.liveKey.includes("..")
+				) {
+					throw new Error("peaks source binding changed");
+				}
+				await input.effects.ensurePeaks({
+					videoId: claimed.payload.videoId,
+					ownerId: bound.ownerId,
+					sourceKey: bound.liveKey,
+					sourceSha256: bound.sha256,
+					required: true,
+				});
+				if (!(await beat())) return { claimed: 1, encoded: 0 };
+				await database
+					.delete(revisionOutbox)
+					.where(leaseMatches(claimed.id, claimed.leaseToken));
+				return { claimed: 1, encoded: 0 };
+			} catch {
+				if (await beat()) {
+					await database
+						.update(revisionOutbox)
+						.set({
+							payload: nextSourcePrepareAttempt(
+								claimed.payload,
+								now.getTime(),
+								true,
+							),
+						})
+						.where(leaseMatches(claimed.id, claimed.leaseToken));
+				}
+				return { claimed: 1, encoded: 0 };
+			}
+		}
 		const snapshot = await input.load(claimed.payload);
 		mark("load");
 		try {

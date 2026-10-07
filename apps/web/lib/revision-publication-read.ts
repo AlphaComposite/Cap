@@ -490,6 +490,32 @@ export async function openInstantFinishEditor(
 			"Editor open must not mint an S3 presign",
 		);
 	}
+	const peaksKey = (await import("@/lib/waveform-peaks")).peaksObjectKey(
+		videoId,
+		prepared.sha256,
+	);
+	if (peaksKey) {
+		try {
+			const { scheduleMissingEditorPeaks } = await import(
+				"@/lib/source-prepare"
+			);
+			const { runtimeObjectStore } = await import(
+				"@/lib/instant-finish-source-relocate"
+			);
+			await scheduleMissingEditorPeaks(
+				app as never,
+				{
+					videoId,
+					ownerId: video.ownerId,
+					sourceObjectKey: relocated.liveKey,
+					sourceSha256: prepared.sha256,
+				},
+				runtimeObjectStore(),
+			);
+		} catch {
+			console.error("editor peaks enqueue failed");
+		}
+	}
 	return {
 		playbackSrc,
 		draftSession: publication?.draftSession ?? "",

@@ -14,10 +14,8 @@ import type { Video } from "@cap/web-domain";
 import {
 	ChevronLeft,
 	ChevronRight,
-	Minus,
 	Pause,
 	Play,
-	Plus,
 	Redo2,
 	RotateCcw,
 	Scissors,
@@ -30,6 +28,7 @@ import {
 	Fragment,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -103,6 +102,7 @@ import {
 	undoTimelineHistory,
 	type VideoTimelineState,
 } from "@/lib/video-edits";
+import { decodePeaksObject, type PeakPair } from "@/lib/waveform-peaks";
 import { navigateWithTransition } from "@/utils/view-transition";
 import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
 import { CapVideoPlayer } from "../_components/CapVideoPlayer";
@@ -112,6 +112,26 @@ import {
 	EditorChapterMarkers,
 	useEditorChapterPreview,
 } from "./EditorChapterPreview";
+import {
+	EditorChapterLane,
+	EditorHoverGhost,
+	EditorPlayhead,
+	EditorTimelineRuler,
+	EditorWaveformCanvas,
+	EditorWaveformToolbar,
+	effectiveMaxPxPerSec,
+	effectivePxPerSec,
+	fitFloorPxPerSec,
+	formatZoomMeasure,
+	nextWaveformRetryMs,
+	preferenceFromSliderStop,
+	relativeZoomForPreference,
+	sliderStopForPreference,
+	stepEditingDensity,
+	type ViewportPreference,
+	waveformFetchUrl,
+	ZOOM_DENSITY_FACTOR,
+} from "./EditorWaveform";
 import { EditReadinessStatus } from "./EditReadinessGate";
 import { TranscriptSidebar } from "./TranscriptSidebar";
 import { useRenewingPlaybackSource } from "./use-renewing-playback-source";
@@ -133,8 +153,6 @@ const MAX_VISIBLE_THUMBNAIL_GENERATION = 16;
 const PREVIEW_CUT_MUTE_LEAD_SECONDS = 0.03;
 const TIMELINE_THUMBNAIL_WIDTH = 160;
 const TIMELINE_THUMBNAIL_HEIGHT = 90;
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 12;
 const THUMBNAIL_FRAME_BATCH_SIZE = 4;
 
 type TimelineThumbnailFrame = {
@@ -165,10 +183,6 @@ function formatTimeDetailed(seconds: number) {
 function getTimePercent(time: number, duration: number) {
 	if (duration <= 0) return 0;
 	return Math.min(100, Math.max(0, (time / duration) * 100));
-}
-
-function clampZoom(value: number) {
-	return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 }
 
 function waitForNextFrame() {
@@ -669,6 +683,7 @@ export function EditVideoClient({
 	initialEditSpec,
 	playbackSrc,
 	usesOriginalSource,
+	sourceSha256 = null,
 }: {
 	video: EditableVideo;
 	chapters: { title: string; start: number }[];
@@ -677,6 +692,7 @@ export function EditVideoClient({
 	initialEditSpec: VideoEditSpec;
 	playbackSrc: string;
 	usesOriginalSource: boolean;
+	sourceSha256?: string | null;
 }) {
 	const router = useRouter();
 	const [isPreparingTranscript, setIsPreparingTranscript] = useState(false);
@@ -687,6 +703,7 @@ export function EditVideoClient({
 	);
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const timelineRef = useRef<HTMLDivElement | null>(null);
+	const dockRef = useRef<HTMLElement | null>(null);
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const playheadOverlayRef = useRef<HTMLDivElement | null>(null);
 	const stateRef = useRef<VideoTimelineState>(
@@ -702,6 +719,19 @@ export function EditVideoClient({
 	const pendingVideoSeekRef = useRef<number | null>(null);
 	const videoSeekFrameRef = useRef(0);
 	const zoomRef = useRef(1);
+	const preferenceRef = useRef<ViewportPreference>({ kind: "fit" });
+	const viewportWidthRef = useRef(1);
+	const viewportIntentRef = useRef(0);
+	const followSuspendedRef = useRef(false);
+	const expectedScrollRef = useRef<number | null>(null);
+	const pendingAnchorRef = useRef<{
+		sourceTime: number;
+		screenX: number;
+		intent: number;
+	} | null>(null);
+	const renderedScaleRef = useRef<{ pps: number; scrollLeft: number } | null>(
+		null,
+	);
 	const refreshOriginalSource = useCallback(async () => {
 		const result = await getVideoDownloadInfo(video.id, "original");
 		return result.success ? result.downloadUrl : null;
@@ -730,7 +760,56 @@ export function EditVideoClient({
 	const [activeHandle, setActiveHandle] = useState<DragHandle | null>(null);
 	const [playhead, setPlayhead] = useState(0);
 	const [isPlaying, setIsPlaying] = useState(false);
-	const [zoom, setZoom] = useState(1);
+	const [viewportPreference, setViewportPreference] =
+		useState<ViewportPreference>({ kind: "fit" });
+	const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
+	const [timelineViewportWidth, setTimelineViewportWidth] = useState(1);
+	const [hideWaveform, setHideWaveform] = useState(false);
+	const [dockHeightPx, setDockHeightPx] = useState(0);
+	const [waveformPairs, setWaveformPairs] = useState<PeakPair[] | null>(null);
+	const [waveformNoAudio, setWaveformNoAudio] = useState(false);
+	const [hoverFraction, setHoverFraction] = useState<number | null>(null);
+	useEffect(() => {
+		const controller = new AbortController();
+		let cancelled = false;
+		let timer = 0;
+		setWaveformPairs(null);
+		setWaveformNoAudio(false);
+		const load = async (failure: number) => {
+			try {
+				const response = await fetch(waveformFetchUrl(video.id), {
+					signal: controller.signal,
+					cache: "no-store",
+					credentials: "same-origin",
+				});
+				if (cancelled) return;
+				if (response.status === 404) {
+					const delay = nextWaveformRetryMs(failure);
+					if (delay === null) return;
+					timer = window.setTimeout(() => void load(failure + 1), delay);
+					return;
+				}
+				if (!response.ok) return;
+				const headerSha = response.headers.get("X-Cap-Source-Sha256");
+				if (sourceSha256 && headerSha && headerSha !== sourceSha256) return;
+				const decoded = decodePeaksObject(
+					new Uint8Array(await response.arrayBuffer()),
+					headerSha ?? sourceSha256 ?? "",
+				);
+				if (!decoded.ok || cancelled) return;
+				setWaveformPairs(decoded.pairs);
+				setWaveformNoAudio(decoded.noAudio);
+			} catch {
+				if (cancelled || controller.signal.aborted) return;
+			}
+		};
+		void load(0);
+		return () => {
+			cancelled = true;
+			controller.abort();
+			window.clearTimeout(timer);
+		};
+	}, [sourceSha256, video.id]);
 	const [instantFinish, setInstantFinish] = useState<
 		| {
 				enabled: boolean;
@@ -888,9 +967,41 @@ export function EditVideoClient({
 		playheadRef.current = playhead;
 	}, [playhead]);
 
+	const zoom = relativeZoomForPreference(
+		viewportPreference,
+		timelineViewportWidth,
+		state.duration,
+	);
+	const editingPxPerSec = effectivePxPerSec(
+		viewportPreference,
+		timelineViewportWidth,
+		state.duration,
+	);
+	const zoomLabel =
+		viewportPreference.kind === "fit"
+			? "Fit"
+			: `${formatZoomMeasure(editingPxPerSec)} px/s`;
+	const timelineTrackWidth =
+		viewportPreference.kind === "density" &&
+		editingPxPerSec > 0 &&
+		state.duration > 0 &&
+		Number.isFinite(editingPxPerSec * state.duration)
+			? `${editingPxPerSec * state.duration}px`
+			: "100%";
+	const sliderStop = sliderStopForPreference(
+		viewportPreference,
+		timelineViewportWidth,
+		state.duration,
+	);
+	const densityFloor = fitFloorPxPerSec(timelineViewportWidth, state.duration);
+	const zoomInDisabled = !(
+		effectiveMaxPxPerSec(timelineViewportWidth, state.duration) > densityFloor
+	);
+
 	useEffect(() => {
 		zoomRef.current = zoom;
-	}, [zoom]);
+		preferenceRef.current = viewportPreference;
+	}, [viewportPreference, zoom]);
 
 	useEffect(() => {
 		const draftStorage = getTimelineDraftStorage();
@@ -997,6 +1108,102 @@ export function EditVideoClient({
 		},
 		[],
 	);
+
+	useEffect(() => {
+		const node = scrollContainerRef.current;
+		if (!node) return;
+		let frame = 0;
+		const measure = () => {
+			frame = 0;
+			const nextWidth = Math.max(1, node.clientWidth);
+			const previous = viewportWidthRef.current;
+			if (nextWidth !== previous && previous > 1 && nextWidth > 1) {
+				const duration = stateRef.current.duration;
+				const rendered = renderedScaleRef.current;
+				const pps =
+					rendered && rendered.pps > 0
+						? rendered.pps
+						: effectivePxPerSec(preferenceRef.current, previous, duration);
+				const timeline = timelineRef.current;
+				const trackWidth = timeline
+					? timeline.getBoundingClientRect().width
+					: 0;
+				const maxScroll = Math.max(0, trackWidth - nextWidth);
+				const liveScroll = node.scrollLeft;
+				const scrollLeft =
+					rendered &&
+					nextWidth > previous &&
+					rendered.scrollLeft > maxScroll + 1 &&
+					rendered.scrollLeft <= Math.max(0, trackWidth - previous) + 1 &&
+					Math.abs(liveScroll - maxScroll) < 1
+						? rendered.scrollLeft
+						: liveScroll;
+				const center = pps > 0 ? (scrollLeft + previous / 2) / pps : 0;
+				const intent = viewportIntentRef.current + 1;
+				viewportIntentRef.current = intent;
+				pendingAnchorRef.current = {
+					sourceTime: center,
+					screenX: nextWidth / 2,
+					intent,
+				};
+			}
+			viewportWidthRef.current = nextWidth;
+			setTimelineScrollLeft(node.scrollLeft);
+			setTimelineViewportWidth(nextWidth);
+			if (!pendingAnchorRef.current) {
+				const duration = stateRef.current.duration;
+				const pps = effectivePxPerSec(
+					preferenceRef.current,
+					nextWidth,
+					duration,
+				);
+				if (pps > 0) {
+					renderedScaleRef.current = { pps, scrollLeft: node.scrollLeft };
+				}
+			}
+		};
+		const schedule = () => {
+			if (frame !== 0) return;
+			frame = requestAnimationFrame(measure);
+		};
+		const noteUserScroll = () => {
+			const expected = expectedScrollRef.current;
+			if (expected !== null && Math.abs(node.scrollLeft - expected) < 1) {
+				return;
+			}
+			if (node.clientWidth !== viewportWidthRef.current) return;
+			const rendered = renderedScaleRef.current;
+			if (rendered) rendered.scrollLeft = node.scrollLeft;
+			followSuspendedRef.current = true;
+			viewportIntentRef.current += 1;
+		};
+		measure();
+		node.addEventListener("scroll", noteUserScroll, { passive: true });
+		node.addEventListener("scroll", schedule, { passive: true });
+		const observer = new ResizeObserver(schedule);
+		observer.observe(node);
+		return () => {
+			node.removeEventListener("scroll", noteUserScroll);
+			node.removeEventListener("scroll", schedule);
+			observer.disconnect();
+			if (frame !== 0) cancelAnimationFrame(frame);
+		};
+	}, []);
+
+	useEffect(() => {
+		if (isSaving) return;
+		const node = dockRef.current;
+		if (!node) return;
+		const measure = () => {
+			const next = node.getBoundingClientRect().height;
+			if (!Number.isFinite(next) || next <= 0) return;
+			setDockHeightPx((current) => (current === next ? current : next));
+		};
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(node);
+		return () => observer.disconnect();
+	}, [isSaving]);
 
 	const updatePlayheadOverlay = useCallback(() => {
 		const container = scrollContainerRef.current;
@@ -1576,6 +1783,7 @@ export function EditVideoClient({
 			const bounded = Math.min(Math.max(playable, trimStart), trimEnd);
 			const clamped = getClampedVideoTime(bounded, videoRef.current, trimEnd);
 			const next = Math.min(Math.max(clamped, trimStart), trimEnd);
+			followSuspendedRef.current = false;
 			setVideoTimeOnFrame(next, immediate);
 			setPlayheadOnFrame(next, immediate);
 		},
@@ -1681,36 +1889,150 @@ export function EditVideoClient({
 		[commitState, restoreCursorToPlayable, setVideoTimeOnFrame],
 	);
 
-	const updateZoomAround = useCallback(
-		(nextZoom: number, anchorClientX?: number) => {
-			const container = scrollContainerRef.current;
-			const clamped = clampZoom(nextZoom);
-			if (!container) {
-				setZoom(clamped);
+	const writeTimelineScroll = useCallback((node: HTMLElement, left: number) => {
+		const max = Math.max(0, node.scrollWidth - node.clientWidth);
+		const next = Math.min(max, Math.max(0, left));
+		expectedScrollRef.current = next;
+		node.scrollLeft = next;
+	}, []);
+
+	const applyPendingAnchor = useCallback(
+		(width: number, preference: ViewportPreference) => {
+			const pending = pendingAnchorRef.current;
+			const node = scrollContainerRef.current;
+			if (!pending || !node || pending.intent !== viewportIntentRef.current)
+				return;
+			const duration = stateRef.current.duration;
+			const pps = effectivePxPerSec(preference, width, duration);
+			if (preference.kind === "fit" || !(pps > 0) || !(width > 0)) {
+				writeTimelineScroll(node, 0);
+				renderedScaleRef.current = {
+					pps: pps > 0 ? pps : 0,
+					scrollLeft: node.scrollLeft,
+				};
+				pendingAnchorRef.current = null;
 				return;
 			}
-			const rect = container.getBoundingClientRect();
-			const anchor =
-				anchorClientX !== undefined
-					? Math.min(Math.max(anchorClientX - rect.left, 0), rect.width)
-					: rect.width / 2;
-			const fraction =
-				container.scrollWidth > 0
-					? (container.scrollLeft + anchor) / container.scrollWidth
-					: 0;
+			const renderedWidth = timelineRef.current
+				? timelineRef.current.getBoundingClientRect().width
+				: 0;
+			const expectedWidth = pps * duration;
+			if (
+				!(renderedWidth > 0) ||
+				!Number.isFinite(expectedWidth) ||
+				Math.abs(renderedWidth - expectedWidth) > 1
+			) {
+				return;
+			}
+			writeTimelineScroll(node, pending.sourceTime * pps - pending.screenX);
+			renderedScaleRef.current = { pps, scrollLeft: node.scrollLeft };
+			pendingAnchorRef.current = null;
+		},
+		[writeTimelineScroll],
+	);
 
-			setZoom(clamped);
-
+	const applyViewportPreference = useCallback(
+		(next: ViewportPreference, anchorClientX?: number) => {
+			const container = scrollContainerRef.current;
+			const width =
+				container && container.clientWidth > 0
+					? container.clientWidth
+					: timelineViewportWidth;
+			const duration = stateRef.current.duration;
+			let screenX = width / 2;
+			if (container && anchorClientX !== undefined) {
+				const rect = container.getBoundingClientRect();
+				screenX = Math.min(
+					Math.max(anchorClientX - rect.left, 0),
+					Math.max(rect.width, 0),
+				);
+			}
+			const pending = pendingAnchorRef.current;
+			const correctionPending =
+				pending !== null && pending.intent === viewportIntentRef.current;
+			const rendered = renderedScaleRef.current;
+			const timelineWidthPx = timelineRef.current
+				? timelineRef.current.getBoundingClientRect().width
+				: 0;
+			const laidOut =
+				Number.isFinite(timelineWidthPx) && timelineWidthPx > 1 && width > 1;
+			const externalScroll =
+				container !== null &&
+				rendered !== null &&
+				Math.abs(container.scrollLeft - rendered.scrollLeft) >= 1;
+			const pointerMoved =
+				pending !== null && Math.abs(screenX - pending.screenX) >= 1;
+			let sourceTime = 0;
+			let anchorScreen = screenX;
+			if (!laidOut) {
+				if (pending) {
+					sourceTime = pending.sourceTime;
+					anchorScreen = pending.screenX;
+				}
+			} else if (
+				correctionPending &&
+				pending &&
+				!pointerMoved &&
+				!externalScroll
+			) {
+				sourceTime = pending.sourceTime;
+				anchorScreen = pending.screenX;
+			} else {
+				const oldPps =
+					rendered && rendered.pps > 0
+						? rendered.pps
+						: duration > 0 && timelineWidthPx > 0
+							? timelineWidthPx / duration
+							: 0;
+				const scrollLeft = container?.scrollLeft ?? 0;
+				sourceTime =
+					oldPps > 0
+						? (scrollLeft + anchorScreen) / oldPps
+						: (pending?.sourceTime ?? 0);
+			}
+			const intent = viewportIntentRef.current + 1;
+			viewportIntentRef.current = intent;
+			pendingAnchorRef.current = { sourceTime, screenX: anchorScreen, intent };
+			preferenceRef.current = next;
+			setViewportPreference(next);
 			requestAnimationFrame(() => {
+				if (viewportIntentRef.current !== intent) return;
 				const node = scrollContainerRef.current;
-				if (!node) return;
-				const newScrollWidth = node.scrollWidth;
-				const newPosition = fraction * newScrollWidth;
-				node.scrollLeft = newPosition - anchor;
+				applyPendingAnchor(
+					node && node.clientWidth > 0
+						? node.clientWidth
+						: timelineViewportWidth,
+					preferenceRef.current,
+				);
 			});
 		},
-		[],
+		[applyPendingAnchor, timelineViewportWidth],
 	);
+
+	const measuredViewportWidth = useCallback(() => {
+		const live = scrollContainerRef.current?.clientWidth ?? 0;
+		if (Number.isFinite(live) && live > 0) return live;
+		return timelineViewportWidth > 0 ? timelineViewportWidth : 0;
+	}, [timelineViewportWidth]);
+
+	const stepViewportDensity = useCallback(
+		(factor: number, anchorClientX?: number) => {
+			applyViewportPreference(
+				stepEditingDensity(
+					preferenceRef.current,
+					factor,
+					measuredViewportWidth(),
+					stateRef.current.duration,
+				),
+				anchorClientX,
+			);
+		},
+		[applyViewportPreference, measuredViewportWidth],
+	);
+
+	useLayoutEffect(() => {
+		applyPendingAnchor(timelineViewportWidth, viewportPreference);
+	}, [applyPendingAnchor, timelineViewportWidth, viewportPreference]);
 
 	const handleTimelinePointerDown = useCallback(
 		(event: React.PointerEvent<HTMLDivElement>) => {
@@ -1833,6 +2155,7 @@ export function EditVideoClient({
 				}
 			};
 			const handlePlay = () => {
+				followSuspendedRef.current = false;
 				setIsPlaying(true);
 				stopPlaybackFrames();
 				playbackFrameId = requestAnimationFrame(followPlayback);
@@ -1900,9 +2223,11 @@ export function EditVideoClient({
 	}, [editSpec, isSaving]);
 
 	useEffect(() => {
-		if (isSaving) return;
+		if (isSaving || isTrimming) return;
+		if (isPlaying && followSuspendedRef.current) return;
+		if (zoomRef.current <= 1) return;
 		const container = scrollContainerRef.current;
-		if (!container || zoom <= 1 || isTrimming) return;
+		if (!container) return;
 		const playheadFraction =
 			state.duration > 0 ? clampedPlayhead / state.duration : 0;
 		const playheadX = playheadFraction * container.scrollWidth;
@@ -1913,12 +2238,19 @@ export function EditVideoClient({
 			playheadX < visibleStart + padding ||
 			playheadX > visibleEnd - padding
 		) {
-			container.scrollTo({
-				left: Math.max(0, playheadX - container.clientWidth / 2),
-				behavior: isPlaying ? "auto" : "smooth",
-			});
+			writeTimelineScroll(
+				container,
+				Math.max(0, playheadX - container.clientWidth / 2),
+			);
 		}
-	}, [clampedPlayhead, isSaving, zoom, isPlaying, isTrimming, state.duration]);
+	}, [
+		clampedPlayhead,
+		isSaving,
+		isPlaying,
+		isTrimming,
+		state.duration,
+		writeTimelineScroll,
+	]);
 
 	useEffect(() => {
 		if (isSaving) return;
@@ -1930,11 +2262,11 @@ export function EditVideoClient({
 			const direction = event.deltaY > 0 ? -1 : 1;
 			const factor =
 				1 + direction * Math.min(Math.abs(event.deltaY) / 120, 1) * 0.25;
-			updateZoomAround(zoomRef.current * factor, event.clientX);
+			stepViewportDensity(factor, event.clientX);
 		};
 		container.addEventListener("wheel", handleWheel, { passive: false });
 		return () => container.removeEventListener("wheel", handleWheel);
-	}, [isSaving, updateZoomAround]);
+	}, [isSaving, stepViewportDensity]);
 
 	useEffect(() => {
 		if (isSaving) return;
@@ -2006,19 +2338,19 @@ export function EditVideoClient({
 
 			if (event.key === "+" || event.key === "=") {
 				event.preventDefault();
-				updateZoomAround(zoomRef.current * 1.25);
+				stepViewportDensity(ZOOM_DENSITY_FACTOR);
 				return;
 			}
 
 			if (event.key === "-" || event.key === "_") {
 				event.preventDefault();
-				updateZoomAround(zoomRef.current / 1.25);
+				stepViewportDensity(1 / ZOOM_DENSITY_FACTOR);
 				return;
 			}
 
 			if (event.key === "0") {
 				event.preventDefault();
-				updateZoomAround(1);
+				applyViewportPreference({ kind: "fit" });
 				return;
 			}
 		};
@@ -2036,7 +2368,8 @@ export function EditVideoClient({
 		playhead,
 		seekTo,
 		togglePlayPause,
-		updateZoomAround,
+		applyViewportPreference,
+		stepViewportDensity,
 	]);
 
 	// Unmount the timeline before publish resolves. Reconciling this tree on
@@ -2055,9 +2388,13 @@ export function EditVideoClient({
 	return (
 		<div
 			data-editor-shell="editor"
-			className="flex min-h-screen flex-col bg-gray-1 text-gray-12"
+			className="flex h-svh min-h-0 flex-col overflow-hidden bg-gray-1 text-gray-12"
+			style={{
+				["--editor-dock-height" as string]:
+					dockHeightPx > 0 ? `${dockHeightPx}px` : "16rem",
+			}}
 		>
-			<header className="sticky top-0 z-30 border-b border-gray-4 bg-white/85 backdrop-blur">
+			<header className="sticky top-0 z-30 shrink-0 border-b border-gray-4 bg-white/85 backdrop-blur">
 				<div className="mx-auto flex h-14 w-full max-w-[1500px] items-center justify-between gap-2 px-3 sm:h-16 sm:px-5">
 					<div className="flex items-center gap-1.5">
 						<button
@@ -2129,92 +2466,140 @@ export function EditVideoClient({
 				</div>
 			</header>
 
-			<main
-				className={[
-					"mx-auto flex w-full flex-1 flex-col px-3 pt-3 pb-4 sm:px-5 sm:pt-4 sm:pb-5",
-					editReadiness.readiness?.transcriptUsable
-						? "max-w-[1500px] xl:pr-[640px]"
-						: "max-w-6xl",
-				].join(" ")}
+			<div
+				data-editor-stage=""
+				className="flex min-h-0 flex-1 flex-col overflow-hidden"
 			>
-				{!editReadiness.readiness?.transcriptUsable && (
-					<section className="mb-3 rounded-xl border border-gray-4 p-3">
-						<EditReadinessStatus state={editReadiness} />
-						{editReadiness.readiness?.transcriptLabel ===
-							"Word timings unavailable" && (
-							<button
-								type="button"
-								disabled={isPreparingTranscript}
-								className="mt-2 text-sm underline disabled:opacity-50"
-								onClick={async () => {
-									setIsPreparingTranscript(true);
-									try {
-										const result = await requestEditTranscript(video.id);
-										if (result.status === "error")
+				<main
+					className={[
+						"mx-auto flex min-h-0 w-full flex-1 flex-col px-3 pt-3 pb-4 sm:px-5 sm:pt-4 sm:pb-5",
+						editReadiness.readiness?.transcriptUsable
+							? "max-w-[1500px] xl:pr-[640px]"
+							: "max-w-6xl",
+					].join(" ")}
+				>
+					{!editReadiness.readiness?.transcriptUsable && (
+						<section className="mb-3 rounded-xl border border-gray-4 p-3">
+							<EditReadinessStatus state={editReadiness} />
+							{editReadiness.readiness?.transcriptLabel ===
+								"Word timings unavailable" && (
+								<button
+									type="button"
+									disabled={isPreparingTranscript}
+									className="mt-2 text-sm underline disabled:opacity-50"
+									onClick={async () => {
+										setIsPreparingTranscript(true);
+										try {
+											const result = await requestEditTranscript(video.id);
+											if (result.status === "error")
+												toast.error(
+													"Word timings could not be prepared. Use the share page recovery controls.",
+												);
+											editReadiness.checkAgain();
+										} catch {
 											toast.error(
-												"Word timings could not be prepared. Use the share page recovery controls.",
+												"Word timings could not be prepared. Check again.",
 											);
-										editReadiness.checkAgain();
-									} catch {
-										toast.error(
-											"Word timings could not be prepared. Check again.",
-										);
-									} finally {
-										setIsPreparingTranscript(false);
-									}
-								}}
-							>
-								Prepare word timings
-							</button>
-						)}
-						<p className="mt-2 text-sm text-gray-11">
-							Manual timeline editing remains available. Word editing and
-							auto-cuts require usable word timings. For transcription recovery
-							or settings, use the share page controls.
-						</p>
+										} finally {
+											setIsPreparingTranscript(false);
+										}
+									}}
+								>
+									Prepare word timings
+								</button>
+							)}
+							<p className="mt-2 text-sm text-gray-11">
+								Manual timeline editing remains available. Word editing and
+								auto-cuts require usable word timings. For transcription
+								recovery or settings, use the share page controls.
+							</p>
+						</section>
+					)}
+					<section className="flex min-h-0 flex-1 items-center justify-center">
+						<div
+							className="relative max-h-full max-w-full overflow-hidden rounded-xl bg-black ring-1 ring-gray-5 [&_[data-slot=media-player-controls]]:!hidden"
+							style={{
+								aspectRatio:
+									video.width && video.height
+										? `${video.width} / ${video.height}`
+										: "16 / 9",
+								width:
+									video.width && video.height
+										? `min(100%, calc((100svh - var(--editor-dock-height, 16rem) - 6.5rem) * ${video.width} / ${video.height}))`
+										: "100%",
+								viewTransitionName: "cap-edit-video",
+								boxShadow: [
+									"0 1px 2px rgba(15,23,42,0.05)",
+									"0 4px 12px -2px rgba(15,23,42,0.08)",
+									"0 24px 48px -12px rgba(15,23,42,0.10)",
+								].join(", "),
+							}}
+						>
+							<CapVideoPlayer
+								videoSrc={activePlaybackSrc}
+								videoId={video.id}
+								chaptersSrc={chaptersUrl ?? ""}
+								captionsSrc=""
+								disableCaptions
+								videoRef={videoRef}
+								mediaPlayerClassName="h-full w-full"
+								enableCrossOrigin
+								hasActiveUpload={false}
+								disableCommentStamps
+								disableReactionStamps
+								disablePreviewGif
+								disablePlaybackSpeedDial
+								duration={state.duration}
+								showFloatingVolumeControl
+							/>
+						</div>
 					</section>
-				)}
-				<section className="flex min-h-0 flex-1 items-center justify-center">
-					<div
-						className="relative max-h-full max-w-full overflow-hidden rounded-xl bg-black ring-1 ring-gray-5 [&_[data-slot=media-player-controls]]:!hidden"
-						style={{
-							aspectRatio:
-								video.width && video.height
-									? `${video.width} / ${video.height}`
-									: "16 / 9",
-							width:
-								video.width && video.height
-									? `min(100%, calc(65vh * ${video.width} / ${video.height}))`
-									: "100%",
-							viewTransitionName: "cap-edit-video",
-							boxShadow: [
-								"0 1px 2px rgba(15,23,42,0.05)",
-								"0 4px 12px -2px rgba(15,23,42,0.08)",
-								"0 24px 48px -12px rgba(15,23,42,0.10)",
-							].join(", "),
-						}}
-					>
-						<CapVideoPlayer
-							videoSrc={activePlaybackSrc}
-							videoId={video.id}
-							chaptersSrc={chaptersUrl ?? ""}
-							captionsSrc=""
-							disableCaptions
-							videoRef={videoRef}
-							mediaPlayerClassName="h-full w-full"
-							enableCrossOrigin
-							hasActiveUpload={false}
-							disableCommentStamps
-							disableReactionStamps
-							disablePreviewGif
-							disablePlaybackSpeedDial
-							duration={state.duration}
-							showFloatingVolumeControl
-						/>
-					</div>
-				</section>
+				</main>
 
-				<div className="relative mt-11 flex items-center gap-2.5 sm:mt-12 sm:gap-3">
+				{editReadiness.readiness?.transcriptUsable && (
+					<TranscriptSidebar
+						videoId={video.id}
+						videoRef={videoRef}
+						keepRanges={keepRanges}
+						autoCuts={editSpec.autoCuts}
+						autoCutsInitialized={editSpec.autoCutsInitialized}
+						onDeleteRanges={handleTranscriptDelete}
+						onRestoreRanges={handleTranscriptRestore}
+						onSetAutoCutLayer={handleSetAutoCutLayer}
+						onInitializeAutoCuts={handleInitializeAutoCuts}
+					/>
+				)}
+			</div>
+
+			<section
+				ref={dockRef}
+				data-editor-dock=""
+				className="shrink-0 border-t border-gray-4 bg-gray-1 px-3 pt-3.5 pb-4 sm:px-5"
+			>
+				<EditorWaveformToolbar
+					hidden={hideWaveform}
+					onToggle={() => setHideWaveform((current) => !current)}
+					zoom={zoom}
+					minZoom={1}
+					maxZoom={100}
+					sliderValue={sliderStop}
+					onZoom={(stop) =>
+						applyViewportPreference(
+							preferenceFromSliderStop(
+								stop,
+								measuredViewportWidth(),
+								stateRef.current.duration,
+							),
+						)
+					}
+					onZoomIn={() => stepViewportDensity(ZOOM_DENSITY_FACTOR)}
+					onZoomOut={() => stepViewportDensity(1 / ZOOM_DENSITY_FACTOR)}
+					onWholeVideo={() => applyViewportPreference({ kind: "fit" })}
+					zoomLabel={zoomLabel}
+					zoomInDisabled={zoomInDisabled}
+				/>
+
+				<div className="relative mt-2 flex items-center gap-2.5 sm:gap-3">
 					<button
 						type="button"
 						aria-label={isPlaying ? "Pause" : "Play"}
@@ -2259,230 +2644,288 @@ export function EditVideoClient({
 						>
 							<div
 								ref={timelineRef}
+								data-editor-timeline=""
+								data-zoom-mode={viewportPreference.kind}
+								data-pixels-per-second={formatZoomMeasure(editingPxPerSec)}
+								data-visible-seconds={formatZoomMeasure(
+									editingPxPerSec > 0 && timelineViewportWidth > 0
+										? timelineViewportWidth / editingPxPerSec
+										: state.duration,
+								)}
 								onPointerDown={handleTimelinePointerDown}
-								className="group relative h-16 cursor-pointer select-none"
+								onPointerMove={(event) => {
+									const rect = event.currentTarget.getBoundingClientRect();
+									if (rect.width <= 0) return;
+									setHoverFraction(
+										Math.min(
+											1,
+											Math.max(0, (event.clientX - rect.left) / rect.width),
+										),
+									);
+								}}
+								onPointerLeave={() => setHoverFraction(null)}
+								className="group relative cursor-pointer select-none"
 								style={{
-									width: `${zoom * 100}%`,
+									width: timelineTrackWidth,
 									minWidth: "100%",
 								}}
 							>
-								<div className="absolute inset-0 flex">
-									{thumbnailSlots.map((slot) => (
-										<div
-											key={slot.key}
-											className="relative min-w-0 flex-1 overflow-hidden border-r border-white/[0.04] bg-gray-12 last:border-r-0"
-										>
-											{slot.src ? (
-												<div
-													className="absolute inset-0 bg-cover bg-center opacity-95"
-													style={{
-														backgroundImage: `url(${JSON.stringify(slot.src)})`,
-													}}
-												/>
-											) : (
-												<div className="absolute inset-0 bg-gradient-to-br from-gray-11 to-gray-12" />
-											)}
-										</div>
-									))}
-								</div>
-
-								{segments
-									.filter((segment) => segment.deleted)
-									.map((segment) => {
-										const startPct = getTimePercent(
-											segment.start,
-											state.duration,
-										);
-										const endPct = getTimePercent(segment.end, state.duration);
-										return (
+								<EditorTimelineRuler
+									duration={state.duration}
+									scrollLeft={timelineScrollLeft}
+									viewportWidth={timelineViewportWidth}
+									zoom={zoom}
+								/>
+								<EditorChapterLane
+									chapters={playbackChapters}
+									duration={state.duration}
+								/>
+								<div
+									data-waveform-lane=""
+									className="relative h-16 overflow-hidden"
+								>
+									<div
+										className={
+											hideWaveform ? "absolute inset-0 flex" : "hidden"
+										}
+									>
+										{thumbnailSlots.map((slot) => (
 											<div
-												key={`deleted-${segment.id}`}
-												data-timeline-deleted=""
-												role="img"
-												aria-label={`Removed section ${formatTime(segment.start)}–${formatTime(segment.end)}`}
-												className="pointer-events-none absolute inset-y-0 z-[4] bg-black/45 backdrop-grayscale"
-												style={{
-													left: `${startPct}%`,
-													width: `${Math.max(0, endPct - startPct)}%`,
-												}}
+												key={slot.key}
+												className="relative min-w-0 flex-1 overflow-hidden border-r border-white/[0.04] bg-gray-12 last:border-r-0"
 											>
-												<span className="absolute inset-y-0 left-0 w-px bg-white/80" />
-												<span className="absolute inset-y-0 right-0 w-px bg-white/80" />
+												{slot.src ? (
+													<div
+														className="absolute inset-0 bg-cover bg-center opacity-95"
+														style={{
+															backgroundImage: `url(${JSON.stringify(slot.src)})`,
+														}}
+													/>
+												) : (
+													<div className="absolute inset-0 bg-gradient-to-br from-gray-11 to-gray-12" />
+												)}
 											</div>
+										))}
+									</div>
+
+									{segments
+										.filter((segment) => segment.deleted)
+										.map((segment) => {
+											const startPct = getTimePercent(
+												segment.start,
+												state.duration,
+											);
+											const endPct = getTimePercent(
+												segment.end,
+												state.duration,
+											);
+											return (
+												<div
+													key={`deleted-${segment.id}`}
+													data-timeline-deleted=""
+													data-removed-marker=""
+													role="img"
+													aria-label={`Removed section ${formatTime(segment.start)}–${formatTime(segment.end)}`}
+													className="pointer-events-none absolute inset-y-0 z-[4] bg-black/45 backdrop-grayscale"
+													style={{
+														left: `${startPct}%`,
+														width: `${Math.max(0, endPct - startPct)}%`,
+													}}
+												>
+													<span className="absolute inset-y-0 left-0 w-px bg-white/80" />
+													<span className="absolute inset-y-0 right-0 w-px bg-white/80" />
+												</div>
+											);
+										})}
+
+									<EditorChapterMarkers
+										chapters={playbackChapters}
+										outputDuration={state.duration}
+									/>
+
+									<div
+										className="pointer-events-none absolute inset-y-0 left-0 bg-black/70"
+										style={{
+											width: `${trimStartPct}%`,
+										}}
+									/>
+									<div
+										className="pointer-events-none absolute inset-y-0 right-0 bg-black/70"
+										style={{
+											width: `${100 - trimEndPct}%`,
+										}}
+									/>
+
+									{visibleSegments.map((clip, index) => {
+										const isFirst = index === 0;
+										const isLast = index === visibleSegments.length - 1;
+										const hasMultipleClips = visibleSegments.length > 1;
+										const isActive = activeSegmentAtPlayhead?.id === clip.id;
+										const startPct = getTimePercent(clip.start, state.duration);
+										const endPct = getTimePercent(clip.end, state.duration);
+										const widthPct = Math.max(0, endPct - startPct);
+										return (
+											<Fragment key={`clip-${clip.id}`}>
+												<div
+													data-clip-capsule=""
+													data-selected={
+														isActive || !hasMultipleClips ? "" : undefined
+													}
+													className={[
+														"pointer-events-none absolute inset-y-1 z-[5] overflow-hidden rounded-xl border-2 transition-colors",
+														isActive || !hasMultipleClips
+															? "border-[#113264] bg-[#0090ff]/10"
+															: "border-[#0090ff] bg-[#0090ff]/5",
+													].join(" ")}
+													style={{
+														left: `calc(${startPct}% + 1.5px)`,
+														width: `calc(${widthPct}% - 3px)`,
+													}}
+												>
+													<div className="absolute inset-x-0 top-0 h-1.5 bg-blue-500" />
+													<div className="absolute inset-x-0 bottom-0 h-1.5 bg-blue-500" />
+												</div>
+
+												<button
+													type="button"
+													aria-label={
+														isFirst ? "Trim start" : "Trim clip start"
+													}
+													data-trim-handle
+													data-handle-visible={
+														!hasMultipleClips || isActive ? "" : undefined
+													}
+													onPointerDown={(event) =>
+														startClipEdgeDrag(clip.id, "start", isFirst, event)
+													}
+													className={[
+														"absolute inset-y-1 z-20 flex w-3.5 cursor-ew-resize touch-none items-center justify-center rounded-md bg-blue-500 text-white transition hover:bg-blue-400 active:bg-blue-600",
+														!hasMultipleClips || isActive ? "" : "invisible",
+														isFirst
+															? "w-6 rounded-l-lg shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)]"
+															: "rounded-l-md shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+														activeHandle === "start" && isFirst
+															? "ring-2 ring-blue-300 ring-inset"
+															: "",
+													].join(" ")}
+													style={
+														isFirst
+															? { left: `${startPct}%` }
+															: {
+																	left: `${startPct}%`,
+																	width: `min(0.75rem, ${(widthPct / 3).toFixed(3)}%)`,
+																}
+													}
+												>
+													{isFirst ? (
+														<ChevronLeft
+															className="size-5"
+															strokeWidth={3}
+															aria-hidden
+														/>
+													) : (
+														<span
+															className="h-5 w-0.5 rounded-full bg-white/85"
+															aria-hidden
+														/>
+													)}
+												</button>
+
+												<button
+													type="button"
+													aria-label={isLast ? "Trim end" : "Trim clip end"}
+													data-trim-handle
+													data-handle-visible={
+														!hasMultipleClips || isActive ? "" : undefined
+													}
+													onPointerDown={(event) =>
+														startClipEdgeDrag(clip.id, "end", isLast, event)
+													}
+													className={[
+														"absolute inset-y-1 z-20 flex w-3.5 -translate-x-full cursor-ew-resize touch-none items-center justify-center rounded-md bg-blue-500 text-white transition hover:bg-blue-400 active:bg-blue-600",
+														!hasMultipleClips || isActive ? "" : "invisible",
+														isLast
+															? "w-6 rounded-r-lg shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)]"
+															: "rounded-r-md shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+														activeHandle === "end" && isLast
+															? "ring-2 ring-blue-300 ring-inset"
+															: "",
+													].join(" ")}
+													style={
+														isLast
+															? { left: `${endPct}%` }
+															: {
+																	left: `${endPct}%`,
+																	width: `min(0.75rem, ${(widthPct / 3).toFixed(3)}%)`,
+																}
+													}
+												>
+													{isLast ? (
+														<ChevronRight
+															className="size-5"
+															strokeWidth={3}
+															aria-hidden
+														/>
+													) : (
+														<span
+															className="h-5 w-0.5 rounded-full bg-white/85"
+															aria-hidden
+														/>
+													)}
+												</button>
+											</Fragment>
 										);
 									})}
 
-								<EditorChapterMarkers
-									chapters={playbackChapters}
-									outputDuration={state.duration}
-								/>
-
-								<div
-									className="pointer-events-none absolute inset-y-0 left-0 bg-black/70"
-									style={{
-										width: `${trimStartPct}%`,
-									}}
-								/>
-								<div
-									className="pointer-events-none absolute inset-y-0 right-0 bg-black/70"
-									style={{
-										width: `${100 - trimEndPct}%`,
-									}}
-								/>
-
-								{visibleSegments.map((clip, index) => {
-									const isFirst = index === 0;
-									const isLast = index === visibleSegments.length - 1;
-									const hasMultipleClips = visibleSegments.length > 1;
-									const isActive = activeSegmentAtPlayhead?.id === clip.id;
-									const startPct = getTimePercent(clip.start, state.duration);
-									const endPct = getTimePercent(clip.end, state.duration);
-									const widthPct = Math.max(0, endPct - startPct);
-									return (
-										<Fragment key={`clip-${clip.id}`}>
-											<div
-												className={[
-													"pointer-events-none absolute inset-y-0 z-[5] overflow-hidden rounded-md transition-colors",
-													!hasMultipleClips
-														? ""
-														: isActive
-															? "bg-white/[0.10] ring-2 ring-inset ring-blue-400"
-															: "bg-black/35 ring-1 ring-inset ring-white/15",
-												].join(" ")}
-												style={{
-													left: `calc(${startPct}% + 1.5px)`,
-													width: `calc(${widthPct}% - 3px)`,
+									{timelineDisplaySplitPoints.map((splitPoint, index) => {
+										if (!splitPoint.removable) return null;
+										const positionPercent = getTimePercent(
+											splitPoint.sourceTime,
+											state.duration,
+										);
+										return (
+											<button
+												key={`merge-${splitPoint.id}`}
+												type="button"
+												aria-label="Remove cut"
+												title="Remove cut"
+												data-trim-handle
+												onPointerDown={(event) => event.stopPropagation()}
+												onClick={(event) => {
+													event.stopPropagation();
+													removeSplitAtIndex(index);
 												}}
+												className="absolute -top-9 left-0 z-[50] flex size-4 -translate-x-1/2 items-center justify-center rounded-full bg-gray-12 text-white opacity-0 shadow-[0_2px_6px_rgba(0,0,0,0.45)] ring-1 ring-black/30 transition-all hover:scale-110 hover:!opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 group-hover:opacity-80 [@media(hover:none)]:opacity-70"
+												style={{ left: `${positionPercent}%` }}
 											>
-												<div className="absolute inset-x-0 top-0 h-1.5 bg-blue-500" />
-												<div className="absolute inset-x-0 bottom-0 h-1.5 bg-blue-500" />
-											</div>
-
-											<button
-												type="button"
-												aria-label={isFirst ? "Trim start" : "Trim clip start"}
-												data-trim-handle
-												onPointerDown={(event) =>
-													startClipEdgeDrag(clip.id, "start", isFirst, event)
-												}
-												className={[
-													"absolute inset-y-0 z-20 flex cursor-ew-resize touch-none items-center justify-center bg-blue-500 text-white transition hover:bg-blue-400 active:bg-blue-600",
-													isFirst
-														? "w-6 rounded-l-lg shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)]"
-														: "rounded-l-md shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
-													activeHandle === "start" && isFirst
-														? "ring-2 ring-blue-300 ring-inset"
-														: "",
-												].join(" ")}
-												style={
-													isFirst
-														? { left: `${startPct}%` }
-														: {
-																left: `${startPct}%`,
-																width: `min(0.75rem, ${(widthPct / 3).toFixed(3)}%)`,
-															}
-												}
-											>
-												{isFirst ? (
-													<ChevronLeft
-														className="size-5"
-														strokeWidth={3}
-														aria-hidden
-													/>
-												) : (
-													<span
-														className="h-5 w-0.5 rounded-full bg-white/85"
-														aria-hidden
-													/>
-												)}
+												<X className="size-2.5" strokeWidth={3} aria-hidden />
 											</button>
-
-											<button
-												type="button"
-												aria-label={isLast ? "Trim end" : "Trim clip end"}
-												data-trim-handle
-												onPointerDown={(event) =>
-													startClipEdgeDrag(clip.id, "end", isLast, event)
-												}
-												className={[
-													"absolute inset-y-0 z-20 flex -translate-x-full cursor-ew-resize touch-none items-center justify-center bg-blue-500 text-white transition hover:bg-blue-400 active:bg-blue-600",
-													isLast
-														? "w-6 rounded-r-lg shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)]"
-														: "rounded-r-md shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
-													activeHandle === "end" && isLast
-														? "ring-2 ring-blue-300 ring-inset"
-														: "",
-												].join(" ")}
-												style={
-													isLast
-														? { left: `${endPct}%` }
-														: {
-																left: `${endPct}%`,
-																width: `min(0.75rem, ${(widthPct / 3).toFixed(3)}%)`,
-															}
-												}
-											>
-												{isLast ? (
-													<ChevronRight
-														className="size-5"
-														strokeWidth={3}
-														aria-hidden
-													/>
-												) : (
-													<span
-														className="h-5 w-0.5 rounded-full bg-white/85"
-														aria-hidden
-													/>
-												)}
-											</button>
-										</Fragment>
-									);
-								})}
-
-								{timelineDisplaySplitPoints.map((splitPoint, index) => {
-									if (!splitPoint.removable) return null;
-									const positionPercent = getTimePercent(
-										splitPoint.sourceTime,
-										state.duration,
-									);
-									return (
-										<button
-											key={`merge-${splitPoint.id}`}
-											type="button"
-											aria-label="Remove cut"
-											title="Remove cut"
-											data-trim-handle
-											onPointerDown={(event) => event.stopPropagation()}
-											onClick={(event) => {
-												event.stopPropagation();
-												removeSplitAtIndex(index);
-											}}
-											className="absolute -top-9 left-0 z-[50] flex size-4 -translate-x-1/2 items-center justify-center rounded-full bg-gray-12 text-white opacity-0 shadow-[0_2px_6px_rgba(0,0,0,0.45)] ring-1 ring-black/30 transition-all hover:scale-110 hover:!opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 group-hover:opacity-80 [@media(hover:none)]:opacity-70"
-											style={{ left: `${positionPercent}%` }}
-										>
-											<X className="size-2.5" strokeWidth={3} aria-hidden />
-										</button>
-									);
-								})}
-							</div>
-						</div>
-
-						<div className="pointer-events-none absolute bottom-0 left-0 right-0 z-40 h-[92px] overflow-hidden">
-							<div
-								ref={playheadOverlayRef}
-								className="absolute bottom-0 left-0 h-[92px] will-change-transform"
-								style={{
-									transform: "translate3d(-9999px, 0, 0) translateX(-50%)",
-								}}
-							>
-								<div className="absolute left-1/2 top-0 -translate-x-1/2 whitespace-nowrap rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-black shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
-									{formatTimeDetailed(outputPlayhead)}
+										);
+									})}
+									<EditorWaveformCanvas
+										pairs={waveformPairs}
+										noAudio={waveformNoAudio}
+										duration={state.duration}
+										deleted={segments
+											.filter((segment) => segment.deleted)
+											.map((segment) => ({
+												start: segment.start,
+												end: segment.end,
+											}))}
+										hidden={hideWaveform}
+										scrollLeft={timelineScrollLeft}
+										viewportWidth={timelineViewportWidth}
+										zoom={zoom}
+									/>
 								</div>
-
-								<div className="absolute left-1/2 top-6 size-2.5 -translate-x-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,0,0,0.55),0_2px_4px_rgba(0,0,0,0.45)]" />
-								<div className="absolute bottom-0 left-1/2 top-[34px] w-[2.5px] -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.55),0_0_4px_rgba(0,0,0,0.3)]" />
+								<EditorHoverGhost fraction={hoverFraction} />
 							</div>
 						</div>
+
+						<EditorPlayhead
+							ref={playheadOverlayRef}
+							label={formatTimeDetailed(outputPlayhead)}
+						/>
 					</div>
 				</div>
 
@@ -2516,43 +2959,6 @@ export function EditVideoClient({
 								{formatTime(outputDuration)}
 							</span>
 						</div>
-
-						<div className="hidden sm:block h-5 w-px bg-gray-5" />
-
-						<div className="hidden sm:flex items-center gap-1.5">
-							<button
-								type="button"
-								aria-label="Zoom out"
-								title="Zoom out (−)"
-								onClick={() => updateZoomAround(zoom / 1.25)}
-								disabled={zoom <= MIN_ZOOM + 0.01}
-								className="inline-flex size-7 items-center justify-center rounded-full text-gray-12 transition hover:bg-gray-3 active:bg-gray-4 disabled:pointer-events-none disabled:opacity-30"
-							>
-								<Minus className="size-3.5" />
-							</button>
-							<input
-								type="range"
-								aria-label="Zoom level"
-								min={MIN_ZOOM}
-								max={MAX_ZOOM}
-								step={0.25}
-								value={zoom}
-								onChange={(event) =>
-									updateZoomAround(Number.parseFloat(event.target.value))
-								}
-								className="h-1 w-28 cursor-pointer appearance-none rounded-full bg-gray-5 accent-gray-12 [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-gray-12 [&::-webkit-slider-thumb]:shadow [&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-gray-12"
-							/>
-							<button
-								type="button"
-								aria-label="Zoom in"
-								title="Zoom in (+)"
-								onClick={() => updateZoomAround(zoom * 1.25)}
-								disabled={zoom >= MAX_ZOOM - 0.01}
-								className="inline-flex size-7 items-center justify-center rounded-full text-gray-12 transition hover:bg-gray-3 active:bg-gray-4 disabled:pointer-events-none disabled:opacity-30"
-							>
-								<Plus className="size-3.5" />
-							</button>
-						</div>
 					</div>
 
 					<ToolButton
@@ -2563,21 +2969,7 @@ export function EditVideoClient({
 						label="Delete"
 					/>
 				</div>
-			</main>
-
-			{editReadiness.readiness?.transcriptUsable && (
-				<TranscriptSidebar
-					videoId={video.id}
-					videoRef={videoRef}
-					keepRanges={keepRanges}
-					autoCuts={editSpec.autoCuts}
-					autoCutsInitialized={editSpec.autoCutsInitialized}
-					onDeleteRanges={handleTranscriptDelete}
-					onRestoreRanges={handleTranscriptRestore}
-					onSetAutoCutLayer={handleSetAutoCutLayer}
-					onInitializeAutoCuts={handleInitializeAutoCuts}
-				/>
-			)}
+			</section>
 
 			<Dialog
 				open={showRestoreConfirm}

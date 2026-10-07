@@ -3,6 +3,7 @@ import { getCurrentUser } from "@cap/database/auth/session";
 import {
 	editIntent,
 	editRevision,
+	sourceObject,
 	videoEdits,
 	videoPublication,
 	videos,
@@ -75,6 +76,11 @@ export default async function EditVideoPage(props: {
 	) {
 		notFound();
 	}
+
+	const [registeredSource] = await db()
+		.select({ sha256: sourceObject.sha256 })
+		.from(sourceObject)
+		.where(eq(sourceObject.videoId, videoId));
 
 	if (!userIsPro(user)) {
 		return <EditUpgradeGate />;
@@ -211,6 +217,7 @@ export default async function EditVideoPage(props: {
 			initialEditSpec={initialEditSpec}
 			playbackSrc={playback.playbackSrc}
 			usesOriginalSource={playback.usesOriginalSource}
+			sourceSha256={registeredSource?.sha256 ?? null}
 			video={{
 				id: video.id,
 				name: video.name,

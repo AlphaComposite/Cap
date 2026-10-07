@@ -8,13 +8,13 @@ import {
 	videoPublication,
 	videos,
 } from "@cap/database/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { selectEditorBaselineSpec } from "@/lib/editor-baseline";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import type { OriginClient } from "@/lib/revision-publication-origin";
 import { prepareSourceOnEditorOpen } from "@/lib/revision-publication-origin";
 import {
-	captionClaim,
-	captionsHaveCues,
+	enqueuePeaksOnly,
 	isUntouchedEditorSpec,
 	type PrepareSnapshot,
 	SOURCE_PREPARE_JOB,
@@ -23,6 +23,11 @@ import {
 	sweepSourcePrepare,
 	untouchedEditorSpec,
 } from "@/lib/source-prepare";
+import {
+	parseRenderedCanonicalSpec,
+	parseVideoEditSpec,
+} from "@/lib/video-edits";
+import { authoritativePeaksDuration } from "@/lib/waveform-peaks";
 
 type App = ReturnType<typeof db>;
 
@@ -52,6 +57,27 @@ export async function enqueueSourceCaptionsAfterTranscript(
 	);
 }
 
+async function readRegisteredPeaksSource(app: App, videoId: string) {
+	const [video] = asRows<{ ownerId: string }>(
+		await app
+			.select({ ownerId: videos.ownerId })
+			.from(videos)
+			.where(eq(videos.id, videoId as never)),
+	);
+	const [source] = asRows<{ liveKey: string; sha256: string }>(
+		await app
+			.select({ liveKey: sourceObject.liveKey, sha256: sourceObject.sha256 })
+			.from(sourceObject)
+			.where(eq(sourceObject.videoId, videoId as never)),
+	);
+	if (!video || !source) return null;
+	return {
+		ownerId: video.ownerId,
+		liveKey: source.liveKey,
+		sha256: source.sha256,
+	};
+}
+
 export async function drainSourcePrepare(
 	database: unknown,
 	origin: unknown,
@@ -64,6 +90,7 @@ export async function drainSourcePrepare(
 		return await sweepSourcePrepare(app as never, {
 			load: (payload) =>
 				loadPrepareSnapshot(app, payload, origin as OriginClient),
+			bindSource: (videoId) => readRegisteredPeaksSource(app, videoId),
 			effects: prepareEffects(app, origin),
 		});
 	} catch (error) {
@@ -167,10 +194,13 @@ async function loadPrepareSnapshot(
 				}),
 			),
 		);
+		const playlist = artifacts[0];
 		currentReadable =
+			playlist !== undefined &&
 			artifacts.every(
 				(artifact) => artifact.status === 200 && artifact.body.length > 0,
-			) && artifacts[0]!.body.toString("utf8").startsWith("#EXTM3U");
+			) &&
+			playlist.body.toString("utf8").startsWith("#EXTM3U");
 	}
 	const stages = await app
 		.select()
@@ -199,6 +229,22 @@ async function loadPrepareSnapshot(
 			indexed &&
 			warm,
 	);
+	let peaksPresent: boolean | undefined;
+	try {
+		const peaksKey = source?.sha256
+			? (await import("@/lib/waveform-peaks")).peaksObjectKey(
+					videoId,
+					source.sha256,
+				)
+			: null;
+		peaksPresent = peaksKey
+			? await (await import("@/lib/instant-finish-source-relocate"))
+					.runtimeObjectStore()
+					.exists(peaksKey)
+			: undefined;
+	} catch {
+		peaksPresent = undefined;
+	}
 	return {
 		videoId,
 		ownerId: video?.ownerId ?? payload.ownerId,
@@ -220,6 +266,7 @@ async function loadPrepareSnapshot(
 		sourceIndexed: indexed,
 		sourceWarm: Boolean(warm),
 		sourceSha256: source?.sha256,
+		peaksPresent,
 		bindMatches: stage ? boundToStage : indexed && Boolean(source?.sha256),
 		transcriptReady: video?.transcriptionStatus === "COMPLETE",
 		captionsClaimed: false,
@@ -230,6 +277,158 @@ async function loadPrepareSnapshot(
 			stage && ["COPIED", "POINTER", "DELETED"].includes(stage.state),
 		),
 	};
+}
+
+function parsedPeaksSpec(value: unknown) {
+	try {
+		return parseRenderedCanonicalSpec(value);
+	} catch {
+		try {
+			return parseVideoEditSpec(value);
+		} catch {
+			return null;
+		}
+	}
+}
+
+async function authoritativeSourceDuration(
+	app: App,
+	videoId: string,
+	ownerId: string,
+	videoDuration: number | null,
+) {
+	const flagged = isInstantFinishEnabledForOwner(ownerId);
+	const [legacy] = asRows<{ editSpec: unknown }>(
+		await app
+			.select({ editSpec: videoEdits.editSpec })
+			.from(videoEdits)
+			.where(eq(videoEdits.videoId, videoId as never)),
+	);
+	const published = flagged
+		? asRows<{ canonicalSpec: unknown }>(
+				await app
+					.select({ canonicalSpec: editIntent.canonicalSpec })
+					.from(editIntent)
+					.innerJoin(
+						videoPublication,
+						and(
+							eq(videoPublication.videoId, editIntent.videoId),
+							eq(videoPublication.currentGeneration, editIntent.generation),
+						),
+					)
+					.innerJoin(
+						editRevision,
+						and(
+							eq(editRevision.revisionId, videoPublication.currentRevisionId),
+							eq(editRevision.generation, editIntent.generation),
+						),
+					)
+					.where(eq(editIntent.videoId, videoId as never)),
+			)
+		: [];
+	try {
+		const baseline = selectEditorBaselineSpec({
+			instantFinish: flagged,
+			publishedIntentSpec: published[0]
+				? parsedPeaksSpec(published[0].canonicalSpec)
+				: null,
+			legacySpec: legacy?.editSpec ? parsedPeaksSpec(legacy.editSpec) : null,
+			sourceDuration: videoDuration ?? 0,
+		});
+		return authoritativePeaksDuration({
+			videoDuration,
+			sourceDuration: baseline.sourceDuration,
+		});
+	} catch {
+		return authoritativePeaksDuration({
+			videoDuration,
+			sourceDuration: null,
+		});
+	}
+}
+
+async function writeMissingPeaks(
+	app: App,
+	input: {
+		videoId: string;
+		ownerId?: string;
+		sourceKey: string;
+		sourceSha256: string;
+		required?: boolean;
+	},
+) {
+	const [owner] = asRows<{ ownerId: string; duration: number | null }>(
+		await app
+			.select({ ownerId: videos.ownerId, duration: videos.duration })
+			.from(videos)
+			.where(eq(videos.id, input.videoId as never)),
+	);
+	const [registered] = asRows<{ liveKey: string; sha256: string }>(
+		await app
+			.select({ liveKey: sourceObject.liveKey, sha256: sourceObject.sha256 })
+			.from(sourceObject)
+			.where(eq(sourceObject.videoId, input.videoId as never)),
+	);
+	if (
+		!owner ||
+		!registered ||
+		(input.ownerId !== undefined && owner.ownerId !== input.ownerId) ||
+		registered.liveKey !== input.sourceKey ||
+		registered.sha256 !== input.sourceSha256 ||
+		!registered.liveKey.startsWith("private/") ||
+		registered.liveKey.includes("raw-upload")
+	) {
+		throw new Error("peaks source binding changed");
+	}
+	const { peaksObjectKey } = await import("@/lib/waveform-peaks");
+	const key = peaksObjectKey(input.videoId, input.sourceSha256);
+	if (!key) throw new Error("peaks key refused");
+	const { runtimeObjectStore } = await import(
+		"@/lib/instant-finish-source-relocate"
+	);
+	if (await runtimeObjectStore().exists(key)) return;
+	const sourceDuration = await authoritativeSourceDuration(
+		app,
+		input.videoId,
+		owner.ownerId,
+		owner.duration,
+	);
+	const { requestSourcePeaks } = await import(
+		"@/lib/revision-publication-origin"
+	);
+	const response = await requestSourcePeaks({
+		...input,
+		sourceDuration: sourceDuration > 0 ? sourceDuration : undefined,
+	});
+	const errorCode =
+		response.body &&
+		typeof response.body === "object" &&
+		"error" in response.body &&
+		typeof response.body.error === "string"
+			? response.body.error
+			: undefined;
+	const { acceptOriginPeaksPayload, classifyPeaksProducerStatus } =
+		await import("@/lib/waveform-peaks-accept");
+	const accepted = acceptOriginPeaksPayload({
+		body: response.body,
+		expectedSha256: input.sourceSha256,
+		sourceDuration,
+		responseBytes: response.responseBytes,
+	});
+	if (
+		classifyPeaksProducerStatus({
+			status: response.status,
+			error: errorCode,
+			accepted: accepted.ok,
+		}) !== "write" ||
+		!accepted.ok
+	) {
+		throw new Error(
+			errorCode === "audio_rejected" ? "audio_rejected" : "peaks not stored",
+		);
+	}
+	const { putPeaksObject } = await import("@/lib/waveform-peaks-store");
+	await putPeaksObject(input.videoId, input.sourceSha256, accepted.bytes);
 }
 
 function prepareEffects(app: App, origin: unknown) {
@@ -291,14 +490,12 @@ function prepareEffects(app: App, origin: unknown) {
 					throw new Error("registered source identity changed before staging");
 				}
 				if (!registered)
-					await tx
-						.insert(sourceObject)
-						.values({
-							videoId: video.id,
-							liveKey: input.from,
-							sha256: sourceSha,
-							relocationState: "LIVE",
-						});
+					await tx.insert(sourceObject).values({
+						videoId: video.id,
+						liveKey: input.from,
+						sha256: sourceSha,
+						relocationState: "LIVE",
+					});
 				const stages = await tx
 					.select()
 					.from(sourceRelocation)
@@ -317,17 +514,15 @@ function prepareEffects(app: App, origin: unknown) {
 							.set({ state: "COPIED" })
 							.where(eq(sourceRelocation.id, stage.id));
 				} else {
-					await tx
-						.insert(sourceRelocation)
-						.values({
-							videoId: video.id,
-							revisionId: SOURCE_PREPARE_JOB,
-							oldKey: input.from,
-							newKey: input.to,
-							sha256: sourceSha,
-							state: "COPIED",
-							createdAt: new Date(),
-						});
+					await tx.insert(sourceRelocation).values({
+						videoId: video.id,
+						revisionId: SOURCE_PREPARE_JOB,
+						oldKey: input.from,
+						newKey: input.to,
+						sha256: sourceSha,
+						state: "COPIED",
+						createdAt: new Date(),
+					});
 				}
 			});
 			mark("journal-tx");
@@ -514,6 +709,18 @@ function prepareEffects(app: App, origin: unknown) {
 				input.videoId,
 				origin as OriginClient,
 			);
+		},
+		ensurePeaks: (input: Parameters<typeof writeMissingPeaks>[1]) =>
+			writeMissingPeaks(app, input),
+		readRegisteredSource: (videoId: string) =>
+			readRegisteredPeaksSource(app, videoId),
+		schedulePeaks: async (input: {
+			videoId: string;
+			ownerId: string;
+			sourceObjectKey: string;
+			sourceSha256: string;
+		}) => {
+			await enqueuePeaksOnly(app as never, input);
 		},
 	};
 }

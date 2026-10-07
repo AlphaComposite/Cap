@@ -64,7 +64,7 @@ type TranscriptSidebarProps = {
 };
 
 const SIDEBAR_CLASS_NAME =
-	"mx-3 mb-4 flex h-[min(70svh,42rem)] min-h-[36rem] flex-col overflow-hidden rounded-2xl border border-gray-4 bg-gray-1 shadow-[0_16px_44px_-32px_rgba(15,23,42,0.28)] sm:mx-5 xl:fixed xl:top-20 xl:right-5 xl:mx-0 xl:mb-0 xl:h-[calc(100vh-6rem)] xl:w-[clamp(520px,42vw,600px)] min-[1540px]:right-[calc((100vw-1500px)/2+20px)]";
+	"mx-3 mb-4 flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-gray-4 bg-gray-1 shadow-[0_16px_44px_-32px_rgba(15,23,42,0.28)] sm:mx-5 xl:fixed xl:top-20 xl:right-5 xl:bottom-[var(--editor-dock-height,16rem)] xl:mx-0 xl:mb-0 xl:h-auto xl:min-h-0 xl:w-[clamp(520px,42vw,600px)] min-[1540px]:right-[calc((100vw-1500px)/2+20px)]";
 
 const SKELETON_LINE_WIDTHS = [
 	["w-full", "w-4/5"],
@@ -846,7 +846,7 @@ export function TranscriptSidebar({
 			}}
 			className={SIDEBAR_CLASS_NAME}
 		>
-			<div className="border-b border-gray-3 px-4 pt-4 pb-3">
+			<div className="min-h-0 shrink basis-auto overflow-y-auto overscroll-contain border-b border-gray-3 px-4 pt-4 pb-3">
 				<div className="flex items-start justify-between gap-3">
 					<div className="min-w-0">
 						<h2 className="text-[13px] font-semibold text-gray-12">
@@ -942,7 +942,7 @@ export function TranscriptSidebar({
 				</div>
 			</div>
 
-			<div className="relative min-h-0 flex-1">
+			<div className="relative min-h-[8rem] grow shrink-0 basis-[8rem]">
 				<div
 					ref={transcriptScrollRef}
 					className="h-full overflow-y-auto overscroll-contain px-4 py-4"
@@ -1012,7 +1012,7 @@ export function TranscriptSidebar({
 				<div className="pointer-events-none absolute inset-x-0 bottom-0 h-3 bg-gradient-to-t from-gray-1 to-transparent" />
 			</div>
 
-			<div className="border-t border-gray-3 p-3">
+			<div className="shrink-0 basis-auto border-t border-gray-3 p-3">
 				{selection ? (
 					<div className="flex animate-fadeIn items-center gap-1.5">
 						{selectedDeletedCount === selectedWordCount ? (

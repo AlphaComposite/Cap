@@ -8,6 +8,7 @@ describe("origin object policy", () => {
 			liveKey,
 			"owner/video1/source/original.mp4",
 			"private/rollback/video1/other",
+			`private/peaks/video1/${"ab".repeat(32)}`,
 		]);
 		const encoded = JSON.stringify(policy);
 		expect(encoded).not.toContain("cap/*");
@@ -21,6 +22,7 @@ describe("origin object policy", () => {
 			"private/rollback/video1/other",
 		]);
 		expect(encoded).not.toContain("original.mp4");
+		expect(encoded).not.toContain("private/peaks");
 	});
 
 	it("refuses a wildcard key", () => {
