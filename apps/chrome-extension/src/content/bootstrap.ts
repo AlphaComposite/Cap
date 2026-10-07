@@ -38,6 +38,8 @@ const isCapWebOrigin = () => {
 	return (
 		hostname === "cap.so" ||
 		hostname.endsWith(".cap.so") ||
+		(!!import.meta.env.VITE_CAP_WEB_URL &&
+			hostname === new URL(import.meta.env.VITE_CAP_WEB_URL).hostname) ||
 		hostname === "localhost" ||
 		hostname === "127.0.0.1" ||
 		hostname === "::1"

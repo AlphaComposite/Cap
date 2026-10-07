@@ -27,7 +27,9 @@ export const MEDIA_ACCESS_KEY = "cap-extension-media-access";
 export const FAILED_RECORDINGS_KEY = "cap-extension-failed-recordings";
 const OVERLAY_TOKENS_KEY = "cap-extension-overlay-tokens";
 const LAST_WEBCAM_PREVIEW_FRAME_KEY = "cap-extension-last-webcam-preview-frame";
-const PRODUCTION_API_BASE_URL = "https://cap.so";
+// Self-hosted builds set VITE_CAP_WEB_URL (e.g. https://cap.example.com).
+const PRODUCTION_API_BASE_URL =
+	import.meta.env.VITE_CAP_WEB_URL || "https://cap.so";
 const DEFAULT_API_BASE_URL =
 	import.meta.env.MODE === "development"
 		? "http://localhost:3000"
