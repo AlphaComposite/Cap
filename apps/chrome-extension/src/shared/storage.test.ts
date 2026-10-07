@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type FailedRecording,
 	loadFailedRecordings,
 	loadOverlayTokens,
+	loadSettings,
 	loadSharedRecordingState,
 	loadSharedUiState,
 	registerOverlayToken,
+	saveSettings,
 	saveSharedRecordingState,
 	updateSharedUiState,
 	upsertFailedRecording,
@@ -71,6 +73,30 @@ beforeEach(() => {
 			session: createAsyncStorageArea(),
 		},
 	};
+});
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe("server settings", () => {
+	it("defaults to no server in production", async () => {
+		vi.stubEnv("MODE", "production");
+		vi.resetModules();
+		const storage = await import("./storage");
+		expect(storage.defaultSettings.apiBaseUrl).toBe("");
+		expect((await storage.loadSettings()).apiBaseUrl).toBe("");
+	});
+
+	it.each(["", "https://cap.so", "https://cap.example.com/"])(
+		"preserves saved server %s even in development",
+		async (apiBaseUrl) => {
+			vi.stubEnv("MODE", "development");
+			vi.resetModules();
+			const storage = await import("./storage");
+			await saveSettings({ ...storage.defaultSettings, apiBaseUrl });
+			expect((await loadSettings()).apiBaseUrl).toBe(apiBaseUrl);
+			expect((await storage.loadSettings()).apiBaseUrl).toBe(apiBaseUrl);
+		},
+	);
 });
 
 describe("storage read-modify-write serialization", () => {

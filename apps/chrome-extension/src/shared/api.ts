@@ -40,8 +40,22 @@ const EXTENSION_API_PREFIX = `/api${EXTENSION_HTTP_PREFIX}`;
 
 const extensionApiPath = (path: string) => `${EXTENSION_API_PREFIX}${path}`;
 
-const apiUrl = (settings: ExtensionSettings, path: string) =>
-	new URL(path, settings.apiBaseUrl).toString();
+export const apiUrl = (settings: ExtensionSettings, path: string) => {
+	if (!settings.apiBaseUrl.trim()) {
+		throw new Error("Cap server URL not set. Enter your Cap URL in Options.");
+	}
+	try {
+		const base = new URL(settings.apiBaseUrl);
+		if (base.protocol !== "http:" && base.protocol !== "https:") {
+			throw new Error();
+		}
+		return new URL(path, base).toString();
+	} catch {
+		throw new Error(
+			"Cap server URL must be an http or https URL. Check Options.",
+		);
+	}
+};
 
 const checkAuthStartRoute = async (
 	settings: ExtensionSettings,

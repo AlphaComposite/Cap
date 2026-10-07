@@ -48,17 +48,21 @@ Screen recording for async standups, code reviews, bug reports, product demos, c
 
 HOW IT WORKS
 
-1. Click the Cap icon and pick tab, screen, window, or camera.
+1. Enter your Cap URL in Options, sign in, then pick tab, screen, window, or camera.
 2. Choose your microphone and camera, then hit record.
 3. Stop recording. Your video is already uploaded to your Cap workspace and the share link is ready.
 
 CAP EVERYWHERE
 
-The extension is part of the Cap platform: native desktop apps for macOS and Windows, a web recorder, and a shared library at cap.so. Recordings stay connected to your Cap account wherever you capture them.
+The extension is part of the Cap platform: native desktop apps for macOS and Windows, a web recorder, and a shared library on your Cap server. Recordings stay connected to your Cap account wherever you capture them.
 
 Cap is free to get started. Upgrade to Cap Pro for unlimited recording length, Cap AI, custom domains, custom S3 storage, and team features.
 
 Open source on GitHub: https://github.com/CapSoftware/Cap
+
+## Self-hosting
+
+No server is configured by default. Enter your Cap URL in Options and set `CAP_CHROME_EXTENSION_ID` on your server to your installed extension's ID (shown at `chrome://extensions`).
 
 ## SEO Positioning
 

@@ -1,4 +1,8 @@
-import { RECORDING_STATE_KEY, SHARED_UI_STATE_KEY } from "./storage-keys";
+import {
+	RECORDING_STATE_KEY,
+	SETTINGS_KEY,
+	SHARED_UI_STATE_KEY,
+} from "./storage-keys";
 import type {
 	BootstrapData,
 	CapturePreferences,
@@ -14,9 +18,7 @@ import type {
 	WebcamPreviewFrame,
 } from "./types";
 
-export { RECORDING_STATE_KEY, SHARED_UI_STATE_KEY };
-
-export const SETTINGS_KEY = "cap-extension-settings";
+export { RECORDING_STATE_KEY, SETTINGS_KEY, SHARED_UI_STATE_KEY };
 export const AUTH_KEY = "cap-extension-auth";
 const PENDING_AUTH_KEY = "cap-extension-pending-auth";
 const BOOTSTRAP_CACHE_KEY = "cap-extension-bootstrap-cache";
@@ -27,13 +29,8 @@ export const MEDIA_ACCESS_KEY = "cap-extension-media-access";
 export const FAILED_RECORDINGS_KEY = "cap-extension-failed-recordings";
 const OVERLAY_TOKENS_KEY = "cap-extension-overlay-tokens";
 const LAST_WEBCAM_PREVIEW_FRAME_KEY = "cap-extension-last-webcam-preview-frame";
-// Self-hosted builds set VITE_CAP_WEB_URL (e.g. https://cap.example.com).
-const PRODUCTION_API_BASE_URL =
-	import.meta.env.VITE_CAP_WEB_URL || "https://cap.so";
 const DEFAULT_API_BASE_URL =
-	import.meta.env.MODE === "development"
-		? "http://localhost:3000"
-		: PRODUCTION_API_BASE_URL;
+	import.meta.env.MODE === "development" ? "http://localhost:3000" : "";
 
 export type MediaAccessState = {
 	camera: boolean;
@@ -154,15 +151,9 @@ export const loadSettings = async () => {
 	const result = await getLocal([SETTINGS_KEY]);
 	const saved = result[SETTINGS_KEY];
 	if (!isSettings(saved)) return defaultSettings;
-	const apiBaseUrl =
-		import.meta.env.MODE === "development" &&
-		saved.apiBaseUrl === PRODUCTION_API_BASE_URL
-			? DEFAULT_API_BASE_URL
-			: saved.apiBaseUrl;
 	return {
 		...defaultSettings,
 		...saved,
-		apiBaseUrl,
 		capture: normalizeCapturePreferences(saved.capture),
 		webcam: normalizeWebcamSettings(saved.webcam),
 		microphone: normalizeMicrophoneSettings(saved.microphone),

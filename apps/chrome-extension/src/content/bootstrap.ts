@@ -4,6 +4,7 @@ import {
 } from "../shared/messages";
 import {
 	RECORDING_STATE_KEY,
+	SETTINGS_KEY,
 	SHARED_UI_STATE_KEY,
 } from "../shared/storage-keys";
 
@@ -31,19 +32,27 @@ const INSTALLED_ATTRIBUTE = "data-cap-chrome-extension-installed";
 const READY_EVENT = "cap-chrome-extension-ready";
 const OPEN_EVENT = "cap-chrome-extension-open";
 
-const isCapWebOrigin = () => {
+const isCapWebOrigin = (apiBaseUrl: unknown) => {
 	const { hostname, protocol } = window.location;
 	if (protocol !== "http:" && protocol !== "https:") return false;
 
-	return (
-		hostname === "cap.so" ||
-		hostname.endsWith(".cap.so") ||
-		(!!import.meta.env.VITE_CAP_WEB_URL &&
-			hostname === new URL(import.meta.env.VITE_CAP_WEB_URL).hostname) ||
+	if (
 		hostname === "localhost" ||
 		hostname === "127.0.0.1" ||
-		hostname === "::1"
-	);
+		hostname === "::1" ||
+		hostname === "[::1]"
+	)
+		return true;
+	if (typeof apiBaseUrl !== "string" || !apiBaseUrl) return false;
+	try {
+		const configured = new URL(apiBaseUrl);
+		return (
+			(configured.protocol === "http:" || configured.protocol === "https:") &&
+			hostname === configured.hostname
+		);
+	} catch {
+		return false;
+	}
 };
 
 const readPhase = (value: unknown): string | null => {
@@ -146,7 +155,8 @@ const bootstrap = () => {
 	chrome.runtime.onMessage.addListener(handleRuntimeMessage);
 	chrome.storage.onChanged.addListener(handleStorageChange);
 
-	if (isCapWebOrigin()) {
+	const installPageBridge = (apiBaseUrl: unknown) => {
+		if (!isCapWebOrigin(apiBaseUrl)) return;
 		document.documentElement.setAttribute(INSTALLED_ATTRIBUTE, "true");
 		window.dispatchEvent(new CustomEvent(READY_EVENT));
 		window.addEventListener(OPEN_EVENT, () => {
@@ -156,6 +166,19 @@ const bootstrap = () => {
 					void chrome.runtime.lastError;
 				},
 			);
+		});
+	};
+
+	if (
+		window.location.protocol === "http:" ||
+		window.location.protocol === "https:"
+	) {
+		chrome.storage.local.get([SETTINGS_KEY], (items) => {
+			if (chrome.runtime.lastError || !items) return;
+			const settings = items[SETTINGS_KEY] as
+				| { apiBaseUrl?: unknown }
+				| undefined;
+			installPageBridge(settings?.apiBaseUrl);
 		});
 	}
 

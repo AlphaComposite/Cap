@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { apiUrl } from "../shared/api";
 import { toCameraDevices, toMicrophoneDevices } from "../shared/devices";
 import {
 	reconcileRememberedDevices,
@@ -19,6 +20,7 @@ import {
 	loadSettings,
 	MEDIA_ACCESS_KEY,
 	type MediaAccessState,
+	SETTINGS_KEY,
 	saveSettings,
 	updateMediaAccessState,
 } from "../shared/storage";
@@ -280,7 +282,7 @@ function App() {
 		])
 			.then(
 				([cachedSettings, cachedAuth, cachedBootstrap, cachedMediaAccess]) => {
-					if (disposed || !cachedAuth) return;
+					if (disposed) return;
 					applySettings(cachedSettings);
 					setAuth(cachedAuth);
 					setBootstrap(cachedBootstrap);
@@ -344,7 +346,14 @@ function App() {
 			changes: Record<string, chrome.storage.StorageChange>,
 			areaName: string,
 		) => {
-			if (areaName !== "local" || !changes[MEDIA_ACCESS_KEY]) return;
+			if (areaName !== "local") return;
+			// Options saving the server URL must flip an open unconfigured popup.
+			if (changes[SETTINGS_KEY]) {
+				void loadSettings()
+					.then(applySettings)
+					.catch(() => undefined);
+			}
+			if (!changes[MEDIA_ACCESS_KEY]) return;
 			void loadMediaAccessState()
 				.then(setMediaAccess)
 				.catch(() => undefined);
@@ -352,7 +361,7 @@ function App() {
 
 		chrome.storage.onChanged.addListener(handleStorageChange);
 		return () => chrome.storage.onChanged.removeListener(handleStorageChange);
-	}, []);
+	}, [applySettings]);
 
 	// Recordings whose upload failed (or that a crash stranded) wait in local
 	// storage; surface a small recovery link so they are discoverable from
@@ -542,19 +551,21 @@ function App() {
 		);
 	};
 
-	const handleUpgradeClick = () => {
-		chrome.tabs.create({
-			url: `${settings.apiBaseUrl}/pricing`,
-			active: true,
+	const handleUpgradeClick = () =>
+		run(async () => {
+			await chrome.tabs.create({
+				url: apiUrl(settings, "/pricing"),
+				active: true,
+			});
 		});
-	};
 
-	const openDashboard = () => {
-		chrome.tabs.create({
-			url: `${settings.apiBaseUrl}/dashboard`,
-			active: true,
+	const openDashboard = () =>
+		run(async () => {
+			await chrome.tabs.create({
+				url: apiUrl(settings, "/dashboard"),
+				active: true,
+			});
 		});
-	};
 
 	const closePanel = () => {
 		if (busy) return;
@@ -585,7 +596,8 @@ function App() {
 			: { ...status, durationMs: recordingTimerDisplayMs }
 		: null;
 
-	const signedOut = bootstrapped && !auth;
+	const configured = Boolean(settings.apiBaseUrl.trim());
+	const signedOut = bootstrapped && (!auth || !configured);
 
 	if (!embedAuthorized) return null;
 
@@ -597,7 +609,7 @@ function App() {
 					signedOut ? "bg-[--paper]" : "bg-gray-2",
 				)}
 			>
-				{auth && (
+				{auth && configured && (
 					<div className="absolute right-3 top-3 z-10 flex gap-2">
 						<DashboardButton onClick={openDashboard} />
 						<SettingsButton onClick={() => void openOptions()} />
@@ -606,7 +618,7 @@ function App() {
 				<RecorderHeader
 					isBusy={busy || recordingActive}
 					isPro={isPro}
-					showPlan={Boolean(auth)}
+					showPlan={Boolean(auth) && configured}
 					minimal={signedOut}
 					onClose={closePanel}
 					onUpgradeClick={handleUpgradeClick}
@@ -619,7 +631,7 @@ function App() {
 							aria-label="Loading"
 						/>
 					</div>
-				) : auth ? (
+				) : auth && configured ? (
 					<>
 						<div className="cap-fade-up cap-fade-up-1">
 							<RecordingModeSelector
@@ -722,6 +734,7 @@ function App() {
 					</>
 				) : (
 					<SignInView
+						configured={configured}
 						authPending={authPending}
 						busy={busy}
 						onSignIn={() => void signIn()}

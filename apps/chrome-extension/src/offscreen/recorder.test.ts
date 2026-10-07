@@ -1,6 +1,11 @@
 import { selectRecordingPipeline } from "@cap/recorder-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultSettings } from "../shared/storage";
+import {
+	defaultSettings,
+	loadAuth,
+	loadFailedRecordings,
+	loadSettings,
+} from "../shared/storage";
 import type { OffscreenRequest, OffscreenResponse } from "../shared/types";
 
 const mocks = vi.hoisted(() => ({
@@ -13,9 +18,11 @@ const mocks = vi.hoisted(() => ({
 	chunk: vi.fn(),
 	cancel: vi.fn().mockResolvedValue(undefined),
 	manifest: vi.fn().mockResolvedValue(undefined),
+	recover: vi.fn(),
 }));
 
-vi.mock("../shared/api", () => ({
+vi.mock("../shared/api", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../shared/api")>()),
 	createInstantRecording: mocks.create,
 	deleteInstantRecording: mocks.delete,
 	updateUploadProgress: vi.fn().mockResolvedValue(undefined),
@@ -23,6 +30,8 @@ vi.mock("../shared/api", () => ({
 vi.mock("../shared/storage", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../shared/storage")>()),
 	loadFailedRecordings: vi.fn().mockResolvedValue([]),
+	loadSettings: vi.fn(),
+	loadAuth: vi.fn(),
 	loadLiveRecordingManifests: vi.fn().mockResolvedValue([]),
 	saveLiveRecordingManifest: mocks.manifest,
 	removeLiveRecordingManifest: vi.fn().mockResolvedValue(undefined),
@@ -34,6 +43,7 @@ vi.mock("@cap/recorder-core", async (importOriginal) => ({
 	initiateMultipartUpload: mocks.initiate,
 	RecordingSpool: { create: mocks.spool },
 	listRecordingSpoolSessions: vi.fn().mockResolvedValue([]),
+	recoverRecordingSpoolSession: mocks.recover,
 	InstantRecordingUploader: class {
 		handleChunk = mocks.chunk;
 		cancel = mocks.cancel;
@@ -92,7 +102,7 @@ class FakeStream {
 }
 const request = (message: OffscreenRequest) =>
 	new Promise<OffscreenResponse>((resolve) => listener(message, {}, resolve));
-const start = () =>
+const start = (apiBaseUrl = "https://cap.example.com") =>
 	request({
 		target: "offscreen",
 		type: "start-recording",
@@ -100,6 +110,7 @@ const start = () =>
 		tabStreamId: "capture-id",
 		settings: {
 			...defaultSettings,
+			apiBaseUrl,
 			microphone: { enabled: false, deviceId: null },
 			countdown: { enabled: false, seconds: 0 },
 			sounds: { enabled: false },
@@ -153,6 +164,55 @@ afterEach(() => {
 });
 
 describe("extension recorder start", () => {
+	it("rejects recording without a server before capture or upload", async () => {
+		expect(await start("")).toMatchObject({
+			ok: false,
+			error: expect.stringMatching(/server URL not set/i),
+		});
+		expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+		expect(mocks.create).not.toHaveBeenCalled();
+		expect(mocks.initiate).not.toHaveBeenCalled();
+	});
+
+	it("rejects retry without a server even when a share URL was saved", async () => {
+		vi.mocked(loadSettings).mockResolvedValue({
+			...defaultSettings,
+			apiBaseUrl: "",
+		});
+		vi.mocked(loadAuth).mockResolvedValue({
+			authApiKey: "test-token",
+			userId: "user",
+		});
+		vi.mocked(loadFailedRecordings).mockResolvedValue([
+			{
+				sessionId: "session",
+				videoId: "video",
+				shareUrl: "https://cap.example.com/s/video",
+				mimeType: "video/mp4",
+				subpath: "raw-upload.mp4",
+				durationMs: 1000,
+				width: 1920,
+				height: 1080,
+				fps: 30,
+				totalBytes: 1,
+				createdAt: 1,
+				message: null,
+			},
+		]);
+		mocks.recover.mockResolvedValue({ blob: new Blob(["recording"]) });
+		expect(
+			await request({
+				target: "offscreen",
+				type: "retry-upload",
+				videoId: "video",
+			}),
+		).toMatchObject({
+			ok: false,
+			error: expect.stringMatching(/server URL not set/i),
+		});
+		expect(mocks.initiate).not.toHaveBeenCalled();
+	});
+
 	it("keeps the real Chrome MP4 selector", () => {
 		expect(selectRecordingPipeline(true)).toMatchObject({
 			mode: "streaming",
