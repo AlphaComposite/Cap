@@ -178,16 +178,19 @@ export function deriveEditReadiness(facts: {
 		{
 			id: "sourcePrepare",
 			label: "Preparing for editing",
+			// Editing is the gate; background caption work after that is not shown as "running".
 			state:
-				sourcePrepare === "unavailable"
-					? "unavailable"
-					: sourcePrepare === "failed"
-						? "failed"
-						: sourcePrepare === "done"
-							? "done"
-							: sourcePrepare === "running"
-								? "running"
-								: "waiting",
+				openable && sourcePrepare !== "failed"
+					? "done"
+					: sourcePrepare === "unavailable"
+						? "unavailable"
+						: sourcePrepare === "failed"
+							? "failed"
+							: sourcePrepare === "done"
+								? "done"
+								: sourcePrepare === "running"
+									? "running"
+									: "waiting",
 			reason:
 				sourcePrepare === "failed"
 					? facts.sourcePrepareError || "Preparing for editing failed"
@@ -252,7 +255,7 @@ export function processingProgress(
 				: active?.state === "unavailable"
 					? `${active.label}: Checking…`
 					: active
-						? `${transcriptionStatus === "COMPLETE" ? "Transcript ready. " : ""}${active.label}${active.state === "waiting" ? " waiting" : ""}.`
+						? `${transcriptionStatus === "COMPLETE" ? "Transcript ready. " : ""}${active.label}${active.state === "waiting" ? " waiting" : " in progress"}.`
 						: "Ready to edit",
 	};
 }

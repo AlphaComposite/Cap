@@ -88,6 +88,25 @@ describe("independent editing readiness", () => {
 		});
 		expect(result.poll).toBe(true);
 	});
+	it("shows preparing as done once the editor opens, even while caption work continues", () => {
+		const result = deriveEditReadiness({
+			...facts,
+			editorOpenable: true,
+			sourcePrepare: "running",
+		});
+		expect(result.editorOpenable).toBe(true);
+		expect(result.rows[4]).toMatchObject({
+			label: "Preparing for editing",
+			state: "done",
+		});
+		expect(
+			deriveEditReadiness({
+				...facts,
+				editorOpenable: true,
+				sourcePrepare: "failed",
+			}).rows[4].state,
+		).toBe("failed");
+	});
 	it("derives the five completed steps and collapses only after completion", () => {
 		const result = deriveEditReadiness({
 			...facts,
@@ -187,7 +206,7 @@ describe("upload failures", () => {
 		});
 		expect(result.rows[0]?.retry).toBeUndefined();
 	});
-	it("keeps a pending source job visible even when the editor can join it", () => {
+	it("treats background source work after the editor can open as done", () => {
 		const result = deriveEditReadiness({
 			...facts,
 			editorOpenable: true,
@@ -195,9 +214,9 @@ describe("upload failures", () => {
 			transcriptionStatus: "COMPLETE",
 			aiGenerationStatus: "COMPLETE",
 		});
-		expect(result.rows[4]?.state).toBe("running");
-		expect(result.allDone).toBe(false);
-		expect(result.poll).toBe(true);
+		expect(result.rows[4]?.state).toBe("done");
+		expect(result.allDone).toBe(true);
+		expect(result.poll).toBe(false);
 	});
 });
 
