@@ -1,6 +1,7 @@
 import {
 	appendLocalRecordingChunk,
 	type ChunkUploadState,
+	cameraVideoConstraints,
 	DEFAULT_API_REQUEST_TIMEOUT_MS,
 	DISPLAY_MEDIA_IDEAL,
 	deleteRecoveredRecordingSpool,
@@ -387,16 +388,19 @@ const getCameraMediaStream = async (
 	const constraints: MediaStreamConstraints[] = [];
 	if (webcam.deviceId && webcam.deviceId !== DEFAULT_CAMERA_DEVICE_ID) {
 		constraints.push({
-			video: { deviceId: { exact: webcam.deviceId } },
+			video: cameraVideoConstraints(webcam.deviceId),
 			audio,
 		});
 		constraints.push({
-			video: { deviceId: { ideal: webcam.deviceId } },
+			video: {
+				...cameraVideoConstraints(),
+				deviceId: { ideal: webcam.deviceId },
+			},
 			audio,
 		});
 	}
 	constraints.push({
-		video: true,
+		video: cameraVideoConstraints(),
 		audio,
 	});
 
@@ -431,6 +435,9 @@ const tabCaptureConstraints = (streamId: string, includeAudio: boolean) =>
 			mandatory: {
 				chromeMediaSource: "tab",
 				chromeMediaSourceId: streamId,
+				maxWidth: DEFAULT_WIDTH,
+				maxHeight: DEFAULT_HEIGHT,
+				maxFrameRate: DEFAULT_FPS,
 			},
 		},
 	}) as unknown as MediaStreamConstraints;
@@ -943,6 +950,9 @@ const startRecording = async (request: StartRecordingRequest) => {
 
 		const recorder = new MediaRecorder(recordingStream, {
 			mimeType: pipeline.mimeType,
+			...(pipeline.fileExtension === "mp4"
+				? { videoKeyFrameIntervalDuration: 1000 }
+				: {}),
 		});
 
 		await countdownPromise;

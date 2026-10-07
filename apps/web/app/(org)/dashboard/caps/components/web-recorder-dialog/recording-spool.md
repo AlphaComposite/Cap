@@ -10,7 +10,7 @@ This exists to keep three properties aligned:
 
 The current lifecycle is:
 
-1. `useWebRecorder` creates a `RecordingSpool` for the `streaming-webm` pipeline before `MediaRecorder.start`.
+1. `useWebRecorder` creates a `RecordingSpool` for the `streaming` pipeline (MP4 or WebM) before `MediaRecorder.start`.
 2. Each `dataavailable` chunk is sent to both the multipart uploader and the local spool.
 3. The streaming path disables the in-memory recorder backup once the durable spool is available.
 4. On upload or processing failure, the recorder rebuilds a local blob from the spool for the error download.

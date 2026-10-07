@@ -13,9 +13,15 @@ export const DISPLAY_MEDIA_IDEAL = {
 } as const;
 
 export const DISPLAY_MEDIA_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
-	frameRate: { ideal: DISPLAY_MEDIA_IDEAL.frameRate },
-	width: { ideal: DISPLAY_MEDIA_IDEAL.width },
-	height: { ideal: DISPLAY_MEDIA_IDEAL.height },
+	frameRate: {
+		ideal: DISPLAY_MEDIA_IDEAL.frameRate,
+		max: DISPLAY_MEDIA_IDEAL.frameRate,
+	},
+	width: { ideal: DISPLAY_MEDIA_IDEAL.width, max: DISPLAY_MEDIA_IDEAL.width },
+	height: {
+		ideal: DISPLAY_MEDIA_IDEAL.height,
+		max: DISPLAY_MEDIA_IDEAL.height,
+	},
 };
 
 export type ExtendedDisplayMediaStreamOptions = DisplayMediaStreamOptions & {
@@ -94,6 +100,11 @@ export const MP4_MIME_TYPES = {
 export const WEBM_MIME_TYPES = {
 	withAudio: ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus"],
 	videoOnly: ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"],
+} as const;
+
+export const STREAMING_MP4_MIME_TYPES = {
+	withAudio: ["video/mp4;codecs=avc1,opus"],
+	videoOnly: ["video/mp4;codecs=avc1"],
 } as const;
 
 export const DETECTION_RETRY_DELAYS = [120, 450, 1000];

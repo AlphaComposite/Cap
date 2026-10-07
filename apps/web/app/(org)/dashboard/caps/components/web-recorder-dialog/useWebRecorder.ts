@@ -21,6 +21,7 @@ import type {
 	VideoId,
 } from "@cap/recorder-core/recorder-types";
 import {
+	describeRecordingCodecs,
 	detectCapabilities,
 	openShareUrlInNewTab,
 	type RecorderCapabilities,
@@ -261,7 +262,7 @@ export const useWebRecorder = ({
 	const recoveredDownloadUrlsRef = useRef(new Map<string, string>());
 
 	const isStreamingPipelineActive = useCallback(
-		() => recordingPipelineRef.current?.mode === "streaming-webm",
+		() => recordingPipelineRef.current?.mode === "streaming",
 		[],
 	);
 
@@ -842,7 +843,7 @@ export const useWebRecorder = ({
 			recordedChunksRef.current = [];
 			totalRecordedBytesRef.current = 0;
 			await disposeRecordingSpool();
-			if (pipeline.mode === "streaming-webm") {
+			if (pipeline.mode === "streaming") {
 				const spool = await createRecordingSpool(pipeline.mimeType);
 				if (spool) {
 					setLocalRecordingStrategy({ mode: "off" });
@@ -858,7 +859,11 @@ export const useWebRecorder = ({
 			instantUploaderRef.current = null;
 			recordingPipelineRef.current = pipeline;
 
-			if (pipeline.mode === "streaming-webm") {
+			if (pipeline.mode === "streaming") {
+				const { videoCodec, audioCodec } = describeRecordingCodecs(
+					pipeline.mimeType,
+					hasAudio,
+				);
 				const width = dimensionsRef.current.width;
 				const height = dimensionsRef.current.height;
 				const resolution = width && height ? `${width}x${height}` : undefined;
@@ -869,8 +874,8 @@ export const useWebRecorder = ({
 						resolution,
 						width,
 						height,
-						videoCodec: "h264",
-						audioCodec: hasAudio ? "aac" : undefined,
+						videoCodec,
+						audioCodec,
 						supportsUploadProgress: true,
 					}),
 				) as InstantVideoCreation;
@@ -907,6 +912,9 @@ export const useWebRecorder = ({
 
 			const recorder = new MediaRecorder(mixedStream, {
 				mimeType: pipeline.mimeType,
+				...(pipeline.fileExtension === "mp4"
+					? { videoKeyFrameIntervalDuration: 1000 }
+					: {}),
 			});
 			recorder.ondataavailable = handleRecorderDataAvailable;
 			recorder.onstop = onRecorderStop;
@@ -924,7 +932,7 @@ export const useWebRecorder = ({
 			lastInstantChunkAtRef.current = null;
 			clearInstantChunkGuard();
 			stopInstantChunkInterval();
-			if (pipeline.mode === "streaming-webm") {
+			if (pipeline.mode === "streaming") {
 				let startedWithTimeslice = false;
 				try {
 					recorder.start(INSTANT_UPLOAD_REQUEST_INTERVAL_MS);
@@ -1073,6 +1081,10 @@ export const useWebRecorder = ({
 
 			let creationResult = videoCreationRef.current;
 			if (!creationResult) {
+				const { videoCodec, audioCodec } = describeRecordingCodecs(
+					pipeline.mimeType,
+					hasAudioTrack,
+				);
 				const result = unwrapExitOrThrow(
 					await videoInstantCreate.mutateAsync({
 						orgId: Organisation.OrganisationId.make(orgId),
@@ -1081,8 +1093,8 @@ export const useWebRecorder = ({
 						durationSeconds,
 						width,
 						height,
-						videoCodec: "h264",
-						audioCodec: hasAudioTrack ? "aac" : undefined,
+						videoCodec,
+						audioCodec,
 						supportsUploadProgress: true,
 					}),
 				) as InstantVideoCreation;
@@ -1106,7 +1118,7 @@ export const useWebRecorder = ({
 				thumbnailUrl: undefined,
 			});
 
-			if (pipeline.mode === "streaming-webm") {
+			if (pipeline.mode === "streaming") {
 				let uploader = instantUploader;
 				const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
 
@@ -1166,7 +1178,7 @@ export const useWebRecorder = ({
 						// The browser claimed it could encode MP4 but the conversion
 						// still failed (e.g. a stalled decoder). Rather than discarding
 						// the recording, upload the raw WebM and let the media server
-						// transcode it, mirroring the streaming-webm server path.
+						// transcode it, mirroring the streaming server path.
 						console.warn(
 							"In-browser conversion failed; falling back to server-side processing",
 							conversionError,
@@ -1316,7 +1328,7 @@ export const useWebRecorder = ({
 			setCompletedShareUrl(creationResult.shareUrl);
 			updatePhase("completed");
 			toast.success(
-				pipeline.mode === "streaming-webm"
+				pipeline.mode === "streaming"
 					? "Recording uploaded. Processing will continue shortly."
 					: "Recording uploaded.",
 			);

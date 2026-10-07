@@ -7,6 +7,49 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 describe("selectRecordingPipelineFromSupport", () => {
+	it.each([
+		[true, "video/mp4;codecs=avc1,opus"],
+		[false, "video/mp4;codecs=avc1"],
+	])("prefers streaming H.264 MP4 with audio=%s", (hasAudio, mimeType) => {
+		const supportedTypes = new Set([
+			"video/mp4;codecs=avc1,opus",
+			"video/mp4;codecs=avc1",
+			"video/webm;codecs=vp9,opus",
+			"video/webm;codecs=vp9",
+			'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+		]);
+		expect(
+			selectRecordingPipelineFromSupport(hasAudio, (candidate) =>
+				supportedTypes.has(candidate),
+			),
+		).toEqual({
+			mode: "streaming",
+			mimeType,
+			fileExtension: "mp4",
+			supportsProgressiveUpload: true,
+		});
+	});
+
+	it("keeps comment recordings on H.264/AAC even when streaming MP4 is supported", () => {
+		const supportedTypes = new Set([
+			"video/mp4;codecs=avc1,opus",
+			"video/mp4;codecs=avc1",
+			'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+		]);
+		expect(
+			selectRecordingPipelineFromSupport(
+				true,
+				(candidate) => supportedTypes.has(candidate),
+				{ preferStreamingUpload: false },
+			),
+		).toEqual({
+			mode: "buffered-raw",
+			mimeType: 'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+			fileExtension: "mp4",
+			supportsProgressiveUpload: false,
+		});
+	});
+
 	it("prefers streaming webm when webm and mp4 are both supported and streaming is preferred", () => {
 		const supportedTypes = new Set([
 			"video/webm;codecs=vp9,opus",
@@ -20,7 +63,7 @@ describe("selectRecordingPipelineFromSupport", () => {
 		);
 
 		expect(pipeline).toEqual({
-			mode: "streaming-webm",
+			mode: "streaming",
 			mimeType: "video/webm;codecs=vp9,opus",
 			fileExtension: "webm",
 			supportsProgressiveUpload: true,
@@ -89,7 +132,7 @@ describe("selectRecordingPipelineFromSupport", () => {
 		);
 
 		expect(pipeline).toEqual({
-			mode: "streaming-webm",
+			mode: "streaming",
 			mimeType: "video/webm;codecs=vp9,opus",
 			fileExtension: "webm",
 			supportsProgressiveUpload: true,
@@ -102,6 +145,14 @@ describe("selectRecordingPipelineFromSupport", () => {
 });
 
 describe("describeRecordingCodecs", () => {
+	it("reads H.264 and Opus from streaming MP4", () => {
+		expect(describeRecordingCodecs("video/mp4;codecs=avc1,opus", true)).toEqual(
+			{
+				videoCodec: "h264",
+				audioCodec: "opus",
+			},
+		);
+	});
 	it("reads vp9 and opus from a webm mime type with audio", () => {
 		expect(describeRecordingCodecs("video/webm;codecs=vp9,opus", true)).toEqual(
 			{ videoCodec: "vp9", audioCodec: "opus" },

@@ -4,6 +4,15 @@ import { captureDisplayStream } from "./display-capture";
 const stream = {} as MediaStream;
 
 describe("captureDisplayStream", () => {
+	it("caps display capture at 1080p and 30 fps", async () => {
+		const request = vi.fn().mockResolvedValue(stream);
+		await captureDisplayStream("fullscreen", true, request);
+		expect(request.mock.calls[0]?.[0].video).toMatchObject({
+			width: { ideal: 1920, max: 1920 },
+			height: { ideal: 1080, max: 1080 },
+			frameRate: { ideal: 30, max: 30 },
+		});
+	});
 	it("falls back when advanced options are rejected before a picker can open", async () => {
 		const request = vi
 			.fn()

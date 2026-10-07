@@ -22,9 +22,7 @@ export const cameraVideoConstraints = (
 	cameraId?: string | null,
 ): MediaTrackConstraints => ({
 	...(cameraId ? { deviceId: { exact: cameraId } } : {}),
-	frameRate: { ideal: 30 },
-	width: { ideal: 1920 },
-	height: { ideal: 1080 },
+	...DISPLAY_MEDIA_VIDEO_CONSTRAINTS,
 });
 
 export const micAudioConstraints = (
