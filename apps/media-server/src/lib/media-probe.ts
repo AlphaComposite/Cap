@@ -88,10 +88,15 @@ async function probeMedia(path: string): Promise<VideoMetadata> {
 			? packetStats.packetCount / packetStats.averagePacketRate
 			: 0;
 		// Chrome fMP4 metadata can describe only the first fragment; reuse the existing packet sample to detect it.
-		const duration =
+		// ponytail: catches Chrome's ~1 s first fragment; a first fragment longer than the 120-packet sample (~4 s) is missed — detect `moof` boxes if another recorder needs it.
+		const computed =
 			metadataDuration === null || metadataDuration + 0.5 < sampledDuration
 				? await input.computeDuration(undefined, { skipLiveWait: true })
-				: metadataDuration;
+				: null;
+		const duration =
+			computed !== null && Number.isFinite(computed) && computed > 0
+				? computed
+				: (metadataDuration ?? 0);
 		const videoBitrate =
 			(await videoTrack.getAverageBitrate()) ??
 			(await videoTrack.getBitrate()) ??
