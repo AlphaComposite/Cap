@@ -3,6 +3,7 @@
 interface ImportMeta {
 	readonly env: {
 		readonly MODE: string;
+		readonly VITE_CAP_WEB_URL?: string;
 	};
 }
 
