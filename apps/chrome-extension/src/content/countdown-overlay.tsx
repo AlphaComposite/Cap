@@ -61,7 +61,7 @@ export function CountdownOverlay() {
 			}
 			// A stop or teardown elsewhere (panel stop button, capture ended)
 			// clears the countdown without routing another stop request.
-			if (message.type === "overlay-hide") {
+			if (message.type === "overlay-hide" && !message.previewOnly) {
 				dismiss();
 				return false;
 			}

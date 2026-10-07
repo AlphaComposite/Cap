@@ -537,6 +537,8 @@ export type OverlayMessage =
 	  }
 	| {
 			type: "overlay-hide";
+			// Webcam-preview-only hide: must not cancel a running start countdown.
+			previewOnly?: boolean;
 	  }
 	| {
 			type: "overlay-panel-toggle";

@@ -609,9 +609,11 @@ const hidePreviewTabsExcept = async (activeTabId: number) => {
 			) {
 				return undefined;
 			}
-			return sendOverlay(tab.id, { type: "overlay-hide" }, false).catch(
-				() => undefined,
-			);
+			return sendOverlay(
+				tab.id,
+				{ type: "overlay-hide", previewOnly: true },
+				false,
+			).catch(() => undefined);
 		}),
 	);
 };
@@ -622,7 +624,7 @@ const showOverlayInActiveTab = async (
 	recorderOpen = false,
 ) => {
 	if (!(await shouldShowWebcamPreview(settings, recording, recorderOpen))) {
-		await broadcastOverlayHide();
+		await broadcastOverlayHide(true);
 		return false;
 	}
 
@@ -637,7 +639,7 @@ const showOverlayInTab = async (
 	recorderOpen = false,
 ) => {
 	if (!(await shouldShowWebcamPreview(settings, recording, recorderOpen))) {
-		await broadcastOverlayHide();
+		await broadcastOverlayHide(true);
 		return false;
 	}
 
@@ -820,7 +822,7 @@ const disconnectAllCameraPreviews = async () => {
 	return response.ok;
 };
 
-const broadcastOverlayHide = async () => {
+const broadcastOverlayHide = async (previewOnly = false) => {
 	await disconnectAllCameraPreviews().catch(() => undefined);
 	const tabs = await getTabs();
 	await Promise.all(
@@ -828,9 +830,11 @@ const broadcastOverlayHide = async () => {
 			if (!canInjectIntoTab(tab) || tab.id === undefined) {
 				return undefined;
 			}
-			return sendOverlay(tab.id, { type: "overlay-hide" }, false).catch(
-				() => undefined,
-			);
+			return sendOverlay(
+				tab.id,
+				{ type: "overlay-hide", previewOnly },
+				false,
+			).catch(() => undefined);
 		}),
 	);
 	activePreviewTabId = null;

@@ -60,7 +60,7 @@ export function ConfirmOverlay() {
 				setRequest({ requestId: message.requestId, variant: message.variant });
 				return false;
 			}
-			if (message.type === "overlay-hide") {
+			if (message.type === "overlay-hide" && !message.previewOnly) {
 				// A teardown while the prompt is open cancels the pending start so
 				// the worker is not left waiting on a decision that can't be made.
 				const current = requestRef.current;
