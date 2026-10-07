@@ -98,6 +98,8 @@ type ActiveRecording = {
 	recorder: MediaRecorder;
 	stopPromise: Promise<void>;
 	streams: MediaStream[];
+	// Only these tracks are muted by the mic button; tab/system audio keeps recording.
+	micStream: MediaStream | null;
 	recordingStream: MediaStream;
 	statusTimer: number | null;
 	spool: RecordingSpool;
@@ -982,6 +984,10 @@ const startRecording = async (request: StartRecordingRequest) => {
 						recorder,
 						stopPromise: Promise.resolve(),
 						streams,
+						// Camera mode has no separate mic stream; its audio is the camera stream's.
+						micStream:
+							microphoneStream ??
+							(request.mode === "camera" ? mainStream : null),
 						recordingStream,
 						statusTimer: null,
 						spool,
@@ -1763,15 +1769,8 @@ const handleRequest = async (
 
 	if (message.type === "toggle-microphone-mute") {
 		const recording = activeRecording;
-		if (recording) {
-			for (const stream of recording.streams) {
-				for (const track of stream.getAudioTracks()) {
-					track.enabled = !message.muted;
-				}
-			}
-			for (const track of recording.recordingStream.getAudioTracks()) {
-				track.enabled = !message.muted;
-			}
+		for (const track of recording?.micStream?.getAudioTracks() ?? []) {
+			track.enabled = !message.muted;
 		}
 		return { ok: true };
 	}

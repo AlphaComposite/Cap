@@ -722,6 +722,22 @@ const getRecorderPanelTabs = async (actionTab?: chrome.tabs.Tab) => {
 	});
 };
 
+// A leftover standalone recorder window can't capture "Current tab" (Chrome
+// grants activeTab only to the toolbar click), so drop it once the in-page panel opens.
+const closeStandaloneRecorderWindows = async () => {
+	const contexts = await chrome.runtime
+		.getContexts({
+			contextTypes: [chrome.runtime.ContextType.TAB],
+			documentUrls: [chrome.runtime.getURL(POPUP_URL)],
+		})
+		.catch(() => []);
+	await Promise.all(
+		contexts.map((c) =>
+			chrome.windows.remove(c.windowId).catch(() => undefined),
+		),
+	);
+};
+
 const openRecorderPanel = async (actionTab?: chrome.tabs.Tab) => {
 	// Clicking the action toggles the recorder UI. When it is already open,
 	// close it through the same path as the panel's own close button so the
@@ -741,6 +757,7 @@ const openRecorderPanel = async (actionTab?: chrome.tabs.Tab) => {
 			type: "overlay-panel-toggle",
 		});
 		if (delivered) {
+			await closeStandaloneRecorderWindows();
 			await focusTab(tab.id);
 			void showPreviewForRecorderOpen(tab, currentStatus).catch(
 				() => undefined,

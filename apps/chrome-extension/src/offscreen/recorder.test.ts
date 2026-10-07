@@ -164,6 +164,74 @@ afterEach(() => {
 });
 
 describe("extension recorder start", () => {
+	it("mic mute silences only the microphone, not tab audio", async () => {
+		const audio = () => ({
+			enabled: true,
+			stop: vi.fn(),
+			addEventListener: vi.fn(),
+		});
+		const tabAudio = audio();
+		const micAudio = audio();
+		const mixed = audio();
+		vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementation(
+			async (c?: MediaStreamConstraints) => {
+				const s = new FakeStream();
+				const a = c?.video ? tabAudio : micAudio;
+				s.getAudioTracks = () => [a as never];
+				return s as unknown as MediaStream;
+			},
+		);
+		vi.stubGlobal(
+			"AudioContext",
+			class {
+				destination = {};
+				createMediaStreamSource = () => ({ connect: vi.fn() });
+				createMediaStreamDestination = () => ({
+					stream: { getAudioTracks: () => [mixed] },
+				});
+				resume = vi.fn().mockResolvedValue(undefined);
+				close = vi.fn().mockResolvedValue(undefined);
+			},
+		);
+		class AudioStream extends FakeStream {
+			extra: unknown[] = [];
+			addTrack = (t: unknown) => this.extra.push(t);
+			getAudioTracks = () => this.extra as never[];
+		}
+		vi.stubGlobal("MediaStream", AudioStream);
+		const r = await request({
+			target: "offscreen",
+			type: "start-recording",
+			mode: "tab",
+			tabStreamId: "capture-id",
+			settings: {
+				...defaultSettings,
+				apiBaseUrl: "https://cap.example.com",
+				microphone: { enabled: true, deviceId: null },
+				countdown: { enabled: false, seconds: 0 },
+				sounds: { enabled: false },
+			},
+			auth: { authApiKey: "k", userId: "user" },
+			bootstrap: {
+				organization: { id: "org" },
+				plan: { isPro: true, maxRecordingSeconds: null },
+			} as unknown as import("../shared/types").BootstrapData,
+		});
+		expect(r).toMatchObject({ ok: true });
+		const mute = (muted: boolean) =>
+			request({
+				target: "offscreen",
+				type: "toggle-microphone-mute",
+				muted,
+			} as OffscreenRequest);
+		await mute(true);
+		expect(micAudio.enabled).toBe(false);
+		expect(tabAudio.enabled).toBe(true);
+		expect(mixed.enabled).toBe(true);
+		await mute(false);
+		expect(micAudio.enabled).toBe(true);
+	});
+
 	it("rejects recording without a server before capture or upload", async () => {
 		expect(await start("")).toMatchObject({
 			ok: false,
