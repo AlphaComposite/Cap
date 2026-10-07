@@ -61,6 +61,15 @@ const PREVIEW_TOKEN = createSecureToken();
 const PREVIEW_URL = chrome.runtime.getURL("camera-preview.html");
 const PREVIEW_SRC = `${PREVIEW_URL}#${encodeURIComponent(PREVIEW_TOKEN)}`;
 const PREVIEW_ERROR_DELAY_MS = 1200;
+// In-page recorder panel (popup.html in an iframe). Upstream 30bf9713c8 dropped it,
+// leaving only the ready bar; restored so mode/camera/mic can be chosen in-page.
+const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
+const PANEL_TOKEN = createSecureToken();
+const PANEL_URL = chrome.runtime.getURL("popup.html");
+const PANEL_SRC = `${PANEL_URL}#${encodeURIComponent(PANEL_TOKEN)}`;
+const PANEL_WIDTH = 300;
+const PANEL_DEFAULT_HEIGHT = 460;
+const PANEL_MARGIN = 16;
 const CAMERA_MIN_SIZE = 120;
 const CAMERA_MAX_SIZE = 420;
 const CAMERA_RESIZE_CORNERS = ["nw", "ne", "sw", "se"] as const;
@@ -78,7 +87,7 @@ let overlayTokensRegistration: Promise<boolean> | null = null;
 
 const ensureOverlayTokensRegistered = () => {
 	overlayTokensRegistration ??= Promise.all(
-		[PREVIEW_TOKEN].map((token) =>
+		[PREVIEW_TOKEN, PANEL_TOKEN].map((token) =>
 			sendServiceWorkerMessage({
 				target: "service-worker",
 				type: "register-overlay-token",
@@ -313,6 +322,124 @@ const connectCameraPreview = async (
 		stream: await remoteStreamPromise,
 	};
 };
+
+type PanelFrameMessage =
+	| {
+			source: "cap-extension-panel";
+			token: string;
+			type: "size";
+			height: number;
+	  }
+	| { source: "cap-extension-panel"; token: string; type: "dismiss" };
+
+const isPanelFrameMessage = (value: unknown): value is PanelFrameMessage => {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Partial<PanelFrameMessage>;
+	if (
+		candidate.source !== "cap-extension-panel" ||
+		candidate.token !== PANEL_TOKEN
+	) {
+		return false;
+	}
+	if (candidate.type === "dismiss") return true;
+	return (
+		candidate.type === "size" &&
+		typeof candidate.height === "number" &&
+		Number.isFinite(candidate.height)
+	);
+};
+
+// Open state is owned by OverlayApp (shared session flag); this only renders the iframe.
+function RecorderPanelOverlay({ open }: { open: boolean }) {
+	const [pageVisible, setPageVisible] = useState(
+		() => document.visibilityState === "visible",
+	);
+	const [contentHeight, setContentHeight] = useState(PANEL_DEFAULT_HEIGHT);
+	const [viewportHeight, setViewportHeight] = useState(
+		() => window.innerHeight,
+	);
+	const [tokenReady, setTokenReady] = useState(false);
+
+	useEffect(() => {
+		if (!open || tokenReady) return;
+		let disposed = false;
+		void ensureOverlayTokensRegistered().then((registered) => {
+			if (!disposed && registered) setTokenReady(true);
+		});
+		return () => {
+			disposed = true;
+		};
+	}, [open, tokenReady]);
+
+	useEffect(() => {
+		const handleVisibility = () =>
+			setPageVisible(document.visibilityState === "visible");
+		document.addEventListener("visibilitychange", handleVisibility);
+		return () =>
+			document.removeEventListener("visibilitychange", handleVisibility);
+	}, []);
+
+	const closePanel = useCallback(() => {
+		void sendServiceWorkerMessage({
+			target: "service-worker",
+			type: "close-extension-ui",
+		}).catch(() => undefined);
+		void updateSharedUiState((current) => ({
+			...current,
+			panelOpen: false,
+			updatedAt: Date.now(),
+		})).catch(() => undefined);
+	}, []);
+
+	useEffect(() => {
+		const handleFrameMessage = (event: MessageEvent<unknown>) => {
+			if (event.origin !== EXTENSION_ORIGIN) return;
+			if (!isPanelFrameMessage(event.data)) return;
+			if (event.data.type === "size") {
+				setContentHeight(Math.max(320, Math.ceil(event.data.height)));
+				return;
+			}
+			closePanel();
+		};
+		window.addEventListener("message", handleFrameMessage);
+		return () => window.removeEventListener("message", handleFrameMessage);
+	}, [closePanel]);
+
+	useEffect(() => {
+		if (!open) return;
+		const handleResize = () => setViewportHeight(window.innerHeight);
+		handleResize();
+		window.addEventListener("resize", handleResize);
+		return () => window.removeEventListener("resize", handleResize);
+	}, [open]);
+
+	if (!open || !pageVisible || !tokenReady) return null;
+	const height = Math.min(contentHeight, viewportHeight - PANEL_MARGIN * 2);
+
+	return (
+		<>
+			<button
+				type="button"
+				className="cap-extension-panel-backdrop"
+				aria-label="Dismiss Cap recorder"
+				onClick={closePanel}
+			/>
+			<div
+				className="cap-extension-panel"
+				role="dialog"
+				aria-label="Cap recorder"
+				style={{ width: `${PANEL_WIDTH}px`, height: `${height}px` }}
+			>
+				<iframe
+					src={PANEL_SRC}
+					title="Cap recorder"
+					allow="camera; microphone; autoplay"
+					className="cap-extension-panel-iframe"
+				/>
+			</div>
+		</>
+	);
+}
 
 function OverlayApp() {
 	const [extensionSettings, setExtensionSettings] =
@@ -1628,6 +1755,7 @@ function OverlayApp() {
 				disablePictureInPicture={false}
 				controlsList="nodownload nofullscreen noremoteplayback"
 			/>
+			<RecorderPanelOverlay open={recorderPanelOpen} />
 			<RecordingBarOverlay
 				recorderPanelOpen={recorderPanelOpen}
 				webcam={webcam}
