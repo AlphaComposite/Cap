@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { videos, videoUploads } from "@cap/database/schema";
 import { eq } from "drizzle-orm";
 import mysql from "mysql2/promise";
@@ -36,12 +37,13 @@ const fixtureIds = [
 ];
 const barrierLock = "cap59lock_barrier";
 const triggerName = "cap59lock_upload_barrier";
-const evidencePath =
-	"/path/to/scratch/cap-fzp-8-wire/transcript59/correct1/red-callback-deadlock.log";
-const workflowEvidencePath =
-	"/path/to/scratch/cap-fzp-8-wire/transcript59/correct1/red-workflow-deadlock.log";
-const replacedPath =
-	"/path/to/scratch/cap-fzp-8-wire/transcript59/correct1/replaced-after-wait.log";
+const fixtureDir = process.env.CAP_TEST_FIXTURE_DIR;
+const evidencePath = path.join(fixtureDir ?? ".", "red-callback-deadlock.log");
+const workflowEvidencePath = path.join(
+	fixtureDir ?? ".",
+	"red-workflow-deadlock.log",
+);
+const replacedPath = path.join(fixtureDir ?? ".", "replaced-after-wait.log");
 
 const metadata = {
 	duration: 12.5,
@@ -57,10 +59,8 @@ const metadata = {
 };
 
 function regressionUrl() {
-	const text = readFileSync(
-		"/path/to/scratch/cap-fzp-8-wire/correct-upload-baseline57/parent-test.env",
-		"utf8",
-	);
+	if (!fixtureDir) return "";
+	const text = readFileSync(path.join(fixtureDir, "parent-test.env"), "utf8");
 	const values: Record<string, string> = {};
 	for (const line of text.split(/\r?\n/)) {
 		if (!line.startsWith("export ") || !line.includes("=")) continue;
@@ -77,12 +77,12 @@ function regressionUrl() {
 	}
 	const base = values.CAP_SOURCE_PREPARE_MYSQL ?? "";
 	const query = base.indexOf("?");
-	const path = query === -1 ? base : base.slice(0, query);
+	const dbPath = query === -1 ? base : base.slice(0, query);
 	const suffix = "/cap57_test_basic";
-	if (!path.endsWith(suffix)) {
+	if (!dbPath.endsWith(suffix)) {
 		throw new Error("refusing source database other than cap57_test_basic");
 	}
-	const url = `${path.slice(0, -suffix.length)}/cap57_test_regression${query === -1 ? "" : base.slice(query)}`;
+	const url = `${dbPath.slice(0, -suffix.length)}/cap57_test_regression${query === -1 ? "" : base.slice(query)}`;
 	const match = url.match(
 		/^mysql:\/\/(?:[^@/]+)@([^:/]+)(?::(\d+))?\/([^?/\s]+)/,
 	);
@@ -99,9 +99,11 @@ function regressionUrl() {
 }
 
 const databaseUrl = regressionUrl();
-process.env.CAP_WIRE_A_DATABASE_URL = databaseUrl;
-process.env.DATABASE_URL = databaseUrl;
-delete process.env.CAP_INSTANT_FINISH_OWNERS;
+if (databaseUrl) {
+	process.env.CAP_WIRE_A_DATABASE_URL = databaseUrl;
+	process.env.DATABASE_URL = databaseUrl;
+	delete process.env.CAP_INSTANT_FINISH_OWNERS;
+}
 
 function errnoOf(error: unknown) {
 	if (!error || typeof error !== "object" || !("errno" in error)) return null;
@@ -210,7 +212,7 @@ function postComplete(videoId: string) {
 	);
 }
 
-describe("webMP4 completion lock order", () => {
+describe.skipIf(!fixtureDir)("webMP4 completion lock order", () => {
 	let admin: mysql.Connection;
 
 	beforeAll(async () => {

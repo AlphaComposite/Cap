@@ -1,0 +1,23 @@
+[Unit]
+Description=CAP privileged revision/source preparation worker
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+ExecStart=/usr/bin/python3 "@CHECKOUT@/deploy/revision-worker/launch.py" "@CONFIG@"
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=4G
+CPUQuota=200%
+UMask=0077
+WorkingDirectory=@CHECKOUT@/apps/web
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

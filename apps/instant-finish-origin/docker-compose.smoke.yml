@@ -86,7 +86,7 @@ services:
       - "127.0.0.1:3118:8080"
     volumes:
       - ./smoke/nginx.conf:/etc/nginx/nginx.conf:ro
-      - /path/to/scratch/cap-fzp-8-wire/build-b-origin/player:/player:ro
+      - ${CAP_TEST_FIXTURE_DIR:?Set CAP_TEST_FIXTURE_DIR}/player:/player:ro
 
 volumes:
   mysql:

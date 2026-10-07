@@ -2,7 +2,7 @@ name: cap
 services:
   cap-web:
     container_name: cap-web
-    image: cap-web:sol61-b6c-ibhNPJnhyXAuld47SylGi
+    image: ${CAP_WEB_IMAGE:-cap-web:latest}
     pull_policy: never
     restart: unless-stopped
     depends_on:
@@ -55,22 +55,20 @@ services:
       start_period: 30s
     networks:
     - cap-network
-    env_file:
-    - /path/to/shared/env/cap-web-revision.env
-    mem_limit: 4g
-    cpus: '2'
+    mem_limit: ${CAP_WEB_MEMORY:-4g}
+    cpus: ${CAP_WEB_CPUS:-2}
     volumes:
-    - /path/to/shared/cap/transcript59-workflow-data:/app/apps/web/.workflow-data
+    - ./data/workflow:/app/apps/web/.workflow-data
   media-server:
     container_name: cap-media-server
-    image: cap-media-server:b6c3-fmp4dur-f4bfe17ce0
+    image: ${MEDIA_SERVER_IMAGE:-cap-media-server:latest}
     build:
       context: ./apps/media-server
       dockerfile: Dockerfile.standalone
     restart: unless-stopped
     environment:
       PORT: 3456
-      MEDIA_TRANSCODE_THREADS: 6
+      MEDIA_TRANSCODE_THREADS: ${MEDIA_TRANSCODE_THREADS:-6}
       MEDIA_SERVER_WEBHOOK_SECRET: ${MEDIA_SERVER_WEBHOOK_SECRET:-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210}
     healthcheck:
       test:
@@ -98,17 +96,17 @@ services:
       ORIGIN_PORT: '3020'
       ORIGIN_HOST_PUBLISH: 127.0.0.1
       ORIGIN_CACHE: /var/cache/origin
-      ORIGIN_WARM_TTL_S: '600'
-      ORIGIN_MAX_KEEP_RANGES: '1024'
+      ORIGIN_WARM_TTL_S: ${ORIGIN_WARM_TTL_S:-600}
+      ORIGIN_MAX_KEEP_RANGES: ${ORIGIN_MAX_KEEP_RANGES:-1024}
       S3_INTERNAL_ENDPOINT: http://minio:9000
       S3_BUCKET: cap
       S3_REGION: us-east-1
     ports:
-    - 127.0.0.1:3020:3020
+    - 127.0.0.1:${ORIGIN_PORT:-3020}:3020
     volumes:
     - instant-finish-origin-cache:/var/cache/origin
     cpus: ${ORIGIN_CPUS:-2}
-    mem_limit: 4g
+    mem_limit: ${ORIGIN_MEMORY:-4g}
     healthcheck:
       test:
       - CMD
@@ -121,11 +119,9 @@ services:
       start_period: 15s
     networks:
     - cap-network
-    image: cap-origin:release-d0708cd9c0-gop2s
+    image: ${ORIGIN_IMAGE:-cap-origin:latest}
     pull_policy: never
     container_name: cap-instant-finish-origin
-    env_file:
-    - /path/to/shared/env/cap-origin-runtime.env
   mysql:
     container_name: cap-mysql
     image: mysql:8.0

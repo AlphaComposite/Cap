@@ -1,0 +1,88 @@
+# Public browser origin; build the web/extension bundles for this URL too.
+web_url: https://cap.example.com
+# Public object-store endpoint routed to MinIO.
+s3_public_url: https://s3.example.com
+# Chrome extension ID (32 letters a-p); empty disables extension auth.
+chrome_extension_id: ""
+# Comma-separated email domains allowed to sign up; empty allows all.
+allowed_signup_domains: example.com
+# Sender domain configured with your email provider; empty disables email.
+resend_from_domain: send.example.com
+# Existing AI provider selection; credentials remain in the Compose env file.
+ai_provider: openai
+# Loopback host port for the web application.
+web_port: 3010
+# Loopback host port for the object-store API.
+s3_port: 9010
+# Loopback host port for the object-store console.
+s3_console_port: 9011
+# Loopback host port for the revision media origin.
+origin_port: 3020
+# Web service memory limit.
+web_memory: 4g
+# Web service CPU limit.
+web_cpus: 2
+# Revision origin memory limit.
+origin_memory: 4g
+# Revision origin CPU limit.
+origin_cpus: 2
+# Revision source warm-cache TTL in seconds.
+origin_warm_ttl_s: 600
+# Maximum edit keep ranges accepted by the revision origin.
+origin_max_keep_ranges: 1024
+# Media-server transcode thread count.
+transcode_threads: 6
+# Image references; build/pull your own URL-specific images before deployment.
+images:
+  # Web image, including its tag or digest.
+  cap-web: cap-web:latest
+  # Upload-processing media server image.
+  media-server: cap-media-server:latest
+  # Revision playback/preparation origin image.
+  instant-finish-origin: cap-origin:latest
+  # Database image.
+  mysql: mysql:8.0
+  # Object-store image.
+  minio: minio/minio:RELEASE.2025-09-07T16-13-09Z
+  # Object-store setup client image.
+  minio-setup: minio/mc:RELEASE.2025-08-13T08-35-41Z
+# Host paths; relative paths resolve from this YAML file, never from the shell.
+paths:
+  # Compose file; renderer outputs are written beside it.
+  compose_file: ../docker-compose.yml
+  # Compose interpolation credentials (database, storage, provider/auth keys).
+  compose_env_file: ./compose.env
+  # Web runtime credentials/settings, including revision flags and service keys.
+  web_env_file: ./web.env
+  # Origin runtime credentials, scoped storage identity and read-only DB URL.
+  origin_env_file: ./origin.env
+  # Persistent workflow data mounted into the web container.
+  workflow_data: ../data/workflow
+# Privileged external worker settings; not mounted into the public web runtime.
+worker:
+  # Prepared checkout containing apps/web and installed dependencies.
+  checkout: ..
+  # Plain KEY=VALUE file for privileged origin/storage credentials; no expansion.
+  env_file: ./worker.env
+  # Private existing parent directory for worker scratch data.
+  temp_dir: ../data/worker-tmp
+  # Bun executable (absolute path or relative to this YAML file).
+  bun: /usr/local/bin/bun
+  # PATH passed to the worker and its child processes.
+  path: /usr/local/bin:/usr/bin:/bin
+  # Published loopback object-store endpoint for the host worker.
+  s3_internal_url: http://127.0.0.1:9010
+  # Published loopback revision origin endpoint for the host worker.
+  origin_internal_url: http://127.0.0.1:3020
+  # Existing web container to read runtime settings from.
+  web_container: cap-web
+  # Existing database container to resolve its Docker-network address.
+  mysql_container: cap-mysql
+  # Existing storage container to read storage-admin settings from privately.
+  minio_container: cap-minio
+  # Docker network containing the database container.
+  network: cap_cap-network
+  # Restricted origin read policy name managed by reconciliation.
+  s3_policy: instant-finish-origin-read
+  # Readback polling interval in milliseconds (runtime caps it at 2000).
+  poll_ms: 1500

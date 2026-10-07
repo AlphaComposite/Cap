@@ -132,11 +132,12 @@ import type {
 import { getInstantFinishPublicationDto } from "@/lib/revision-publication-read";
 import { generateAiWorkflow } from "@/workflows/generate-ai";
 
+const fixtureDir = process.env.CAP_TEST_FIXTURE_DIR;
+const suite = describe.skipIf(!fixtureDir);
+
 function regressionUrl() {
-	const text = readFileSync(
-		"/path/to/scratch/cap-fzp-8-wire/correct-upload-baseline57/parent-test.env",
-		"utf8",
-	);
+	if (!fixtureDir) return "";
+	const text = readFileSync(path.join(fixtureDir, "parent-test.env"), "utf8");
 	const values: Record<string, string> = {};
 	for (const line of text.split(/\r?\n/)) {
 		if (!line.startsWith("export ") || !line.includes("=")) continue;
@@ -175,8 +176,10 @@ function regressionUrl() {
 }
 
 const databaseUrl = regressionUrl();
-process.env.DATABASE_URL = databaseUrl;
-process.env.CAP_WIRE_A_DATABASE_URL = databaseUrl;
+if (databaseUrl) {
+	process.env.DATABASE_URL = databaseUrl;
+	process.env.CAP_WIRE_A_DATABASE_URL = databaseUrl;
+}
 
 const token = "wire-a-test-token";
 const ownerId = "clkf1owner00001";
@@ -431,7 +434,7 @@ function connect(pool: mysql.Pool) {
 	return drizzle(pool);
 }
 
-describe("prepared chapter snapshot cannot overwrite a later AI save", () => {
+suite("prepared chapter snapshot cannot overwrite a later AI save", () => {
 	const origin = new FakeOrigin();
 	const fullSpec = spec([{ start: 0, end: 90 }]);
 	const cutSpec = spec([

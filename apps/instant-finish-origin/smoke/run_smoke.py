@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -70,6 +71,10 @@ def _req(url: str, method: str = "GET", headers=None, body: bytes | None = None)
 
 
 def main() -> int:
+    fixture_dir = os.environ.get("CAP_TEST_FIXTURE_DIR")
+    if not fixture_dir:
+        print("SKIP: CAP_TEST_FIXTURE_DIR is unset")
+        return 0
     env = _env()
     health = _wait(f"{ORIGIN}/health")
     print(f"origin_health={health}")
@@ -91,7 +96,7 @@ def main() -> int:
         tail = mysql.stderr.decode("utf-8", "replace")[-300:].replace(env["MYSQL_ROOT_PASSWORD"], "[redacted]")
         print(tail)
         return mysql.returncode
-    work = Path("/path/to/scratch/cap-fzp-8-wire/build-b-origin/smoke")
+    work = Path(fixture_dir) / "smoke"
     work.mkdir(parents=True, exist_ok=True)
     source = work / "original.mp4"
     made = subprocess.run(

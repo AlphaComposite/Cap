@@ -36,7 +36,7 @@ describe("revision route CSRF guard", () => {
 		const denied = revisionRouteDenial(
 			request({
 				"content-type": "application/json",
-				origin: "https://cap.example.com",
+				origin: "http://cap.example.com",
 				"x-forwarded-host": "cap.example.com",
 			}),
 		);

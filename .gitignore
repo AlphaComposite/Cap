@@ -16,6 +16,11 @@ dist-ssr
 .env.production
 .env.development
 .env.test
+.env.deploy
+docker-compose.override.yml
+deploy/config.yaml
+deploy/*.env
+__pycache__/
 target
 target-agent
 target-phase8

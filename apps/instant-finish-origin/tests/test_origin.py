@@ -33,8 +33,9 @@ SERVICE = b"service-token-service-token-svc01"
 VIDEO = "vidorigin01"
 REV = "revorigin01"
 SOURCE = "sourceid01"
-ORACLE_RANGES = Path("/path/to/scratch/cap-fzp-8-gate/scout-4/keep-ranges.json")
-ORACLE_TABLE = Path("/path/to/scratch/cap-fzp-8-gate/build-7/media/data/frame-table.json")
+FIXTURE_DIR = Path(os.environ["CAP_TEST_FIXTURE_DIR"]) if os.environ.get("CAP_TEST_FIXTURE_DIR") else None
+ORACLE_RANGES = FIXTURE_DIR / "keep-ranges.json" if FIXTURE_DIR else None
+ORACLE_TABLE = FIXTURE_DIR / "frame-table.json" if FIXTURE_DIR else None
 
 
 def claims(now: int = 1_000, **overrides) -> dict:
@@ -78,7 +79,7 @@ class PlanTests(unittest.TestCase):
             self.assertNotIn("EXT-X-DISCONTINUITY", playlist)
 
     def test_243_range_oracle(self) -> None:
-        if not ORACLE_RANGES.is_file() or not ORACLE_TABLE.is_file():
+        if ORACLE_RANGES is None or ORACLE_TABLE is None or not ORACLE_RANGES.is_file() or not ORACLE_TABLE.is_file():
             self.skipTest("frozen oracle fixtures are not on this host")
         ranges = json.loads(ORACLE_RANGES.read_text())
         table = json.loads(ORACLE_TABLE.read_text())
@@ -93,7 +94,9 @@ class PlanTests(unittest.TestCase):
             self.assertIsNotNone(lib_origin.range_index_for(frame.src_pts, ranges, 15360))
 
     def test_scout_hold_snaps_exclude_the_next_frame(self) -> None:
-        table_path = Path("/path/to/scratch/cap-fzp-8-wire/capperf-origin-media/z9/mezz.frames.json")
+        if FIXTURE_DIR is None:
+            self.skipTest("CAP_TEST_FIXTURE_DIR is unset")
+        table_path = FIXTURE_DIR / "mezz.frames.json"
         if not table_path.is_file():
             self.skipTest("z9 frame table is not on this host")
         table = json.loads(table_path.read_text())

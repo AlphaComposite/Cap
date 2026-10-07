@@ -209,7 +209,9 @@ describe("revision playback plan", () => {
 				"https://cap.example.com/media/video-1/r/rev-1/playlist.m3u8?t=old",
 				"next",
 			),
-		).toBe("https://cap.example.com/media/video-1/r/rev-1/playlist.m3u8?t=next");
+		).toBe(
+			"https://cap.example.com/media/video-1/r/rev-1/playlist.m3u8?t=next",
+		);
 		expect(
 			planGrantRefresh({
 				status: 410,

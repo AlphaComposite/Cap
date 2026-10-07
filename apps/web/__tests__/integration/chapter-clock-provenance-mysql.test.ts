@@ -83,11 +83,12 @@ import {
 	generateAiWorkflow,
 } from "@/workflows/generate-ai";
 
+const fixtureDir = process.env.CAP_TEST_FIXTURE_DIR;
+const suite = describe.skipIf(!fixtureDir);
+
 function regressionUrl() {
-	const text = readFileSync(
-		"/path/to/scratch/cap-fzp-8-wire/correct-upload-baseline57/parent-test.env",
-		"utf8",
-	);
+	if (!fixtureDir) return "";
+	const text = readFileSync(path.join(fixtureDir, "parent-test.env"), "utf8");
 	const values: Record<string, string> = {};
 	for (const line of text.split(/\r?\n/)) {
 		if (!line.startsWith("export ") || !line.includes("=")) continue;
@@ -126,8 +127,10 @@ function regressionUrl() {
 }
 
 const databaseUrl = regressionUrl();
-process.env.DATABASE_URL = databaseUrl;
-process.env.CAP_INSTANT_FINISH_OWNERS = "";
+if (databaseUrl) {
+	process.env.DATABASE_URL = databaseUrl;
+	process.env.CAP_INSTANT_FINISH_OWNERS = "";
+}
 
 const ownerId = "clkf2owner00001";
 const orgId = "clkf2org0000001";
@@ -155,7 +158,7 @@ type Metadata = {
 	aiChapterBackfillGenerationId?: string;
 };
 
-describe("chapter clock provenance on disposable MySQL", () => {
+suite("chapter clock provenance on disposable MySQL", () => {
 	let pool: mysql.Pool;
 
 	beforeAll(async () => {
