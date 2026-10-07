@@ -27,6 +27,7 @@ import {
 	type RecorderCapabilities,
 	type RecordingPipeline,
 	selectRecordingPipeline,
+	startRecorderWithFallback,
 } from "@cap/recorder-core/recorder-utils";
 import {
 	canUseRecordingSpool,
@@ -835,124 +836,132 @@ export const useWebRecorder = ({
 			const hasAudio = mixedStream.getAudioTracks().length > 0;
 			setHasAudioTrack(hasAudio);
 
-			const pipeline = selectRecordingPipeline(hasAudio);
-			if (!pipeline) {
+			const selectedPipeline = selectRecordingPipeline(hasAudio);
+			if (!selectedPipeline) {
 				throw new Error("No supported recording pipeline available");
 			}
 
-			recordedChunksRef.current = [];
-			totalRecordedBytesRef.current = 0;
-			await disposeRecordingSpool();
-			if (pipeline.mode === "streaming") {
-				const spool = await createRecordingSpool(pipeline.mimeType);
-				if (spool) {
-					setLocalRecordingStrategy({ mode: "off" });
-				} else {
-					setLocalRecordingStrategy({ mode: "full" });
-					toast.warning(
-						"Durable local backup is unavailable. This recording will use in-memory recovery.",
-					);
-				}
-			} else {
-				setLocalRecordingStrategy({ mode: "full" });
-			}
-			instantUploaderRef.current = null;
-			recordingPipelineRef.current = pipeline;
+			const { pipeline, startedWithTimeslice } =
+				await startRecorderWithFallback(
+					mixedStream,
+					selectedPipeline,
+					selectedPipeline.mode === "streaming"
+						? INSTANT_UPLOAD_REQUEST_INTERVAL_MS
+						: 200,
+					async (recorder, pipeline) => {
+						recordedChunksRef.current = [];
+						totalRecordedBytesRef.current = 0;
+						await disposeRecordingSpool();
+						if (pipeline.mode === "streaming") {
+							const spool = await createRecordingSpool(pipeline.mimeType);
+							if (spool) {
+								setLocalRecordingStrategy({ mode: "off" });
+							} else {
+								setLocalRecordingStrategy({ mode: "full" });
+								toast.warning(
+									"Durable local backup is unavailable. This recording will use in-memory recovery.",
+								);
+							}
+						} else {
+							setLocalRecordingStrategy({ mode: "full" });
+						}
+						instantUploaderRef.current = null;
+						recordingPipelineRef.current = pipeline;
 
-			if (pipeline.mode === "streaming") {
-				const { videoCodec, audioCodec } = describeRecordingCodecs(
-					pipeline.mimeType,
-					hasAudio,
-				);
-				const width = dimensionsRef.current.width;
-				const height = dimensionsRef.current.height;
-				const resolution = width && height ? `${width}x${height}` : undefined;
-				const creation = unwrapExitOrThrow(
-					await videoInstantCreate.mutateAsync({
-						orgId: Organisation.OrganisationId.make(organisationId),
-						folderId: Option.none(),
-						resolution,
-						width,
-						height,
-						videoCodec,
-						audioCodec,
-						supportsUploadProgress: true,
-					}),
-				) as InstantVideoCreation;
-				const creationResult = {
-					id: creation.id,
-					shareUrl: creation.shareUrl,
-					upload: creation.upload,
-				};
-				videoCreationRef.current = creationResult;
-				setVideoId(creation.id);
-				pendingInstantVideoIdRef.current = creation.id;
+						if (pipeline.mode === "streaming") {
+							const { videoCodec, audioCodec } = describeRecordingCodecs(
+								pipeline.mimeType,
+								hasAudio,
+							);
+							const width = dimensionsRef.current.width;
+							const height = dimensionsRef.current.height;
+							const resolution =
+								width && height ? `${width}x${height}` : undefined;
+							const creation = unwrapExitOrThrow(
+								await videoInstantCreate.mutateAsync({
+									orgId: Organisation.OrganisationId.make(organisationId),
+									folderId: Option.none(),
+									resolution,
+									width,
+									height,
+									videoCodec,
+									audioCodec,
+									supportsUploadProgress: true,
+								}),
+							) as InstantVideoCreation;
+							const creationResult = {
+								id: creation.id,
+								shareUrl: creation.shareUrl,
+								upload: creation.upload,
+							};
+							videoCreationRef.current = creationResult;
+							setVideoId(creation.id);
+							pendingInstantVideoIdRef.current = creation.id;
 
-				const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
-				const uploadSession = await initiateMultipartUpload({
-					videoId: creationResult.id,
-					contentType: pipeline.mimeType,
-					subpath: rawSubpath,
-				});
-				instantUploaderRef.current = new InstantRecordingUploader({
-					videoId: creationResult.id,
-					uploadId: uploadSession.uploadId,
-					provider: uploadSession.provider,
-					mimeType: pipeline.mimeType,
-					subpath: rawSubpath,
-					setUploadStatus,
-					sendProgressUpdate: (uploaded, total) =>
-						sendProgressUpdate(creationResult.id, uploaded, total),
-					onChunkStateChange: setChunkUploads,
-					onFatalError: () => {
-						void stopRecordingRef.current?.();
+							const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
+							const uploadSession = await initiateMultipartUpload({
+								videoId: creationResult.id,
+								contentType: pipeline.mimeType,
+								subpath: rawSubpath,
+							});
+							instantUploaderRef.current = new InstantRecordingUploader({
+								videoId: creationResult.id,
+								uploadId: uploadSession.uploadId,
+								provider: uploadSession.provider,
+								mimeType: pipeline.mimeType,
+								subpath: rawSubpath,
+								setUploadStatus,
+								sendProgressUpdate: (uploaded, total) =>
+									sendProgressUpdate(creationResult.id, uploaded, total),
+								onChunkStateChange: setChunkUploads,
+								onFatalError: () => {
+									void stopRecordingRef.current?.();
+								},
+							});
+						}
+
+						recorder.ondataavailable = handleRecorderDataAvailable;
+						recorder.onstop = onRecorderStop;
+						recorder.onerror = onRecorderError;
+
+						mediaRecorderRef.current = recorder;
+						instantChunkModeRef.current = null;
+						lastInstantChunkAtRef.current = null;
+						clearInstantChunkGuard();
+						stopInstantChunkInterval();
 					},
-				});
-			}
-
-			const recorder = new MediaRecorder(mixedStream, {
-				mimeType: pipeline.mimeType,
-				...(pipeline.fileExtension === "mp4"
-					? { videoKeyFrameIntervalDuration: 1000 }
-					: {}),
-			});
-			recorder.ondataavailable = handleRecorderDataAvailable;
-			recorder.onstop = onRecorderStop;
-			recorder.onerror = onRecorderError;
-
-			const handleVideoEnded = () => {
-				window.focus();
-				stopRecordingRef.current?.().catch(() => {});
-			};
-
-			firstTrack?.addEventListener("ended", handleVideoEnded, { once: true });
-
-			mediaRecorderRef.current = recorder;
-			instantChunkModeRef.current = null;
-			lastInstantChunkAtRef.current = null;
-			clearInstantChunkGuard();
-			stopInstantChunkInterval();
+					async () => {
+						await instantUploaderRef.current?.cancel();
+						await disposeRecordingSpool();
+						const orphanVideoId = videoCreationRef.current?.id;
+						instantUploaderRef.current = null;
+						recordingPipelineRef.current = null;
+						videoCreationRef.current = null;
+						pendingInstantVideoIdRef.current = null;
+						mediaRecorderRef.current = null;
+						if (
+							orphanVideoId &&
+							!(await deletePendingVideoSafely(orphanVideoId))
+						) {
+							throw new Error("Failed to delete rejected MP4 recording");
+						}
+					},
+				);
+			firstTrack?.addEventListener(
+				"ended",
+				() => {
+					window.focus();
+					stopRecordingRef.current?.().catch(() => {});
+				},
+				{ once: true },
+			);
 			if (pipeline.mode === "streaming") {
-				let startedWithTimeslice = false;
-				try {
-					recorder.start(INSTANT_UPLOAD_REQUEST_INTERVAL_MS);
-					instantChunkModeRef.current = "timeslice";
-					startedWithTimeslice = true;
-				} catch (startError) {
-					console.warn(
-						"Failed to start recorder with timeslice chunks, falling back to manual flush",
-						startError,
-					);
-				}
-
 				if (startedWithTimeslice) {
+					instantChunkModeRef.current = "timeslice";
 					scheduleInstantChunkGuard();
 				} else {
-					recorder.start();
 					beginManualInstantChunking();
 				}
-			} else {
-				recorder.start(200);
 			}
 			onRecordingStart?.();
 

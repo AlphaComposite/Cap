@@ -3,6 +3,7 @@ import {
 	openShareUrlInNewTab,
 	selectRecordingPipelineFromSupport,
 	shouldPreferStreamingUpload,
+	startRecorderWithFallback,
 } from "@cap/recorder-core/recorder-utils";
 import { describe, expect, it, vi } from "vitest";
 
@@ -142,6 +143,74 @@ describe("selectRecordingPipelineFromSupport", () => {
 	it("returns null when no supported recorder mime type is available", () => {
 		expect(selectRecordingPipelineFromSupport(true, () => false)).toBeNull();
 	});
+});
+
+describe("startRecorderWithFallback boundaries", () => {
+	it.each(["setup", "data", "buffered", "unsupported", "cancel"] as const)(
+		"does not retry %s failures",
+		async (failure) => {
+			const constructed = vi.fn();
+			const prepare = vi.fn(async () => {
+				if (failure === "setup") throw new Error("Setup failed");
+			});
+			const cleanup = vi.fn();
+			class Recorder extends EventTarget {
+				static isTypeSupported = (mime: string) =>
+					failure !== "unsupported" || mime.includes("mp4");
+				state = "inactive";
+				constructor() {
+					super();
+					constructed();
+				}
+				start() {
+					if (failure === "data") {
+						this.dispatchEvent(
+							Object.assign(new Event("dataavailable"), {
+								data: new Blob(["captured bytes"]),
+							}),
+						);
+					}
+					if (failure === "cancel")
+						throw new DOMException("Canceled", "AbortError");
+					throw new Error("Start failed");
+				}
+			}
+			vi.stubGlobal("MediaRecorder", Recorder);
+			try {
+				await expect(
+					startRecorderWithFallback(
+						{ getAudioTracks: () => [] } as unknown as MediaStream,
+						failure === "buffered"
+							? {
+									mode: "buffered-raw",
+									mimeType: "video/mp4",
+									fileExtension: "mp4",
+									supportsProgressiveUpload: false,
+								}
+							: {
+									mode: "streaming",
+									mimeType: "video/mp4",
+									fileExtension: "mp4",
+									supportsProgressiveUpload: true,
+								},
+						1000,
+						prepare,
+						cleanup,
+					),
+				).rejects.toThrow(
+					failure === "setup"
+						? "Setup failed"
+						: failure === "cancel"
+							? "Canceled"
+							: "Start failed",
+				);
+				expect(constructed).toHaveBeenCalledOnce();
+				expect(cleanup).not.toHaveBeenCalled();
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
 });
 
 describe("describeRecordingCodecs", () => {
