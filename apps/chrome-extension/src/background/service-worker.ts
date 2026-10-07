@@ -733,7 +733,10 @@ const closeStandaloneRecorderWindows = async () => {
 		.catch(() => []);
 	await Promise.all(
 		contexts.map((c) =>
-			chrome.windows.remove(c.windowId).catch(() => undefined),
+			// Close only the recorder tab; Chrome drops its popup window when it empties.
+			chrome.tabs
+				.remove(c.tabId)
+				.catch(() => undefined),
 		),
 	);
 };
