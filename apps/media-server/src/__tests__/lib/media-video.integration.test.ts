@@ -1001,6 +1001,53 @@ describe("processVideo integration tests", () => {
 		await tempFile.cleanup();
 	}, 120000);
 
+	test("copies Chrome fragmented H.264, converts Opus to AAC and preserves the real duration", async () => {
+		const inputPath = join(FIXTURES_DIR, "chrome-h264-opus-fragmented.mp4");
+		const metadata = await probeVideo(`file://${inputPath}`);
+		const output = await processVideo(inputPath, metadata);
+		try {
+			const outputMetadata = await probeVideo(`file://${output.path}`);
+			expect(outputMetadata.videoCodec).toBe("h264");
+			expect(outputMetadata.audioCodec).toBe("aac");
+			expect(outputMetadata.duration).toBeCloseTo(4.065133, 1);
+			expect(
+				Math.abs(outputMetadata.duration - metadata.duration),
+			).toBeLessThan(0.5);
+			const packetHashes = [inputPath, output.path].map((path) =>
+				execFileSync("ffprobe", [
+					"-v",
+					"error",
+					"-select_streams",
+					"v:0",
+					"-show_packets",
+					"-show_data_hash",
+					"sha256",
+					"-show_entries",
+					"packet=data_hash",
+					"-of",
+					"csv=p=0",
+					path,
+				]).toString(),
+			);
+			expect(packetHashes[1]).toBe(packetHashes[0]);
+			const bytes = readFileSync(output.path);
+			expect(bytes.indexOf("moov")).toBeGreaterThan(0);
+			expect(bytes.indexOf("moov")).toBeLessThan(bytes.indexOf("mdat"));
+			execFileSync("ffmpeg", [
+				"-v",
+				"error",
+				"-xerror",
+				"-i",
+				output.path,
+				"-f",
+				"null",
+				"-",
+			]);
+		} finally {
+			await output.cleanup();
+		}
+	}, 60000);
+
 	test("does not recompress compatible mp4 input when no transcode is needed", async () => {
 		const metadata = await probeVideo(`file://${TEST_VIDEO_WITH_AUDIO}`);
 		const sourceSize = statSync(TEST_VIDEO_WITH_AUDIO).size;
@@ -1019,6 +1066,78 @@ describe("processVideo integration tests", () => {
 
 		await tempFile.cleanup();
 	}, 120000);
+
+	test.each([
+		{ bFrames: 2, gop: 30 },
+		{ bFrames: 0, gop: 120 },
+	])(
+		"keeps the existing copy path for H.264 with $bFrames B-frames and GOP $gop",
+		async ({ bFrames, gop }) => {
+			const workDir = mkdtempSync(join(tmpdir(), "cap-h264-copy-"));
+			try {
+				const inputPath = join(workDir, "input.mp4");
+				execFileSync("ffmpeg", [
+					"-v",
+					"error",
+					"-f",
+					"lavfi",
+					"-i",
+					"testsrc2=size=160x120:rate=30:duration=4",
+					"-c:v",
+					"libx264",
+					"-threads",
+					"1",
+					"-bf",
+					bFrames.toString(),
+					"-g",
+					gop.toString(),
+					"-sc_threshold",
+					"0",
+					inputPath,
+				]);
+				const metadata = await probeVideo(`file://${inputPath}`);
+				const source = JSON.parse(
+					execFileSync("ffprobe", [
+						"-v",
+						"error",
+						"-select_streams",
+						"v:0",
+						"-show_packets",
+						"-show_entries",
+						"stream=has_b_frames:packet=pts_time,flags",
+						"-of",
+						"json",
+						inputPath,
+					]).toString(),
+				) as {
+					streams: { has_b_frames: number }[];
+					packets: { pts_time: string; flags: string }[];
+				};
+				if (bFrames > 0) {
+					expect(source.streams[0]?.has_b_frames).toBeGreaterThan(0);
+				} else {
+					const keyTimes = source.packets
+						.filter((packet) => packet.flags.includes("K"))
+						.map((packet) => Number(packet.pts_time));
+					expect(keyTimes).toEqual([0]);
+					expect(metadata.duration).toBeGreaterThan(2);
+				}
+				const output = await processVideo(inputPath, metadata);
+				try {
+					expect(readDecodedStreamHash(output.path, "v")).toBe(
+						readDecodedStreamHash(inputPath, "v"),
+					);
+					const outputMetadata = await probeVideo(`file://${output.path}`);
+					expect(outputMetadata.duration).toBeCloseTo(metadata.duration, 2);
+				} finally {
+					await output.cleanup();
+				}
+			} finally {
+				rmSync(workDir, { recursive: true, force: true });
+			}
+		},
+		60000,
+	);
 
 	test("re-encodes compatible h264 input when the level is unsafe for mobile", async () => {
 		const workDir = mkdtempSync(join(tmpdir(), "cap-high-level-h264-"));
@@ -1146,11 +1265,25 @@ describe("processVideo integration tests", () => {
 			expect(outputMetadata.audioCodec).toBe("aac");
 			// cap-ol0.8: origin stream-copies only B-frame-free output with an IDR at least every 1s.
 			const probeOut = (args: string[]) =>
-				execFileSync("ffprobe", ["-v", "error", "-select_streams", "v:0", ...args, "-of", "csv=p=0", tempFile.path])
+				execFileSync("ffprobe", [
+					"-v",
+					"error",
+					"-select_streams",
+					"v:0",
+					...args,
+					"-of",
+					"csv=p=0",
+					tempFile.path,
+				])
 					.toString()
 					.trim();
 			expect(probeOut(["-show_entries", "stream=has_b_frames"])).toBe("0");
-			const keyTimes = probeOut(["-skip_frame", "nokey", "-show_entries", "frame=pts_time"])
+			const keyTimes = probeOut([
+				"-skip_frame",
+				"nokey",
+				"-show_entries",
+				"frame=pts_time",
+			])
 				.split("\n")
 				.map((line) => Number.parseFloat(line));
 			expect(keyTimes[0]).toBe(0);

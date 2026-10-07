@@ -78,16 +78,20 @@ async function probeMedia(path: string): Promise<VideoMetadata> {
 		}
 
 		const audioTrack = await input.getPrimaryAudioTrack();
-		const duration =
-			(await input.getDurationFromMetadata(undefined, {
-				skipLiveWait: true,
-			})) ??
-			(await input.computeDuration(undefined, {
-				skipLiveWait: true,
-			}));
+		const metadataDuration = await input.getDurationFromMetadata(undefined, {
+			skipLiveWait: true,
+		});
 		const packetStats = await videoTrack
 			.computePacketStats(120, { skipLiveWait: true })
 			.catch(() => null);
+		const sampledDuration = packetStats?.averagePacketRate
+			? packetStats.packetCount / packetStats.averagePacketRate
+			: 0;
+		// Chrome fMP4 metadata can describe only the first fragment; reuse the existing packet sample to detect it.
+		const duration =
+			metadataDuration === null || metadataDuration + 0.5 < sampledDuration
+				? await input.computeDuration(undefined, { skipLiveWait: true })
+				: metadataDuration;
 		const videoBitrate =
 			(await videoTrack.getAverageBitrate()) ??
 			(await videoTrack.getBitrate()) ??

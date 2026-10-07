@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkVideoAccessible, probeVideo } from "../../lib/media-probe";
+import { Input } from "mediabunny";
+import { createMediaInput } from "../../lib/media-common";
+import {
+	checkVideoAccessible,
+	probeVideo,
+	probeVideoFile,
+} from "../../lib/media-probe";
 
 const FIXTURES_DIR = join(import.meta.dir, "..", "fixtures");
 const TEST_VIDEO_WITH_AUDIO_PATH = join(FIXTURES_DIR, "test-with-audio.mp4");
@@ -148,6 +154,37 @@ describe("mediaProbe integration tests", () => {
 });
 
 describe("mediaProbe metadata accuracy", () => {
+	test("uses packet duration for Chrome fragmented MP4 instead of its first fragment", async () => {
+		const path = join(FIXTURES_DIR, "chrome-h264-opus-fragmented.mp4");
+		const input = createMediaInput(path);
+		try {
+			expect(await input.getDurationFromMetadata()).toBeLessThan(0.1);
+			expect(await input.computeDuration()).toBeCloseTo(4.065133, 3);
+		} finally {
+			input.dispose();
+		}
+
+		for (const metadata of [
+			await probeVideoFile(path),
+			await probeVideo(`file://${path}`),
+		]) {
+			expect(metadata.duration).toBeCloseTo(4.065133, 3);
+			expect(metadata.videoCodec).toBe("h264");
+			expect(metadata.audioCodec).toBe("opus");
+		}
+	});
+
+	test("keeps the metadata fast path for non-fragmented MP4", async () => {
+		const computeDuration = spyOn(Input.prototype, "computeDuration");
+		try {
+			const metadata = await probeVideo(TEST_VIDEO_WITH_AUDIO);
+			expect(metadata.duration).toBe(1);
+			expect(computeDuration).not.toHaveBeenCalled();
+		} finally {
+			computeDuration.mockRestore();
+		}
+	});
+
 	test("returns correct frame rate format", async () => {
 		const metadata = await probeVideo(TEST_VIDEO_WITH_AUDIO);
 

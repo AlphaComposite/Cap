@@ -46,6 +46,7 @@ const uploadFailures = new Map<string, number>();
 const uploadRequests: string[] = [];
 const fixtureReads: string[] = [];
 const webhookPhases: JobProgress["phase"][] = [];
+const webhookDurations: (number | undefined)[] = [];
 const recordingSources = new Map<string, Uint8Array>();
 const sourceReads: {
 	path: string;
@@ -284,6 +285,7 @@ beforeAll(async () => {
 			if (request.method === "POST" && url.pathname === "/ignored-webhook") {
 				const payload = (await request.json()) as JobProgress;
 				webhookPhases.push(payload.phase);
+				webhookDurations.push(payload.metadata?.duration);
 				if (!payload.recordingWorker)
 					return new Response(null, { status: 200 });
 				if (
@@ -391,7 +393,9 @@ beforeAll(async () => {
 								? TEST_VIDEO_WITH_AUDIO
 								: url.pathname === "/fixtures/chrome.webm"
 									? join(tempDir, "chrome.webm")
-									: null;
+									: url.pathname === "/fixtures/chrome-h264-opus-fragmented.mp4"
+										? join(FIXTURES_DIR, "chrome-h264-opus-fragmented.mp4")
+										: null;
 
 				if (fixturePath) {
 					if (request.method === "GET") fixtureReads.push(url.pathname);
@@ -493,6 +497,7 @@ beforeEach(() => {
 	uploadRequests.length = 0;
 	fixtureReads.length = 0;
 	webhookPhases.length = 0;
+	webhookDurations.length = 0;
 	transientFixtureFailures = 0;
 	permanentFixtureFailures = 0;
 	slowFixtureCancellations = 0;
@@ -1110,6 +1115,49 @@ describe("media routes real-world integration tests", () => {
 			deleteJob(data.jobId);
 		}
 	}, 90000);
+
+	test("reports Chrome's full duration and generates a thumbnail after frame zero", async () => {
+		const thumbnail = spyOn(mediaVideo, "generateThumbnail");
+		const preview = spyOn(mediaVideo, "generatePreviewGif");
+		let jobId: string | undefined;
+		try {
+			const response = await app.fetch(
+				mediaPostRequest("/video/process", {
+					videoId: "chrome-fragmented",
+					userId: "real-process-user",
+					videoUrl: fixtureUrl("chrome-h264-opus-fragmented.mp4"),
+					outputPresignedUrl: uploadUrl("chrome-fragmented.mp4"),
+					thumbnailPresignedUrl: uploadUrl("chrome-fragmented.jpg"),
+					previewGifPresignedUrl: uploadUrl("chrome-fragmented.gif"),
+					webhookUrl: `${baseUrl}/ignored-webhook`,
+					webhookSecret: MEDIA_SERVER_SECRET,
+					inputExtension: ".mp4",
+				}),
+			);
+			expect(response.status).toBe(200);
+			jobId = ((await response.json()) as { jobId: string }).jobId;
+			const job = await waitForTerminalJob(jobId);
+			expect(job.phase).toBe("complete");
+			expect(job.metadata?.duration).toBeCloseTo(4.065133, 3);
+			expect(thumbnail.mock.calls[0]?.[1]).toBeCloseTo(4.065133, 3);
+			expect(preview.mock.calls[0]?.[1]).toBeCloseTo(4.065133, 3);
+			expect(webhookPhases.at(-1)).toBe("complete");
+			expect(webhookDurations.at(-1)).toBeCloseTo(4.065133, 3);
+			const output = join(tempDir, "chrome-fragmented.mp4");
+			await writeFile(output, uploadedBytes("/uploads/chrome-fragmented.mp4"));
+			const expected = await mediaVideo.generateThumbnail(output, 4.065133, {
+				timestamp: 1,
+			});
+			expect(uploadedBytes("/uploads/chrome-fragmented.jpg")).toEqual(expected);
+			expect(uploadedBytes("/uploads/chrome-fragmented.jpg")).not.toEqual(
+				await mediaVideo.generateThumbnail(output, 0.0344),
+			);
+		} finally {
+			thumbnail.mockRestore();
+			preview.mockRestore();
+			if (jobId) deleteJob(jobId);
+		}
+	}, 60000);
 
 	test.each([403, 503])(
 		"keeps a playable processed video when thumbnail storage returns %s",
