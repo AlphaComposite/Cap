@@ -1473,7 +1473,7 @@ export function EditVideoClient({
 						: "Failed to start video edit";
 			toast.error(
 				/Failed to find Server Action/i.test(message)
-					? "Cap was updated. Reload the page to continue — your edits are saved."
+					? "Cap was updated. Reload the page to continue — edits saved in this browser will be restored."
 					: status === 409 && /source.*not ready/i.test(message)
 						? "Still preparing for editing — try again in a moment."
 						: message,

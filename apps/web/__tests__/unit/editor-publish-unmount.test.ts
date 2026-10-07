@@ -478,7 +478,7 @@ describe("editor publish unmount", () => {
 			).toHaveLength(1);
 			expect(toast.error).toHaveBeenCalledWith(
 				failure === "stale action"
-					? "Cap was updated. Reload the page to continue — your edits are saved."
+					? "Cap was updated. Reload the page to continue — edits saved in this browser will be restored."
 					: message,
 			);
 			expect(harness.push).not.toHaveBeenCalled();
