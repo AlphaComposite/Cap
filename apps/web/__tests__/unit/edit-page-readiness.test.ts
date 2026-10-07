@@ -17,6 +17,7 @@ const schema = vi.hoisted(() => ({
 	editIntent: {},
 	editRevision: {},
 	videoPublication: {},
+	sourceObject: { videoId: "sources" },
 }));
 vi.mock("@cap/database", () => ({ db: mocks.db }));
 vi.mock("@cap/database/auth/session", () => ({ getCurrentUser: mocks.user }));
