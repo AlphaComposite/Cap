@@ -20,6 +20,7 @@ import {
 	loadSettings,
 	MEDIA_ACCESS_KEY,
 	type MediaAccessState,
+	SETTINGS_KEY,
 	saveSettings,
 	updateMediaAccessState,
 } from "../shared/storage";
@@ -345,7 +346,14 @@ function App() {
 			changes: Record<string, chrome.storage.StorageChange>,
 			areaName: string,
 		) => {
-			if (areaName !== "local" || !changes[MEDIA_ACCESS_KEY]) return;
+			if (areaName !== "local") return;
+			// Options saving the server URL must flip an open unconfigured popup.
+			if (changes[SETTINGS_KEY]) {
+				void loadSettings()
+					.then(applySettings)
+					.catch(() => undefined);
+			}
+			if (!changes[MEDIA_ACCESS_KEY]) return;
 			void loadMediaAccessState()
 				.then(setMediaAccess)
 				.catch(() => undefined);
@@ -353,7 +361,7 @@ function App() {
 
 		chrome.storage.onChanged.addListener(handleStorageChange);
 		return () => chrome.storage.onChanged.removeListener(handleStorageChange);
-	}, []);
+	}, [applySettings]);
 
 	// Recordings whose upload failed (or that a crash stranded) wait in local
 	// storage; surface a small recovery link so they are discoverable from
