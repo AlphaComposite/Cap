@@ -6,106 +6,99 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
 	EditorWaveformCanvas,
+	formatRulerLabel,
+	keptColumnRanges,
 	TIMELINE_WAVEFORM_PX,
+	WAVEFORM_GAMMA,
+	WAVEFORM_KEPT_COLOR,
+	WAVEFORM_REMOVED_COLOR,
+	waveformEnvelope,
+	waveformLevel,
 } from "@/app/s/[videoId]/edit/EditorWaveform";
 import type { PeakPair } from "@/lib/waveform-peaks";
 
-const DRAWABLE = TIMELINE_WAVEFORM_PX - 8;
-
-type Paint = { x: number; y: number; w: number; h: number; fill: string };
-
-function gammaBar(magnitude: number) {
-	return Math.max(1, (magnitude / 127) ** 3 * DRAWABLE);
-}
+type Fill = { color: string; clip: number[][]; points: [number, number][] };
 
 async function renderWaveform(
 	pairs: readonly PeakPair[] | null,
 	deleted: readonly { start: number; end: number }[] = [],
 	options: Partial<ComponentProps<typeof EditorWaveformCanvas>> = {},
 ) {
-	const paints: Paint[] = [];
+	const fills: Fill[] = [];
+	const rects: number[][] = [];
 	const transforms: number[][] = [];
 	const clears: number[][] = [];
+	let points: [number, number][] = [];
+	let pendingClip: number[][] = [];
+	let clip: number[][] = [];
 	const context = {
 		fillStyle: "",
-		setTransform(...args: number[]) {
-			transforms.push(args);
+		setTransform: (...args: number[]) => transforms.push(args),
+		clearRect: (...args: number[]) => clears.push(args),
+		fillRect: (...args: number[]) => rects.push(args),
+		beginPath: () => {
+			points = [];
+			pendingClip = [];
 		},
-		clearRect(...args: number[]) {
-			clears.push(args);
+		moveTo: (x: number, y: number) => points.push([x, y]),
+		lineTo: (x: number, y: number) => points.push([x, y]),
+		closePath: () => {},
+		rect: (...args: number[]) => pendingClip.push(args),
+		clip: () => {
+			clip = pendingClip;
 		},
-		fillRect(x: number, y: number, w: number, h: number) {
-			paints.push({ x, y, w, h, fill: context.fillStyle });
+		save: () => {},
+		restore: () => {
+			clip = [];
 		},
+		fill: () => fills.push({ color: context.fillStyle, clip, points }),
 	};
 	HTMLCanvasElement.prototype.getContext = (() =>
 		context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 	const container = document.createElement("div");
 	document.body.append(container);
 	const root = createRoot(container);
-	const duration = (pairs?.length ?? 3) / 100;
 	await act(async () => {
 		root.render(
 			createElement(EditorWaveformCanvas, {
 				pairs,
 				noAudio: false,
-				duration,
+				duration: (pairs?.length ?? 3) / 100,
 				deleted,
 				hidden: false,
 				scrollLeft: 0,
-				viewportWidth: pairs?.length || 3,
+				viewportWidth: 200,
 				zoom: 1,
 				...options,
 			}),
 		);
 	});
 	const canvas = container.querySelector("canvas");
-	act(() => {
-		root.unmount();
+	act(() => root.unmount());
+	return { fills, rects, canvas, transforms, clears };
+}
+
+/** Top-edge heights (mid - y) of the outline, in column order. */
+function topHeights(fill: Fill) {
+	const mid = TIMELINE_WAVEFORM_PX / 2;
+	return fill.points
+		.filter(([x, y]) => y <= mid && x > 0 && x % 1 === 0.5)
+		.slice(0, Math.floor(fill.points.length / 2))
+		.map(([, y]) => mid - y);
+}
+
+const speech = (seconds: number, loud: number) =>
+	Array.from({ length: seconds * 100 }, (_, i) => {
+		// 2 syllables per second with pauses between them
+		const on = Math.sin((i / 100) * Math.PI * 4) > 0;
+		const v = on ? loud : 2;
+		return { min: -v, max: v };
 	});
-	return { paints, canvas, transforms, clears };
-}
-
-async function paintPairs(
-	pairs: readonly PeakPair[],
-	deleted: readonly { start: number; end: number }[] = [],
-	options: Partial<ComponentProps<typeof EditorWaveformCanvas>> = {},
-) {
-	return (await renderWaveform(pairs, deleted, options)).paints;
-}
-
-function expectGeometry(
-	paints: Paint[],
-	segments: readonly (readonly [number, number, number, string])[],
-) {
-	expect(paints).toHaveLength(segments.length);
-	for (const [index, [x, w, magnitude, fill]] of segments.entries()) {
-		const paint = paints[index];
-		if (!paint) throw new Error(`Missing paint at segment ${index}`);
-		expect(paint.x).toBeCloseTo(x, 12);
-		expect(paint.w).toBeCloseTo(w, 12);
-		expect(paint.h).toBeCloseTo(gammaBar(magnitude), 12);
-		expect(paint.y).toBeCloseTo(TIMELINE_WAVEFORM_PX / 2 - paint.h / 2, 12);
-		expect(paint.fill).toBe(fill);
-		expect(paint.w).toBeGreaterThan(0);
-		if (index > 0) {
-			const previous = paints[index - 1];
-			if (!previous) throw new Error(`Missing preceding segment ${index}`);
-			expect(paint.x).toBeCloseTo(previous.x + previous.w, 12);
-		}
-	}
-}
-
-function columnPairs(pairs: readonly PeakPair[]) {
-	return pairs.flatMap((pair) =>
-		Array.from({ length: 100 }, () => ({ ...pair })),
-	);
-}
 
 const originalDpr = window.devicePixelRatio;
 const originalGetContext = HTMLCanvasElement.prototype.getContext;
 
-describe("editor waveform paint contrast", () => {
+describe("editor waveform blob painter", () => {
 	beforeEach(() => {
 		(
 			globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -120,422 +113,179 @@ describe("editor waveform paint contrast", () => {
 		});
 	});
 
-	it("paints contiguous gamma 3 columns and keeps a transient at its source column", async () => {
-		const quiet = await paintPairs([
-			{ min: -70, max: 70 },
-			{ min: -70, max: 70 },
-			{ min: -70, max: 70 },
-		]);
-		const loud = await paintPairs([
-			{ min: -120, max: 120 },
-			{ min: -120, max: 120 },
-			{ min: -120, max: 120 },
-		]);
-		const quietBar = quiet.find((paint) => paint.x === 0);
-		const loudBar = loud.find((paint) => paint.x === 0);
-		expect(quietBar?.w).toBe(1);
-		expect(loudBar?.w).toBe(1);
-		expect(quietBar?.h).toBeCloseTo(gammaBar(70), 2);
-		expect(loudBar?.h).toBeCloseTo(gammaBar(120), 2);
-		expect((loudBar?.h ?? 0) / (quietBar?.h ?? 1)).toBeGreaterThan(4);
-		expect(quiet.map((paint) => paint.x)).toEqual([0, 1, 2]);
-
-		const spike = await paintPairs([
-			{ min: -10, max: 10 },
-			{ min: -10, max: 10 },
-			{ min: -127, max: 127 },
-			{ min: -10, max: 10 },
-			{ min: -10, max: 10 },
-			{ min: -10, max: 10 },
-		]);
-		expect(spike.find((paint) => paint.x === 0)?.h).toBeCloseTo(
-			gammaBar(10),
-			2,
-		);
-		expect(spike.find((paint) => paint.x === 2)?.h).toBe(gammaBar(127));
-		expect(spike.find((paint) => paint.x === 3)?.h).toBe(gammaBar(10));
-
-		const zero = await paintPairs([
-			{ min: 0, max: 0 },
-			{ min: 0, max: 0 },
-			{ min: 0, max: 0 },
-		]);
-		expect(zero.find((paint) => paint.x === 0)?.h).toBe(1);
-
-		const source: PeakPair[] = [
-			{ min: -80, max: 80 },
-			{ min: -80, max: 80 },
-			{ min: -80, max: 80 },
-		];
-		const before = JSON.stringify(source);
-		const deleted = await paintPairs(source, [{ start: 0, end: 1 }]);
-		expect(JSON.stringify(source)).toBe(before);
-		expect(deleted.find((paint) => paint.x === 0)?.fill).toBe("#c4c4c4");
-		expect(deleted.find((paint) => paint.x === 0)?.w).toBe(1);
+	it("paints one mirrored outline path, not per-column bars", async () => {
+		const { fills, rects } = await renderWaveform(speech(2, 100));
+		expect(rects).toEqual([]);
+		expect(fills).toHaveLength(2);
+		const mid = TIMELINE_WAVEFORM_PX / 2;
+		for (const fill of fills) {
+			const half = (fill.points.length - 2) / 2;
+			const tops = fill.points.slice(1, 1 + half);
+			const bottoms = fill.points.slice(2 + half).reverse();
+			expect(tops).toHaveLength(bottoms.length);
+			tops.forEach(([x, y], i) => {
+				expect(bottoms[i]?.[0]).toBe(x);
+				expect((bottoms[i]?.[1] ?? 0) - mid).toBeCloseTo(mid - y, 9);
+			});
+		}
 	});
 
-	it("does not gray kept bar pixels for a deleted gap-column transient", async () => {
-		const paints = await paintPairs(
-			[
-				{ min: -10, max: 10 },
-				{ min: -10, max: 10 },
-				{ min: -127, max: 127 },
-			],
-			[{ start: 0.02, end: 0.03 }],
-		);
-		expect(paints.find((paint) => paint.x === 0)?.fill).toBe("#0090ff");
-		expect(paints.find((paint) => paint.x === 0)?.h).toBe(gammaBar(10));
-		expect(paints.find((paint) => paint.x === 2)?.fill).toBe("#c4c4c4");
-		expect(paints.find((paint) => paint.x === 2)?.h).toBe(gammaBar(127));
-	});
-
-	it("does not blue deleted bar pixels for a kept gap-column transient", async () => {
-		const paints = await paintPairs(
-			[
-				{ min: -10, max: 10 },
-				{ min: -10, max: 10 },
-				{ min: -127, max: 127 },
-			],
-			[{ start: 0, end: 0.02 }],
-		);
-		expect(paints.find((paint) => paint.x === 0)?.fill).toBe("#c4c4c4");
-		expect(paints.find((paint) => paint.x === 0)?.h).toBe(gammaBar(10));
-		expect(paints.find((paint) => paint.x === 2)?.fill).toBe("#0090ff");
-		expect(paints.find((paint) => paint.x === 2)?.h).toBe(gammaBar(127));
-	});
-
-	it("keeps integer cut boundaries independent of each column's amplitude", async () => {
-		const keptThenDeleted = await paintPairs(
-			[
-				{ min: -10, max: 10 },
-				{ min: -20, max: 20 },
-				{ min: -127, max: 127 },
-			],
-			[{ start: 0.01, end: 0.03 }],
-		);
-		const keptPixel = keptThenDeleted.find((paint) => paint.x === 0);
-		const deletedPixel = keptThenDeleted.find((paint) => paint.x === 1);
-		expect(keptPixel?.fill).toBe("#0090ff");
-		expect(keptPixel?.w).toBe(1);
-		expect(deletedPixel?.fill).toBe("#c4c4c4");
-		expect(deletedPixel?.w).toBe(1);
-		expect(keptPixel?.h).toBeCloseTo(gammaBar(10), 2);
-		expect(deletedPixel?.h).toBeCloseTo(gammaBar(20), 2);
-		expect(keptThenDeleted.find((paint) => paint.x === 2)?.h).toBe(
-			gammaBar(127),
-		);
-
-		const deletedThenKept = await paintPairs(
-			[
-				{ min: -20, max: 20 },
-				{ min: -10, max: 10 },
-				{ min: -127, max: 127 },
-			],
-			[{ start: 0, end: 0.01 }],
-		);
-		expect(deletedThenKept.find((paint) => paint.x === 0)?.fill).toBe(
-			"#c4c4c4",
-		);
-		expect(deletedThenKept.find((paint) => paint.x === 0)?.w).toBe(1);
-		expect(deletedThenKept.find((paint) => paint.x === 1)?.fill).toBe(
-			"#0090ff",
-		);
-		expect(deletedThenKept.find((paint) => paint.x === 1)?.w).toBe(1);
-		expect(deletedThenKept.find((paint) => paint.x === 2)?.fill).toBe(
-			"#0090ff",
-		);
-	});
-
-	it("keeps homogeneous gamma and per-column transient height without transferring tint", async () => {
-		const kept = await paintPairs([
-			{ min: -10, max: 10 },
-			{ min: -10, max: 10 },
-			{ min: -127, max: 127 },
+	it("paints removed audio grey everywhere and kept audio lavender clipped to kept ranges", async () => {
+		const { fills } = await renderWaveform(speech(2, 100), [
+			{ start: 0.5, end: 1 },
 		]);
-		const keptBar = kept.find((paint) => paint.x === 0);
-		expect(keptBar?.fill).toBe("#0090ff");
-		expect(keptBar?.w).toBe(1);
-		expect(keptBar?.h).toBeCloseTo(gammaBar(10), 2);
-		expect(kept.find((paint) => paint.x === 2)?.h).toBeGreaterThan(
-			gammaBar(10) + 1,
-		);
-
-		const deleted = await paintPairs(
-			[
-				{ min: -10, max: 10 },
-				{ min: -10, max: 10 },
-				{ min: -127, max: 127 },
-			],
-			[{ start: 0, end: 0.03 }],
-		);
-		const deletedBar = deleted.find((paint) => paint.x === 0);
-		expect(deletedBar?.fill).toBe("#c4c4c4");
-		expect(deletedBar?.w).toBe(1);
-		expect(deletedBar?.h).toBeCloseTo(gammaBar(10), 2);
-		expect(deleted.find((paint) => paint.x === 2)?.h).toBe(gammaBar(127));
-
-		const even = await paintPairs([
-			{ min: -80, max: 80 },
-			{ min: -80, max: 80 },
-			{ min: -80, max: 80 },
+		expect(fills.map((fill) => fill.color)).toEqual([
+			WAVEFORM_REMOVED_COLOR,
+			WAVEFORM_GAMMA,
+			WAVEFORM_KEPT_COLOR,
 		]);
-		expect(even.find((paint) => paint.x === 0)?.h).toBeCloseTo(gammaBar(80), 2);
-		expect(even.find((paint) => paint.x === 0)?.w).toBe(1);
+		expect(fills[0]?.clip).toEqual([]);
+		expect(fills[1]?.clip).toEqual([
+			[0, 0, 50, TIMELINE_WAVEFORM_PX],
+			[100, 0, 100, TIMELINE_WAVEFORM_PX],
+		]);
 	});
 
-	it.each([0, 1, 2])(
-		"keeps a spike at former pitch position %i without pooling",
-		async (position) => {
-			const pairs = Array.from({ length: 3 }, (_, index) => ({
-				min: index === position ? -127 : -10,
-				max: index === position ? 127 : 10,
-			}));
-			expectGeometry(
-				await paintPairs(columnPairs(pairs), [], { viewportWidth: 3 }),
-				pairs.map((_, index) => [
-					index,
-					1,
-					index === position ? 127 : 10,
-					"#0090ff",
-				]),
+	it("skips the kept layer when the whole window is removed", async () => {
+		const { fills } = await renderWaveform(speech(1, 100), [
+			{ start: 0, end: 1 },
+		]);
+		expect(fills.map((fill) => fill.color)).toEqual([WAVEFORM_REMOVED_COLOR]);
+	});
+
+	it("keeps syllables as separate rounded shapes with dips between them", async () => {
+		const { fills } = await renderWaveform(speech(2, 100), [], {
+			viewportWidth: 800,
+		});
+		const tops = topHeights(fills[0] as Fill);
+		const peak = Math.max(...tops);
+		const dips = tops.filter(
+			(h, i) =>
+				i > 0 &&
+				i < tops.length - 1 &&
+				h < (tops[i - 1] ?? 0) &&
+				h <= (tops[i + 1] ?? 0) &&
+				h < peak * 0.5,
+		);
+		expect(dips.length).toBeGreaterThanOrEqual(3);
+		// smoothing: no column-to-column jump bigger than a third of the peak
+		for (let i = 1; i < tops.length; i += 1) {
+			expect(Math.abs((tops[i] ?? 0) - (tops[i - 1] ?? 0))).toBeLessThan(
+				peak / 3,
 			);
-		},
-	);
-
-	it("fills varying asymmetric extrema and the silent baseline without flattening", async () => {
-		expectGeometry(
-			await paintPairs(
-				columnPairs([
-					{ min: -100, max: 20 },
-					{ min: -10, max: 120 },
-					{ min: 0, max: 0 },
-				]),
-				[],
-				{ viewportWidth: 3 },
-			),
-			[
-				[0, 1, 100, "#0090ff"],
-				[1, 1, 120, "#0090ff"],
-				[2, 1, 0, "#0090ff"],
-			],
-		);
+		}
 	});
 
-	it("retains downsampled extrema in their fit columns", async () => {
-		expectGeometry(
-			await paintPairs(
-				[
-					{ min: -10, max: 10 },
-					{ min: -100, max: 20 },
-					{ min: -10, max: 120 },
-					{ min: -10, max: 10 },
-					{ min: 0, max: 0 },
-					{ min: 0, max: 0 },
-				],
-				[],
-				{ viewportWidth: 3 },
-			),
-			[
-				[0, 1, 100, "#0090ff"],
-				[1, 1, 120, "#0090ff"],
-				[2, 1, 0, "#0090ff"],
-			],
+	it("levels quiet and loud recordings to similar heights", async () => {
+		const quiet = topHeights(
+			(await renderWaveform(speech(2, 40))).fills[0] as Fill,
 		);
+		const loud = topHeights(
+			(await renderWaveform(speech(2, 120))).fills[0] as Fill,
+		);
+		const max = (v: number[]) => Math.max(...v);
+		expect(max(quiet) / max(loud)).toBeGreaterThan(0.85);
+		expect(max(loud)).toBeLessThanOrEqual(TIMELINE_WAVEFORM_PX / 2 - 5 + 1e-9);
 	});
 
-	it("splits fractional cuts without midpoint tint or rounding", async () => {
-		expectGeometry(
-			await paintPairs(
-				columnPairs([
-					{ min: -70, max: 70 },
-					{ min: -120, max: 120 },
-					{ min: 0, max: 0 },
-				]),
-				[{ start: 0.25, end: 1.75 }],
-				{ viewportWidth: 3 },
-			),
-			[
-				[0, 0.25, 70, "#0090ff"],
-				[0.25, 0.75, 70, "#c4c4c4"],
-				[1, 0.75, 120, "#c4c4c4"],
-				[1.75, 0.25, 120, "#0090ff"],
-				[2, 1, 0, "#0090ff"],
-			],
+	it("draws a flat baseline for silence and no-audio", async () => {
+		const silent = await renderWaveform(
+			Array.from({ length: 100 }, () => ({ min: 0, max: 0 })),
 		);
+		expect(Math.max(...topHeights(silent.fills[0] as Fill))).toBeCloseTo(
+			0.75,
+			9,
+		);
+		const none = await renderWaveform(null);
+		expect(none.fills).toEqual([]);
+		expect(none.rects).toEqual([[0, TIMELINE_WAVEFORM_PX / 2, 200, 1]]);
 	});
-
-	it("paints blue grey blue within one column with identical envelope height", async () => {
-		expectGeometry(
-			await paintPairs(
-				columnPairs([
-					{ min: -80, max: 80 },
-					{ min: -10, max: 10 },
-					{ min: -127, max: 127 },
-				]),
-				[{ start: 0.25, end: 0.75 }],
-				{ viewportWidth: 3 },
-			),
-			[
-				[0, 0.25, 80, "#0090ff"],
-				[0.25, 0.5, 80, "#c4c4c4"],
-				[0.75, 0.25, 80, "#0090ff"],
-				[1, 1, 10, "#0090ff"],
-				[2, 1, 127, "#0090ff"],
-			],
-		);
-	});
-
-	it("clips sorts and unions overlapping or touching cuts without mutating inputs", async () => {
-		const pairs = Object.freeze(
-			columnPairs([
-				{ min: -70, max: 70 },
-				{ min: -120, max: 120 },
-				{ min: 0, max: 0 },
-			]).map((pair) => Object.freeze(pair)),
-		);
-		const deleted = Object.freeze([
-			Object.freeze({ start: 2.5, end: 10 }),
-			Object.freeze({ start: 0.5, end: 1.25 }),
-			Object.freeze({ start: -1, end: 0.75 }),
-			Object.freeze({ start: 1.25, end: 1.75 }),
-			Object.freeze({ start: 10, end: 20 }),
-			Object.freeze({ start: -2, end: -1 }),
-			Object.freeze({ start: 2, end: 2 }),
-			Object.freeze({ start: 2.2, end: 2.1 }),
-		]);
-		const before = JSON.stringify({ pairs, deleted });
-		expectGeometry(await paintPairs(pairs, deleted, { viewportWidth: 3 }), [
-			[0, 1, 70, "#c4c4c4"],
-			[1, 0.75, 120, "#c4c4c4"],
-			[1.75, 0.25, 120, "#0090ff"],
-			[2, 0.5, 0, "#0090ff"],
-			[2.5, 0.5, 0, "#c4c4c4"],
-		]);
-		expect(JSON.stringify({ pairs, deleted })).toBe(before);
-	});
-
-	it("uses the same scrolled zoom window for amplitude and fractional cut colors", async () => {
-		const pairs = columnPairs(
-			[10, 20, 70, 120, 0, 100, 30, 40].map((magnitude) => ({
-				min: -magnitude,
-				max: magnitude,
-			})),
-		);
-		expectGeometry(
-			await paintPairs(
-				pairs,
-				[
-					{ start: 0, end: 2.25 },
-					{ start: 2.75, end: 3.25 },
-					{ start: 5.75, end: 10 },
-				],
-				{ viewportWidth: 4, zoom: 2, scrollLeft: 2 },
-			),
-			[
-				[0, 0.25, 70, "#c4c4c4"],
-				[0.25, 0.5, 70, "#0090ff"],
-				[0.75, 0.25, 70, "#c4c4c4"],
-				[1, 0.25, 120, "#c4c4c4"],
-				[1.25, 0.75, 120, "#0090ff"],
-				[2, 1, 0, "#0090ff"],
-				[3, 0.75, 100, "#0090ff"],
-				[3.75, 0.25, 100, "#c4c4c4"],
-			],
-		);
-	});
-
-	it.each(["noAudio", "null", "empty"])(
-		"preserves flat grey %s fallback",
-		async (kind) => {
-			const result = await renderWaveform(
-				kind === "null"
-					? null
-					: kind === "empty"
-						? []
-						: [{ min: -127, max: 127 }],
-				[{ start: 0, end: 1 }],
-				{ noAudio: kind === "noAudio", viewportWidth: 3 },
-			);
-			expect(result.paints).toEqual([
-				{
-					x: 0,
-					y: TIMELINE_WAVEFORM_PX / 2,
-					w: 3,
-					h: 1,
-					fill: "#8d8d8d",
-				},
-			]);
-		},
-	);
 
 	it("preserves hidden behavior without allocating or painting a canvas", async () => {
-		const result = await renderWaveform([{ min: -127, max: 127 }], [], {
-			hidden: true,
-		});
+		const result = await renderWaveform(speech(1, 100), [], { hidden: true });
 		expect(result.canvas).toBeNull();
-		expect(result.paints).toEqual([]);
+		expect(result.fills).toEqual([]);
 		expect(result.transforms).toEqual([]);
-		expect(result.clears).toEqual([]);
 	});
 
 	it.each([0, Number.NaN, Number.POSITIVE_INFINITY])(
-		"guards invalid or zero source duration %s",
+		"guards invalid source duration %s",
 		async (duration) => {
-			const result = await renderWaveform(
-				[{ min: -127, max: 127 }],
-				[{ start: 0, end: 1 }],
-				{ duration },
-			);
-			expect(result.paints).toEqual([]);
+			const result = await renderWaveform(speech(1, 100), [], { duration });
+			expect(result.fills).toEqual([]);
 		},
 	);
 
-	it("guards a zero source span at the timeline end", async () => {
-		const result = await renderWaveform(
-			[{ min: -127, max: 127 }],
-			[{ start: 0, end: 1 }],
-			{ viewportWidth: 3, zoom: 2, scrollLeft: 6 },
-		);
-		expect(result.paints).toEqual([]);
+	it.each([1, 2, 3, 4])("keeps viewport allocation at DPR %i", async (dpr) => {
+		Object.defineProperty(window, "devicePixelRatio", {
+			configurable: true,
+			value: dpr,
+		});
+		const result = await renderWaveform(speech(1, 100), [], {
+			viewportWidth: 3.9,
+			scrollLeft: 3,
+			zoom: 2,
+		});
+		const capped = Math.min(3, dpr);
+		expect(result.canvas?.width).toBe(3 * capped);
+		expect(result.canvas?.height).toBe(TIMELINE_WAVEFORM_PX * capped);
+		expect(result.canvas?.style.left).toBe("3px");
+		expect(result.transforms).toEqual([[capped, 0, 0, capped, 0, 0]]);
+		expect(result.clears).toEqual([[0, 0, 3, TIMELINE_WAVEFORM_PX]]);
+	});
+});
+
+describe("waveform helpers", () => {
+	it("merges, sorts and clips removed ranges into kept column ranges", () => {
+		const deleted = [
+			{ start: 6, end: 8 },
+			{ start: -1, end: 1 },
+			{ start: 7, end: 9 },
+			{ start: 3, end: 3 },
+		];
+		const copy = structuredClone(deleted);
+		expect(
+			keptColumnRanges({
+				deleted,
+				sourceWindow: { start: 0, end: 10 },
+				width: 100,
+			}),
+		).toEqual([
+			{ start: 10, end: 60 },
+			{ start: 90, end: 100 },
+		]);
+		expect(deleted).toEqual(copy);
+		expect(
+			keptColumnRanges({
+				deleted: [],
+				sourceWindow: { start: 1, end: 1 },
+				width: 100,
+			}),
+		).toEqual([]);
 	});
 
-	it.each([1, 2, 3, 4])(
-		"preserves viewport allocation and source geometry at DPR %i",
-		async (dpr) => {
-			Object.defineProperty(window, "devicePixelRatio", {
-				configurable: true,
-				value: dpr,
-			});
-			const result = await renderWaveform(
-				[
-					{ min: 0, max: 0 },
-					{ min: 0, max: 0 },
-					{ min: 0, max: 0 },
-					{ min: -70, max: 70 },
-					{ min: -120, max: 120 },
-					{ min: 0, max: 0 },
-				],
-				[{ start: 0.0325, end: 0.0375 }],
-				{ viewportWidth: 3.9, scrollLeft: 3, zoom: 2, duration: 0.06 },
-			);
-			const capped = Math.min(3, dpr);
-			expect(result.canvas?.width).toBe(3 * capped);
-			expect(result.canvas?.height).toBe(TIMELINE_WAVEFORM_PX * capped);
-			expect(result.canvas?.style.width).toBe("3px");
-			expect(result.canvas?.style.height).toBe(`${TIMELINE_WAVEFORM_PX}px`);
-			expect(result.canvas?.style.left).toBe("3px");
-			expect(result.canvas?.className).toBe(
-				"pointer-events-none absolute top-0 z-[3]",
-			);
-			expect(result.transforms).toEqual([[capped, 0, 0, capped, 0, 0]]);
-			expect(result.clears).toEqual([[0, 0, 3, TIMELINE_WAVEFORM_PX]]);
-			expectGeometry(result.paints, [
-				[0, 0.25, 70, "#0090ff"],
-				[0.25, 0.5, 70, "#c4c4c4"],
-				[0.75, 0.25, 70, "#0090ff"],
-				[1, 1, 120, "#0090ff"],
-				[2, 1, 0, "#0090ff"],
-			]);
-		},
-	);
+	it("levels to the loud parts, ignoring a single spike", () => {
+		const pairs = [...speech(5, 60), { min: -127, max: 127 }];
+		const level = waveformLevel(pairs);
+		expect(level).toBeCloseTo((60 / 127) ** WAVEFORM_GAMMA, 6);
+		expect(waveformLevel([])).toBe(1);
+		expect(
+			waveformLevel(Array.from({ length: 10 }, () => ({ min: 0, max: 0 }))),
+		).toBe(1);
+	});
+
+	it("envelope stays within 0..1", () => {
+		const env = waveformEnvelope({
+			amplitudes: [0, 1, 1, 0.2, 0],
+			level: 0.1,
+			pxPerSecond: 100,
+		});
+		expect(env.every((v) => v >= 0 && v <= 1)).toBe(true);
+	});
+
+	it("labels sub-second ruler steps with tenths", () => {
+		expect(formatRulerLabel(389.5, 0.5)).toBe("6:29.5");
+		expect(formatRulerLabel(390, 0.5)).toBe("6:30.0");
+		expect(formatRulerLabel(389.6, 1)).toBe("6:30");
+	});
 });

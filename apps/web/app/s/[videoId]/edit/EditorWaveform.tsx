@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useRef } from "react";
+import { forwardRef, useEffect, useMemo, useRef } from "react";
 import {
 	PEAKS_PAIRS_PER_SEC,
 	type PeakPair,
@@ -177,7 +177,96 @@ export const TIMELINE_CHAPTER_PX = 18;
 export const TIMELINE_WAVEFORM_PX = 64;
 export const WAVEFORM_PITCH_PX = 3;
 export const WAVEFORM_BAR_PX = 2;
-export const WAVEFORM_GAMMA = 3;
+export const WAVEFORM_GAMMA = 2;
+export const WAVEFORM_KEPT_COLOR = "#a59ef0";
+export const WAVEFORM_REMOVED_COLOR = "#a3a3a8";
+// Loom-style blobs: amplitude is smoothed over ~60 ms so syllables read as rounded
+// shapes, not separate lines, and levelled to the recording's own loud parts.
+export const WAVEFORM_SMOOTH_SECONDS = 0.06;
+export const WAVEFORM_SMOOTH_MIN_PX = 3;
+export const WAVEFORM_LEVEL_QUANTILE = 0.98;
+export const WAVEFORM_SHAPE = 1.2;
+
+/** Gamma-mapped amplitude level that should reach full height for this recording. */
+export function waveformLevel(pairs: readonly PeakPair[]): number {
+	if (pairs.length === 0) return 1;
+	// ponytail: strided sample of <=20k pairs; exact quantile not needed for display scaling.
+	const stride = Math.max(1, Math.floor(pairs.length / 20_000));
+	const values: number[] = [];
+	for (let index = 0; index < pairs.length; index += stride) {
+		const pair = pairs[index];
+		if (!pair) continue;
+		const peak = Math.min(
+			127,
+			Math.max(Math.abs(pair.min), Math.abs(pair.max)),
+		);
+		values.push((peak / 127) ** WAVEFORM_GAMMA);
+	}
+	values.sort((a, b) => a - b);
+	const level =
+		values[Math.floor(WAVEFORM_LEVEL_QUANTILE * (values.length - 1))] ?? 0;
+	return level > 0.001 ? level : 1;
+}
+
+/** Kept (not deleted) x ranges of a viewport canvas, merged and clipped to [0, width]. */
+export function keptColumnRanges(input: {
+	deleted: readonly { start: number; end: number }[];
+	sourceWindow: { start: number; end: number };
+	width: number;
+}): { start: number; end: number }[] {
+	const span = input.sourceWindow.end - input.sourceWindow.start;
+	if (!(span > 0) || !(input.width > 0)) return [];
+	const toX = (time: number) =>
+		Math.min(
+			input.width,
+			Math.max(0, ((time - input.sourceWindow.start) * input.width) / span),
+		);
+	const removed = input.deleted
+		.map((range) => ({ start: toX(range.start), end: toX(range.end) }))
+		.filter((range) => range.end > range.start)
+		.sort((x, y) => x.start - y.start);
+	const kept: { start: number; end: number }[] = [];
+	let cursor = 0;
+	for (const range of removed) {
+		if (range.start > cursor) kept.push({ start: cursor, end: range.start });
+		cursor = Math.max(cursor, range.end);
+	}
+	if (cursor < input.width) kept.push({ start: cursor, end: input.width });
+	return kept;
+}
+
+/** Per-column envelope 0..1: gamma, level, Gaussian smoothing, then shape curve. */
+export function waveformEnvelope(input: {
+	amplitudes: readonly number[];
+	level: number;
+	pxPerSecond: number;
+}): number[] {
+	const base = input.amplitudes.map((amplitude) =>
+		Math.min(1, amplitude ** WAVEFORM_GAMMA / input.level),
+	);
+	// At least WAVEFORM_SMOOTH_MIN_PX so zoomed-out views stay blob-like instead of spiky.
+	const radius = Math.max(
+		WAVEFORM_SMOOTH_MIN_PX,
+		Math.round(WAVEFORM_SMOOTH_SECONDS * input.pxPerSecond * 2),
+	);
+	const sigma = radius / 2;
+	const weights: number[] = [];
+	for (let k = -radius; k <= radius; k += 1) {
+		weights.push(Math.exp(-(k * k) / (2 * sigma * sigma)));
+	}
+	return base.map((_, index) => {
+		let sum = 0;
+		let total = 0;
+		for (let k = -radius; k <= radius; k += 1) {
+			const value = base[index + k];
+			if (value === undefined) continue;
+			const weight = weights[k + radius] ?? 0;
+			sum += value * weight;
+			total += weight;
+		}
+		return total > 0 ? (sum / total) ** WAVEFORM_SHAPE : 0;
+	});
+}
 export const PLAYHEAD_LINE_TOP_PX = TIMELINE_RULER_PX + TIMELINE_CHAPTER_PX;
 
 export function visibleSourceWindow(input: {
@@ -327,7 +416,12 @@ export function formatZoomMeasure(value: number): string {
 	return String(rounded);
 }
 
-export function formatRulerLabel(seconds: number): string {
+export function formatRulerLabel(seconds: number, step = 1): string {
+	if (step < 1) {
+		const tenths = Math.max(0, Math.round(seconds * 10));
+		const whole = Math.floor(tenths / 10);
+		return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}.${tenths % 10}`;
+	}
 	const total = Math.max(0, Math.round(seconds));
 	const minutes = Math.floor(total / 60);
 	const remain = total % 60;
@@ -357,7 +451,7 @@ export function rulerTicks(input: {
 		ticks.push({
 			time: rounded,
 			leftPercent: (rounded / input.sourceDuration) * 100,
-			label: formatRulerLabel(rounded),
+			label: formatRulerLabel(rounded, step),
 			major: true,
 		});
 		if (ticks.length >= 48) break;
@@ -383,10 +477,7 @@ export function EditorTimelineRuler({
 		zoom,
 	});
 	return (
-		<div
-			data-timeline-ruler=""
-			className="relative h-[22px] overflow-hidden border-b border-white/10"
-		>
+		<div data-timeline-ruler="" className="relative h-[22px] overflow-hidden">
 			{ticks.map((tick) => (
 				<div
 					key={`${tick.time}`}
@@ -395,8 +486,8 @@ export function EditorTimelineRuler({
 					className="absolute top-0 flex h-full items-start"
 					style={{ left: `${tick.leftPercent}%` }}
 				>
-					<span className="mt-3 h-2 w-px bg-white/70" />
-					<span className="pl-1 font-mono text-[10px] font-medium tabular-nums text-white/80">
+					<span className="mt-3 h-2 w-px bg-gray-7" />
+					<span className="pl-1 font-mono text-[10px] font-medium tabular-nums text-gray-9">
 						{tick.label}
 					</span>
 				</div>
@@ -482,6 +573,7 @@ export function EditorWaveformCanvas({
 	zoom: number;
 }) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
+	const level = useMemo(() => waveformLevel(pairs ?? []), [pairs]);
 	useEffect(() => {
 		const canvas = canvasRef.current;
 		if (!canvas || hidden) return;
@@ -514,6 +606,8 @@ export function EditorWaveformCanvas({
 			context.fillRect(0, mid, width, 1);
 			return;
 		}
+		const span = sourceWindow.end - sourceWindow.start;
+		if (!Number.isFinite(span) || span <= 0) return;
 		const columns = waveformColumns({
 			pairs,
 			windowStart: sourceWindow.start,
@@ -521,58 +615,47 @@ export function EditorWaveformCanvas({
 			width,
 			deleted,
 		});
-		const span = sourceWindow.end - sourceWindow.start;
-		if (!Number.isFinite(span) || span <= 0) return;
-		const visibleDeleted = deleted
-			.filter(
-				(range) =>
-					range.end > range.start &&
-					range.start < sourceWindow.end &&
-					range.end > sourceWindow.start,
-			)
-			.map((range) => ({
-				start: Math.max(0, ((range.start - sourceWindow.start) * width) / span),
-				end: Math.min(width, ((range.end - sourceWindow.start) * width) / span),
-			}))
-			.sort((a, b) => a.start - b.start);
-		const mergedDeleted: { start: number; end: number }[] = [];
-		for (const range of visibleDeleted) {
-			const previous = mergedDeleted[mergedDeleted.length - 1];
-			if (previous && range.start <= previous.end) {
-				previous.end = Math.max(previous.end, range.end);
-			} else {
-				mergedDeleted.push(range);
-			}
-		}
-		let deletedIndex = 0;
-		for (const [index, column] of columns.entries()) {
-			const bar = Math.max(
-				1,
-				column.amplitude ** WAVEFORM_GAMMA * (height - 8),
-			);
-			let pixel = index;
-			while (pixel < index + 1) {
-				while (
-					deletedIndex < mergedDeleted.length &&
-					(mergedDeleted[deletedIndex]?.end ?? 0) <= pixel
-				) {
-					deletedIndex += 1;
-				}
-				const range = mergedDeleted[deletedIndex];
-				const removed = range !== undefined && range.start <= pixel;
-				const end = Math.min(
-					index + 1,
-					removed ? range.end : (range?.start ?? index + 1),
+		const envelope = waveformEnvelope({
+			amplitudes: columns.map((column) => column.amplitude),
+			level,
+			pxPerSecond: width / span,
+		});
+		const reach = mid - 5;
+		const traceOutline = () => {
+			context.beginPath();
+			context.moveTo(0, mid);
+			envelope.forEach((value, index) => {
+				context.lineTo(index + 0.5, mid - Math.max(0.75, value * reach));
+			});
+			context.lineTo(width, mid);
+			for (let index = envelope.length - 1; index >= 0; index -= 1) {
+				context.lineTo(
+					index + 0.5,
+					mid + Math.max(0.75, (envelope[index] ?? 0) * reach),
 				);
-				context.fillStyle = removed ? "#c4c4c4" : "#0090ff";
-				context.fillRect(pixel, mid - bar / 2, end - pixel, bar);
-				pixel = end;
 			}
-		}
+			context.closePath();
+		};
+		// Removed audio stays in place in grey; kept ranges are painted over it.
+		context.fillStyle = WAVEFORM_REMOVED_COLOR;
+		traceOutline();
+		context.fill();
+		const kept = keptColumnRanges({ deleted, sourceWindow, width });
+		if (kept.length === 0) return;
+		context.save();
+		context.beginPath();
+		for (const range of kept)
+			context.rect(range.start, 0, range.end - range.start, height);
+		context.clip();
+		context.fillStyle = WAVEFORM_KEPT_COLOR;
+		traceOutline();
+		context.fill();
+		context.restore();
 	}, [
 		deleted,
 		duration,
 		hidden,
+		level,
 		noAudio,
 		pairs,
 		scrollLeft,

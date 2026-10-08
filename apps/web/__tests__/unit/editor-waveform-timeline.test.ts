@@ -224,6 +224,17 @@ describe("viewport waveform canvas", () => {
 			fillRect(x: number, y: number, w: number, h: number) {
 				draws.push([x, y, w, h]);
 			},
+			beginPath() {},
+			moveTo() {},
+			lineTo(x: number, y: number) {
+				draws.push([x, y, 0, 0]);
+			},
+			closePath() {},
+			fill() {},
+			save() {},
+			restore() {},
+			rect() {},
+			clip() {},
 			fillStyle: "",
 		})) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 		Object.defineProperty(window, "devicePixelRatio", {
@@ -288,7 +299,7 @@ describe("viewport waveform canvas", () => {
 		expect(draws.length).toBeGreaterThan(0);
 		expect(
 			draws.every(
-				(draw) => draw[0] !== undefined && draw[0] >= 0 && draw[0] < 80,
+				(draw) => draw[0] !== undefined && draw[0] >= 0 && draw[0] <= 80,
 			),
 		).toBe(true);
 	});

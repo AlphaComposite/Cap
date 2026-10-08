@@ -114,13 +114,7 @@ function leadingPercent(value: string) {
 }
 
 function keptClipBoxes(rootNode: ParentNode) {
-	return [...rootNode.querySelectorAll("div")].filter((element) => {
-		const bars = [...element.children].filter(
-			(child) =>
-				child.tagName === "DIV" && child.classList.contains("bg-blue-500"),
-		);
-		return bars.length >= 2;
-	});
+	return [...rootNode.querySelectorAll<HTMLElement>("[data-clip-capsule]")];
 }
 
 function timelineElement(rootNode: ParentNode) {

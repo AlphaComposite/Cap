@@ -2629,12 +2629,12 @@ export function EditVideoClient({
 						<div
 							ref={scrollContainerRef}
 							className={[
-								"relative w-full overflow-x-auto overflow-y-hidden rounded-lg bg-gray-12 ring-1 ring-gray-5",
-								"[&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/20 [&::-webkit-scrollbar-track]:bg-transparent",
+								"relative w-full overflow-x-auto overflow-y-hidden rounded-lg bg-white ring-1 ring-gray-5",
+								"[&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-black/20 [&::-webkit-scrollbar-track]:bg-transparent",
 								"overscroll-x-contain",
 							].join(" ")}
 							style={{
-								scrollbarColor: "rgba(255,255,255,0.2) transparent",
+								scrollbarColor: "rgba(0,0,0,0.2) transparent",
 								boxShadow: [
 									"0 1px 2px rgba(15,23,42,0.05)",
 									"0 4px 12px -2px rgba(15,23,42,0.08)",
@@ -2726,14 +2726,14 @@ export function EditVideoClient({
 													data-removed-marker=""
 													role="img"
 													aria-label={`Removed section ${formatTime(segment.start)}–${formatTime(segment.end)}`}
-													className="pointer-events-none absolute inset-y-0 z-[4] bg-black/45 backdrop-grayscale"
+													className="pointer-events-none absolute inset-y-0 z-[4] bg-white/35"
 													style={{
 														left: `${startPct}%`,
 														width: `${Math.max(0, endPct - startPct)}%`,
 													}}
 												>
-													<span className="absolute inset-y-0 left-0 w-px bg-white/80" />
-													<span className="absolute inset-y-0 right-0 w-px bg-white/80" />
+													<span className="absolute inset-y-0 left-0 w-px bg-gray-6" />
+													<span className="absolute inset-y-0 right-0 w-px bg-gray-6" />
 												</div>
 											);
 										})}
@@ -2744,13 +2744,13 @@ export function EditVideoClient({
 									/>
 
 									<div
-										className="pointer-events-none absolute inset-y-0 left-0 bg-black/70"
+										className="pointer-events-none absolute inset-y-0 left-0 bg-white/75"
 										style={{
 											width: `${trimStartPct}%`,
 										}}
 									/>
 									<div
-										className="pointer-events-none absolute inset-y-0 right-0 bg-black/70"
+										className="pointer-events-none absolute inset-y-0 right-0 bg-white/75"
 										style={{
 											width: `${100 - trimEndPct}%`,
 										}}
@@ -2772,19 +2772,16 @@ export function EditVideoClient({
 														isActive || !hasMultipleClips ? "" : undefined
 													}
 													className={[
-														"pointer-events-none absolute inset-y-1 z-[5] overflow-hidden rounded-xl border-2 transition-colors",
-														isActive || !hasMultipleClips
-															? "border-[#113264] bg-[#0090ff]/10"
-															: "border-[#0090ff] bg-[#0090ff]/5",
+														"pointer-events-none absolute inset-y-1 z-[5] overflow-hidden rounded-xl transition-colors",
+														isActive && hasMultipleClips
+															? "border-2 border-[#2a1f9e] bg-[#5b4ee6]/25"
+															: "border-[1.5px] border-[#9c95ee]",
 													].join(" ")}
 													style={{
 														left: `calc(${startPct}% + 1.5px)`,
 														width: `calc(${widthPct}% - 3px)`,
 													}}
-												>
-													<div className="absolute inset-x-0 top-0 h-1.5 bg-blue-500" />
-													<div className="absolute inset-x-0 bottom-0 h-1.5 bg-blue-500" />
-												</div>
+												></div>
 
 												<button
 													type="button"
