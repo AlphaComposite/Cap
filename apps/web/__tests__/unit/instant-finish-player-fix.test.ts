@@ -169,7 +169,9 @@ describe("grant refresh keeps the viewer's sound", () => {
 			path.join(root, "app/s/[videoId]/_components/HLSVideoPlayer.tsx"),
 			"utf8",
 		);
-		expect(player).not.toMatch(/autoplay \|\| startAt > 0\) \{\s*video\.muted = true/);
+		expect(player).not.toMatch(
+			/autoplay \|\| startAt > 0\) \{\s*video\.muted = true/,
+		);
 		expect(player).toContain("if (autoplay) video.muted = true;");
 		expect(player).toContain("resumePlayingRef.current = !video.paused;");
 	});

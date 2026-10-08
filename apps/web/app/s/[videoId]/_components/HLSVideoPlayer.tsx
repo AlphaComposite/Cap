@@ -441,7 +441,8 @@ export function HLSVideoPlayer({
 						video.currentTime = startAt;
 						hls.startLoad(startAt);
 					}
-					if (autoplay || resumePlaying) void video.play().catch(() => undefined);
+					if (autoplay || resumePlaying)
+						void video.play().catch(() => undefined);
 				});
 			}
 			if (isLiveSegments) {

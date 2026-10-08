@@ -1227,7 +1227,9 @@ export async function sweepSourcePrepare(
 			}
 			return { claimed: 1, encoded: advanced.calls.prepare };
 		} catch (error) {
-			mark("error", { message: String((error as Error)?.message ?? error).slice(0, 200) });
+			mark("error", {
+				message: String((error as Error)?.message ?? error).slice(0, 200),
+			});
 			if (await beat()) {
 				await database
 					.update(revisionOutbox)
@@ -1248,10 +1250,16 @@ export async function sweepSourcePrepare(
 }
 
 // Opt-in per-job timing (CAP_WORKER_TIMING=1): one JSON line per step, ms since the job was queued and since claim. Off by default.
-function sourcePrepareTimer(claimed: { id: number; payload: SourcePreparePayload; createdAt?: Date }) {
+function sourcePrepareTimer(claimed: {
+	id: number;
+	payload: SourcePreparePayload;
+	createdAt?: Date;
+}) {
 	const enabled = process.env.CAP_WORKER_TIMING === "1";
 	const claimedAt = Date.now();
-	const queuedAt = claimed.createdAt ? new Date(claimed.createdAt).getTime() : null;
+	const queuedAt = claimed.createdAt
+		? new Date(claimed.createdAt).getTime()
+		: null;
 	const mark = (event: string, extra: Record<string, unknown> = {}) => {
 		if (!enabled) return;
 		const at = Date.now();

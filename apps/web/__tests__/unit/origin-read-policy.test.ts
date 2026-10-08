@@ -118,10 +118,15 @@ describe("origin read policy off the editor path", () => {
 		const { refreshOriginReadPolicy } = await import(
 			"@/lib/instant-finish-source-relocate"
 		);
-		await refreshOriginReadPolicy(fakeDb() as never, "private/source/vid/a.mp4");
+		await refreshOriginReadPolicy(
+			fakeDb() as never,
+			"private/source/vid/a.mp4",
+		);
 		const runs = calls.filter((args) => args[0] === "run");
 		expect(runs).toHaveLength(1);
-		const script = runs[0]!.find((arg) => arg.includes("mc admin policy create"));
+		const script = runs[0]!.find((arg) =>
+			arg.includes("mc admin policy create"),
+		);
 		expect(script).toBeDefined();
 		expect(script).toContain("mc admin policy attach");
 		// Name and user are never interpolated into the shell script.

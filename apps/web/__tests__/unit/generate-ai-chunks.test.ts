@@ -282,7 +282,9 @@ describe("multi-chunk chapter evidence", () => {
 
 		await runWorkflow();
 
-		expect(generateTextMock.mock.calls[0]?.[0].prompt).toContain("section 1 of 4");
+		expect(generateTextMock.mock.calls[0]?.[0].prompt).toContain(
+			"section 1 of 4",
+		);
 		const saved = JSON.stringify(state.updates);
 		expect(saved).toContain("Topic 1500");
 		expect(saved).toContain("Wrap up");
@@ -300,9 +302,24 @@ describe("multi-chunk chapter evidence", () => {
 			text: JSON.stringify({ summary: "Section.", keyPoints: [], chapters }),
 		});
 		generateTextMock
-			.mockResolvedValueOnce(section([{ title: "Opening", start: 0 }, { title: "Plan", start: 300 }]))
-			.mockResolvedValueOnce(section([{ title: "Budget", start: 600 }, { title: "Stray", start: 1200 }]))
-			.mockResolvedValueOnce(section([{ title: "Hiring", start: 1200 }, { title: "Access", start: 1500 }]))
+			.mockResolvedValueOnce(
+				section([
+					{ title: "Opening", start: 0 },
+					{ title: "Plan", start: 300 },
+				]),
+			)
+			.mockResolvedValueOnce(
+				section([
+					{ title: "Budget", start: 600 },
+					{ title: "Stray", start: 1200 },
+				]),
+			)
+			.mockResolvedValueOnce(
+				section([
+					{ title: "Hiring", start: 1200 },
+					{ title: "Access", start: 1500 },
+				]),
+			)
 			.mockResolvedValueOnce(section([{ title: "Wrap up", start: 1800 }]))
 			.mockResolvedValueOnce({ text: '{"title":"Long meeting"}' });
 
