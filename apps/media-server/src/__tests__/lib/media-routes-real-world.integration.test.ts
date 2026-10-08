@@ -395,7 +395,9 @@ beforeAll(async () => {
 									? join(tempDir, "chrome.webm")
 									: url.pathname === "/fixtures/chrome-h264-opus-fragmented.mp4"
 										? join(FIXTURES_DIR, "chrome-h264-opus-fragmented.mp4")
-										: null;
+										: url.pathname === "/fixtures/chrome-fragmented-empty-traf.mp4"
+											? join(FIXTURES_DIR, "chrome-fragmented-empty-traf.mp4")
+											: null;
 
 				if (fixturePath) {
 					if (request.method === "GET") fixtureReads.push(url.pathname);
@@ -1155,6 +1157,36 @@ describe("media routes real-world integration tests", () => {
 		} finally {
 			thumbnail.mockRestore();
 			preview.mockRestore();
+			if (jobId) deleteJob(jobId);
+		}
+	}, 60000);
+
+	test("repairs and processes a fragmented MP4 whose demuxer probe throws on an empty track fragment", async () => {
+		const repair = spyOn(mediaVideo, "repairContainer");
+		let jobId: string | undefined;
+		try {
+			const response = await app.fetch(
+				mediaPostRequest("/video/process", {
+					videoId: "chrome-empty-traf",
+					userId: "real-process-user",
+					videoUrl: fixtureUrl("chrome-fragmented-empty-traf.mp4"),
+					outputPresignedUrl: uploadUrl("chrome-empty-traf.mp4"),
+					webhookUrl: `${baseUrl}/ignored-webhook`,
+					webhookSecret: MEDIA_SERVER_SECRET,
+					inputExtension: ".mp4",
+				}),
+			);
+			expect(response.status).toBe(200);
+			jobId = ((await response.json()) as { jobId: string }).jobId;
+			const job = await waitForTerminalJob(jobId);
+			expect(job.phase).toBe("complete");
+			expect(repair).toHaveBeenCalled();
+			expect(job.metadata?.duration).toBeGreaterThan(3.5);
+			const output = join(tempDir, "chrome-empty-traf.mp4");
+			await writeFile(output, uploadedBytes("/uploads/chrome-empty-traf.mp4"));
+			expect((await probeVideoFile(output)).duration).toBeGreaterThan(3.5);
+		} finally {
+			repair.mockRestore();
 			if (jobId) deleteJob(jobId);
 		}
 	}, 60000);

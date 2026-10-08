@@ -866,8 +866,10 @@ async function probeWithRepairFallback(
 		return { metadata, repairedFile: null };
 	}
 
-	if (!isWebm) {
-		if (probeError) throw probeError;
+	// Non-WebM files with a readable but incomplete probe keep the old behaviour.
+	// A probe that throws (eg. a fragmented MP4 with an empty track fragment,
+	// which crashes the demuxer) gets the same ffmpeg container repair as WebM.
+	if (!isWebm && !probeError) {
 		if (metadata) return { metadata, repairedFile: null };
 		throw new Error("Probe returned no metadata");
 	}
