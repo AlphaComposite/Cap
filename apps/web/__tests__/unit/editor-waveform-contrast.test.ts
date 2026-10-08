@@ -136,7 +136,6 @@ describe("editor waveform blob painter", () => {
 		]);
 		expect(fills.map((fill) => fill.color)).toEqual([
 			WAVEFORM_REMOVED_COLOR,
-			WAVEFORM_GAMMA,
 			WAVEFORM_KEPT_COLOR,
 		]);
 		expect(fills[0]?.clip).toEqual([]);
