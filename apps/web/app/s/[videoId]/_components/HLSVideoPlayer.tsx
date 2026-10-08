@@ -19,8 +19,11 @@ import { retryVideoProcessing } from "@/actions/video/retry-processing";
 import { createPrefetchLoader } from "@/lib/instant-finish-fragment-cache";
 import {
 	beginGrantRefreshCycle,
+	createGrantKeeper,
+	createGrantLoader,
 	type GrantRefreshCycle,
 	grantResumeStartPosition,
+	mediaGrantOf,
 	planGrantRefresh,
 	playbackResumeTime,
 	redactMediaGrant,
@@ -418,9 +421,44 @@ export function HLSVideoPlayer({
 		if (Hls.isSupported()) {
 			const startAt = resumeAtRef.current;
 			resumeAtRef.current = -1;
+			// Revision playback: renew the short-lived grant at request time when it is
+			// near expiry, so segments never hit a 401 (also after pause/sleep/offline).
+			const initialGrant = revisionRef.current
+				? mediaGrantOf(playbackSrc)
+				: null;
+			const prefetchLoader = createPrefetchLoader(Hls.DefaultConfig.loader);
+			const grantKeeper = initialGrant
+				? createGrantKeeper({
+						grant: initialGrant,
+						renew: async () => {
+							const revision = revisionRef.current;
+							if (!revision) return null;
+							const response = await fetch("/api/media/grant", {
+								method: "POST",
+								headers: { "content-type": "application/json" },
+								body: JSON.stringify({
+									videoId: revision.videoId,
+									revisionId: revision.revisionId,
+								}),
+							});
+							if (response.status !== 200) return null;
+							const body = (await response.json().catch(() => null)) as {
+								revisionId?: string;
+								grant?: string;
+							} | null;
+							// Denied or revision changed: keep the old grant; the segment
+							// error path then fails closed or reloads, as before.
+							return body?.grant && body.revisionId === revision.revisionId
+								? body.grant
+								: null;
+						},
+					})
+				: null;
 			const hlsConfigInput = {
 				startPosition: startAt > 0 ? startAt : -1,
-				loader: createPrefetchLoader(Hls.DefaultConfig.loader),
+				loader: grantKeeper
+					? createGrantLoader(prefetchLoader, grantKeeper)
+					: prefetchLoader,
 			};
 			const hls = new Hls(
 				isLiveSegments
@@ -441,7 +479,8 @@ export function HLSVideoPlayer({
 						video.currentTime = startAt;
 						hls.startLoad(startAt);
 					}
-					if (autoplay || resumePlaying) void video.play().catch(() => undefined);
+					if (autoplay || resumePlaying)
+						void video.play().catch(() => undefined);
 				});
 			}
 			if (isLiveSegments) {

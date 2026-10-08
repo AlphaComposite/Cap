@@ -109,6 +109,105 @@ export function replacePlaylistGrant(url: string, grant: string): string {
 	return `${parsed.pathname}?${parsed.searchParams.toString()}`;
 }
 
+/** Renew the playback grant when less than this many seconds of its life remain. */
+export const GRANT_RENEW_LEAD_S = 20;
+
+function grantLifetimeS(grant: string): number | null {
+	const payload = grant.split(".")[1];
+	if (!payload) return null;
+	try {
+		const json = JSON.parse(
+			atob(payload.replace(/-/g, "+").replace(/_/g, "/")),
+		) as { iat?: unknown; exp?: unknown };
+		return typeof json.iat === "number" && typeof json.exp === "number"
+			? json.exp - json.iat
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+export function mediaGrantOf(url: string): string | null {
+	return new URL(url, "http://revision.local").searchParams.get("t");
+}
+
+/**
+ * Holds the current playback grant and renews it on demand. Freshness is measured
+ * from when this browser received the grant (exp - iat lifetime), so a skewed
+ * viewer clock is harmless. Because renewal happens at request time, pauses,
+ * sleep, background tabs and network drops all recover without a 401.
+ */
+export function createGrantKeeper(input: {
+	grant: string;
+	renew: () => Promise<string | null>;
+	now?: () => number;
+}) {
+	const now = input.now ?? Date.now;
+	let grant = input.grant;
+	let receivedAt = now();
+	let inflight: Promise<string> | null = null;
+	const stale = () => {
+		const life = grantLifetimeS(grant) ?? 60;
+		return now() - receivedAt >= Math.max(0, life - GRANT_RENEW_LEAD_S) * 1000;
+	};
+	return {
+		current: () => grant,
+		stale,
+		/** Fresh grant; renews once (shared by concurrent callers) when near expiry. */
+		async fresh(): Promise<string> {
+			if (!stale()) return grant;
+			inflight ??= input
+				.renew()
+				.then((next) => {
+					if (next) {
+						grant = next;
+						receivedAt = now();
+					}
+					return grant;
+				})
+				.catch(() => grant)
+				.finally(() => {
+					inflight = null;
+				});
+			return inflight;
+		},
+	};
+}
+
+/**
+ * hls.js loader that waits for a fresh grant and stamps it on every /media/
+ * request carrying one, so the player never needs rebuilding for a new grant.
+ */
+export function createGrantLoader<T extends new (...args: never[]) => object>(
+	Base: T,
+	keeper: { fresh: () => Promise<string> },
+): T {
+	const Wrapped = class extends (Base as new (
+		...args: never[]
+	) => { load(...args: never[]): void; abort?(): void }) {
+		private aborted = false;
+		abort() {
+			this.aborted = true;
+			super.abort?.();
+		}
+		load(...args: never[]) {
+			const context = args[0] as unknown as { url?: unknown };
+			const url = typeof context?.url === "string" ? context.url : "";
+			if (!url.includes("/media/") || mediaGrantOf(url) === null) {
+				super.load(...args);
+				return;
+			}
+			this.aborted = false;
+			void keeper.fresh().then((grant) => {
+				if (this.aborted) return;
+				(context as { url: string }).url = replacePlaylistGrant(url, grant);
+				super.load(...args);
+			});
+		}
+	};
+	return Wrapped as unknown as T;
+}
+
 export function buildClientRevisionPlayback(input: {
 	publication: InstantFinishPublicationDto;
 	videoId: string;
