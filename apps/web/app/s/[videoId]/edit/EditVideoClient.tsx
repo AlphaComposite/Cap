@@ -113,6 +113,7 @@ import {
 	useEditorChapterPreview,
 } from "./EditorChapterPreview";
 import {
+	capsuleOutlineGroups,
 	EditorChapterLane,
 	EditorHoverGhost,
 	EditorPlayhead,
@@ -179,8 +180,6 @@ function formatTimeDetailed(seconds: number) {
 	const padded = remainingSeconds.toFixed(2).padStart(5, "0");
 	return `${String(minutes).padStart(2, "0")}:${padded}`;
 }
-
-const MIN_OUTLINED_CAPSULE_PX = 12;
 
 function getTimePercent(time: number, duration: number) {
 	if (duration <= 0) return 0;
@@ -2755,12 +2754,29 @@ export function EditVideoClient({
 										}}
 									/>
 
+									{capsuleOutlineGroups(visibleSegments, editingPxPerSec).map(
+										(group) => {
+											const startPct = getTimePercent(
+												group.start,
+												state.duration,
+											);
+											const endPct = getTimePercent(group.end, state.duration);
+											return (
+												<div
+													key={`outline-${group.start}`}
+													data-capsule-outline=""
+													className="pointer-events-none absolute inset-y-1 z-[5] rounded-xl border-[1.5px] border-[#9c95ee]"
+													style={{
+														left: `calc(${startPct}% + 1.5px)`,
+														width: `calc(${Math.max(0, endPct - startPct)}% - 3px)`,
+													}}
+												/>
+											);
+										},
+									)}
+
 									{visibleSegments.map((clip, index) => {
 										const isFirst = index === 0;
-										// Loom-style: slivers too narrow to read get no outline of their own.
-										const outlined =
-											(clip.end - clip.start) * editingPxPerSec >=
-											MIN_OUTLINED_CAPSULE_PX;
 										const isLast = index === visibleSegments.length - 1;
 										const hasMultipleClips = visibleSegments.length > 1;
 										const isActive = activeSegmentAtPlayhead?.id === clip.id;
@@ -2778,9 +2794,7 @@ export function EditVideoClient({
 														"pointer-events-none absolute inset-y-1 z-[5] overflow-hidden rounded-xl transition-colors",
 														isActive && hasMultipleClips
 															? "border-2 border-[#2a1f9e] bg-[#5b4ee6]/25"
-															: outlined
-																? "border-[1.5px] border-[#9c95ee]"
-																: "",
+															: "",
 													].join(" ")}
 													style={{
 														left: `calc(${startPct}% + 1.5px)`,

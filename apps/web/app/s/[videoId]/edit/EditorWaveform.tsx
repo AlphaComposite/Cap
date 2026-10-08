@@ -184,6 +184,33 @@ export const WAVEFORM_REMOVED_COLOR = "#a3a3a8";
 // shapes, not separate lines, and levelled to the recording's own loud parts.
 export const WAVEFORM_SMOOTH_SECONDS = 0.06;
 export const WAVEFORM_SMOOTH_MIN_PX = 3;
+export const WAVEFORM_MIN_CUT_PX = 3;
+export const MIN_OUTLINED_CAPSULE_PX = 24;
+
+/**
+ * Capsule outlines for kept clips at a zoom: clips separated by a cut thinner than
+ * WAVEFORM_MIN_CUT_PX share one outline; outlines narrower than
+ * MIN_OUTLINED_CAPSULE_PX are dropped. Display only; edits are untouched.
+ */
+export function capsuleOutlineGroups(
+	clips: readonly { start: number; end: number }[],
+	pxPerSecond: number,
+): { start: number; end: number }[] {
+	if (!(pxPerSecond > 0)) return [];
+	const groups: { start: number; end: number }[] = [];
+	for (const clip of [...clips].sort((a, b) => a.start - b.start)) {
+		const last = groups[groups.length - 1];
+		if (last && (clip.start - last.end) * pxPerSecond < WAVEFORM_MIN_CUT_PX) {
+			last.end = Math.max(last.end, clip.end);
+		} else {
+			groups.push({ start: clip.start, end: clip.end });
+		}
+	}
+	return groups.filter(
+		(group) =>
+			(group.end - group.start) * pxPerSecond >= MIN_OUTLINED_CAPSULE_PX,
+	);
+}
 export const WAVEFORM_LEVEL_QUANTILE = 0.98;
 export const WAVEFORM_SHAPE = 1.2;
 
@@ -223,7 +250,8 @@ export function keptColumnRanges(input: {
 		);
 	const removed = input.deleted
 		.map((range) => ({ start: toX(range.start), end: toX(range.end) }))
-		.filter((range) => range.end > range.start)
+		// Cuts too thin to read at this zoom draw as kept (Loom-style overview).
+		.filter((range) => range.end - range.start >= WAVEFORM_MIN_CUT_PX)
 		.sort((x, y) => x.start - y.start);
 	const kept: { start: number; end: number }[] = [];
 	let cursor = 0;

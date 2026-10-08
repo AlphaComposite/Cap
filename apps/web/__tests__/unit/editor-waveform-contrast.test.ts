@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+	capsuleOutlineGroups,
 	EditorWaveformCanvas,
 	formatRulerLabel,
 	keptColumnRanges,
@@ -286,5 +287,39 @@ describe("waveform helpers", () => {
 		expect(formatRulerLabel(389.5, 0.5)).toBe("6:29.5");
 		expect(formatRulerLabel(390, 0.5)).toBe("6:30.0");
 		expect(formatRulerLabel(389.6, 1)).toBe("6:30");
+	});
+
+	it("treats cuts thinner than 3 px as kept at this zoom", () => {
+		// 10 s over 100 px: 0.2 s cut = 2 px (hidden), 0.5 s cut = 5 px (shown)
+		expect(
+			keptColumnRanges({
+				deleted: [
+					{ start: 2, end: 2.2 },
+					{ start: 6, end: 6.5 },
+				],
+				sourceWindow: { start: 0, end: 10 },
+				width: 100,
+			}),
+		).toEqual([
+			{ start: 0, end: 60 },
+			{ start: 65, end: 100 },
+		]);
+	});
+
+	it("merges capsules across thin cuts and drops unreadably narrow outlines", () => {
+		const clips = [
+			{ start: 0, end: 4 },
+			{ start: 4.2, end: 8 }, // 0.2 s cut at 10 px/s = 2 px -> merged
+			{ start: 9, end: 9.5 }, // 5 px wide, alone -> no outline
+			{ start: 12, end: 20 },
+		];
+		expect(capsuleOutlineGroups(clips, 10)).toEqual([
+			{ start: 0, end: 8 },
+			{ start: 12, end: 20 },
+		]);
+		// zoomed in, every clip is its own outline
+		expect(capsuleOutlineGroups(clips, 100)).toHaveLength(4);
+		expect(capsuleOutlineGroups(clips, 0)).toEqual([]);
+		expect(clips[0]).toEqual({ start: 0, end: 4 });
 	});
 });
