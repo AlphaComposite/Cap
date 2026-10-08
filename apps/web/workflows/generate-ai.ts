@@ -1181,19 +1181,24 @@ Additional requirements:
 - Do not return a summary or any other public content.
 Return ONLY valid JSON without any markdown formatting or code blocks.`;
 
-	try {
-		const parsed = await callAiApi(finalPrompt, parseFinalTitle);
-		return {
-			title: parsed.title,
-			chapters: allChapters,
-		};
-	} catch (error) {
-		if (!failedOnInvalidOutput(error)) throw error;
-		return {
-			title: "Video Summary",
-			chapters: allChapters,
-		};
+	// One retry restating the limit; then keep the existing name rather than
+	// renaming the video to a placeholder.
+	for (const prompt of [
+		finalPrompt,
+		`${finalPrompt}\n\n${strictTitleRetry()}`,
+	]) {
+		try {
+			const parsed = await callAiApi(prompt, parseFinalTitle);
+			return { title: parsed.title, chapters: allChapters };
+		} catch (error) {
+			if (!failedOnInvalidOutput(error)) throw error;
+		}
 	}
+	return { chapters: allChapters };
+}
+
+export function strictTitleRetry(): string {
+	return `Your previous title was rejected. The title MUST be ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters or fewer, counting spaces. Name only the main topic.`;
 }
 
 // Like parseAiResponse, these throw on missing or empty required fields —

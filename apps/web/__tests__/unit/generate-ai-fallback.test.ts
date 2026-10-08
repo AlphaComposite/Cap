@@ -55,6 +55,7 @@ import {
 	parseChapterSynthesis,
 	parseChunkAnalysis,
 	parseFinalTitle,
+	strictTitleRetry,
 } from "@/workflows/generate-ai";
 
 const makeSelection = (provider: string): AiModelSelection => ({
@@ -545,5 +546,11 @@ describe("map-reduce output parsers", () => {
 		expect(parseFinalTitle(JSON.stringify({ title: "x".repeat(60) }))).toEqual({
 			title: "x".repeat(60),
 		});
+	});
+});
+
+describe("title retry", () => {
+	it("restates the 60-character limit", () => {
+		expect(strictTitleRetry()).toContain("60 characters or fewer");
 	});
 });

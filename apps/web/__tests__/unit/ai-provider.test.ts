@@ -38,6 +38,7 @@ const runtimeAiEnvKeys = [
 	"AI_CHAT_MODEL",
 	"AI_STREAM_MODEL",
 	"AI_BASE_URL",
+	"AI_COMPATIBLE_MODEL",
 	"AI_API_KEY",
 ] as const;
 const originalRuntimeAiEnv = Object.fromEntries(
@@ -487,5 +488,23 @@ describe("provider options", () => {
 		expect(byProvider.anthropic).toEqual({
 			anthropic: { disableParallelToolUse: true },
 		});
+	});
+});
+
+describe("openai-compatible fallback model", () => {
+	it("adds Requesty after OpenAI without changing OpenAI's model", () => {
+		envWith({
+			AI_PROVIDER: "openai",
+			OPENAI_API_KEY: "sk-test",
+			AI_BASE_URL: "https://router.requesty.ai/v1",
+			AI_API_KEY: "rq-test",
+			AI_COMPATIBLE_MODEL: "google/gemini-3.5-flash-lite",
+		});
+		expect(
+			getAiProviderChain("generation").map((s) => [s.provider, s.modelId]),
+		).toEqual([
+			["openai", "gpt-4o-mini"],
+			["openai-compatible", "google/gemini-3.5-flash-lite"],
+		]);
 	});
 });

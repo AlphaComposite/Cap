@@ -35,6 +35,7 @@ const AI_ENV_KEYS = [
 	"AI_STREAM_MODEL",
 	"AI_BASE_URL",
 	"AI_API_KEY",
+	"AI_COMPATIBLE_MODEL",
 ] as const;
 
 function aiEnv(): ReturnType<typeof serverEnv> {
@@ -153,7 +154,9 @@ function isProviderConfigured(provider: AiProviderId): boolean {
 		case "groq":
 			return Boolean(env.GROQ_API_KEY);
 		case "openai-compatible":
-			return Boolean(env.AI_BASE_URL && env.AI_MODEL);
+			return Boolean(
+				env.AI_BASE_URL && (env.AI_COMPATIBLE_MODEL || env.AI_MODEL),
+			);
 	}
 }
 
@@ -168,7 +171,7 @@ function missingCredentialHint(provider: AiProviderId): string {
 		case "groq":
 			return "GROQ_API_KEY is not set";
 		case "openai-compatible":
-			return "AI_BASE_URL and AI_MODEL are required";
+			return "AI_BASE_URL and AI_COMPATIBLE_MODEL (or AI_MODEL) are required";
 	}
 }
 
@@ -227,6 +230,9 @@ function envModelOverride(role: AiModelRole): string | undefined {
 
 function openAiCompatibleModelId(role: AiModelRole): string | undefined {
 	const env = aiEnv();
+	// Lets openai-compatible (eg. Requesty) be a fallback with its own model,
+	// without AI_MODEL also overriding the primary provider's model.
+	if (env.AI_COMPATIBLE_MODEL) return env.AI_COMPATIBLE_MODEL;
 	switch (role) {
 		case "generation":
 			return env.AI_MODEL;

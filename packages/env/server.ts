@@ -135,6 +135,12 @@ function createServerEnv() {
 				.string()
 				.optional()
 				.describe("API key for the 'openai-compatible' provider"),
+			AI_COMPATIBLE_MODEL: z
+				.string()
+				.optional()
+				.describe(
+					"Model for the 'openai-compatible' provider only (all roles); lets it act as a fallback without AI_MODEL overriding the primary provider",
+				),
 			REPLICATE_API_TOKEN: z
 				.string()
 				.optional()
@@ -208,6 +214,7 @@ function createServerEnv() {
 			AI_STREAM_MODEL: process.env.AI_STREAM_MODEL,
 			AI_BASE_URL: process.env.AI_BASE_URL,
 			AI_API_KEY: process.env.AI_API_KEY,
+			AI_COMPATIBLE_MODEL: process.env.AI_COMPATIBLE_MODEL,
 			NODE_ENV: process.env.NODE_ENV ?? "production",
 			VERCEL_URL_HOST: process.env.VERCEL_URL,
 			VERCEL_BRANCH_URL_HOST: process.env.VERCEL_BRANCH_URL,
