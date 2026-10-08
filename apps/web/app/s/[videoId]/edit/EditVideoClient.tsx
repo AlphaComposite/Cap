@@ -180,6 +180,8 @@ function formatTimeDetailed(seconds: number) {
 	return `${String(minutes).padStart(2, "0")}:${padded}`;
 }
 
+const MIN_OUTLINED_CAPSULE_PX = 12;
+
 function getTimePercent(time: number, duration: number) {
 	if (duration <= 0) return 0;
 	return Math.min(100, Math.max(0, (time / duration) * 100));
@@ -2726,15 +2728,12 @@ export function EditVideoClient({
 													data-removed-marker=""
 													role="img"
 													aria-label={`Removed section ${formatTime(segment.start)}–${formatTime(segment.end)}`}
-													className="pointer-events-none absolute inset-y-0 z-[4] bg-white/35"
+													className="pointer-events-none absolute inset-y-0 z-[4]"
 													style={{
 														left: `${startPct}%`,
 														width: `${Math.max(0, endPct - startPct)}%`,
 													}}
-												>
-													<span className="absolute inset-y-0 left-0 w-px bg-gray-6" />
-													<span className="absolute inset-y-0 right-0 w-px bg-gray-6" />
-												</div>
+												></div>
 											);
 										})}
 
@@ -2758,6 +2757,10 @@ export function EditVideoClient({
 
 									{visibleSegments.map((clip, index) => {
 										const isFirst = index === 0;
+										// Loom-style: slivers too narrow to read get no outline of their own.
+										const outlined =
+											(clip.end - clip.start) * editingPxPerSec >=
+											MIN_OUTLINED_CAPSULE_PX;
 										const isLast = index === visibleSegments.length - 1;
 										const hasMultipleClips = visibleSegments.length > 1;
 										const isActive = activeSegmentAtPlayhead?.id === clip.id;
@@ -2775,7 +2778,9 @@ export function EditVideoClient({
 														"pointer-events-none absolute inset-y-1 z-[5] overflow-hidden rounded-xl transition-colors",
 														isActive && hasMultipleClips
 															? "border-2 border-[#2a1f9e] bg-[#5b4ee6]/25"
-															: "border-[1.5px] border-[#9c95ee]",
+															: outlined
+																? "border-[1.5px] border-[#9c95ee]"
+																: "",
 													].join(" ")}
 													style={{
 														left: `calc(${startPct}% + 1.5px)`,
