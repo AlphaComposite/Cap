@@ -9,7 +9,7 @@ There are two ways to install it.
 
 Use this for self-hosting, testing, or until a store listing exists.
 
-1. Download `release/cap-chrome-extension-1.0.6.zip` from this folder.
+1. Download `release/cap-chrome-extension-1.0.9.zip` from this folder.
 2. Unzip it to a folder you will keep. Chrome loads it from that folder, so
    don't delete or move it.
 3. Open `chrome://extensions` and turn on **Developer mode** (top right).

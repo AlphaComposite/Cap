@@ -30,68 +30,200 @@
 > **About this fork:** This is AlphaComposite's maintained public fork of
 > [Cap](https://github.com/CapSoftware/Cap), whose original authors and
 > canonical repository remain at CapSoftware/Cap. The fork's `main` branch is
-> kept as a clean upstream mirror, while `downstream/main` carries maintained
-> additions such as reversible transcript-driven no-speech and filler-word
-> editing. It is not an official CapSoftware distribution. See
+> kept as a clean upstream mirror, while `downstream/main` carries the
+> additions described in [What this fork adds](#what-this-fork-adds). It is not an official CapSoftware distribution. See
 > [DOWNSTREAM_MAINTENANCE.md](DOWNSTREAM_MAINTENANCE.md) for branch policy,
 > upstream synchronization, verification, and contribution guidance.
 
-## Revision-based web editing in this fork
+## What this fork adds
 
-The downstream web editor now publishes an edited revision before returning to
-its share page. Playback uses the accepted edition rather than waiting for a
-full downloadable MP4; the progressive download is prepared separately.
+This fork turns Cap's web app into a fast, Loom-style async video tool:
+record in Chrome, get a playable link within seconds of Stop, clean the video
+up from its transcript, and publish the edit instantly. Every edit is
+non-destructive, so the original recording is always kept and any cut can be undone.
 
-- Delete or restore selected transcript words without changing the original.
-- Combine pause and filler removal with manual cuts; reopening retains the
-  accepted cuts, including source-frame-aligned boundaries.
-- Keep removed sections visible in the editor, with Undo/Redo and local Restore.
-  **Restore original** resets the editor; **Done** publishes that reset.
-- Paste and save an owner-written summary above Chapters. This fork does not
-  automatically generate that summary.
-- Keep chapters on the correct edited clock. Chapters hidden by cuts return when
-  their source section is restored; explicit chapter deletion remains permanent.
-- Download the published edition from the share page or dashboard. A download
-  still being prepared gives a retry message rather than silently exporting the
-  original.
+- [Near-instant processing](#near-instant-processing-h264-instead-of-webm)
+- [Instant, non-destructive editing](#instant-non-destructive-editing)
+- [Waveform timeline](#waveform-timeline)
+- [Summaries](#summaries)
+- [Chapters](#chapters)
+- [AI titles and provider fallback](#ai-titles-and-provider-fallback)
+- [Private, per-video playback](#private-per-video-playback)
+- [Chrome extension for self-hosted servers](#chrome-extension-for-self-hosted-servers)
+- [Reliability](#reliability)
+- [Our approach](#our-approach)
 
-This is a downstream, opt-in web capability, not a change to upstream desktop
-Instant Mode. Chrome was used for acceptance. Actual audio waveforms, translated
-transcript handling and video-only/no-audio support are separate follow-ups, not
-features certified by this release. See [fork release notes](RELEASE_NOTES.md)
-for operational prerequisites and known limits.
+### Near-instant processing (H.264 instead of WebM)
 
-## Automatic cleanup in the web editor
+Chrome now records **H.264 in fragmented MP4** and uploads it while you record.
+Upstream records VP9 WebM, which the server must fully re-encode after Stop.
+That re-encode took about 4 minutes for a 13-minute meeting.
 
-The editor generates two optional cut layers from transcript timing: extended
-no-speech pauses and a conservative set of filler words. On a fresh transcript,
-both controls start enabled together so the first saved render applies one combined
-cleanup pass. Each layer shows exactly what it removes and can still be toggled
-independently without changing the immutable source.
+- The server copies H.264 video without re-encoding when it is already
+  stream-ready: keyframes at most 2 s apart and no B-frames. Only the audio is
+  converted, from Opus to AAC. Anything else falls back to a full encode.
+- Measured on a 15-minute Chrome recording: about **10 s** of server processing,
+  plus under 1 s to prepare playback, versus minutes before.
+- Recordings are capped at 1080p, so the copy path applies.
+- WebM recording remains as an automatic fallback if the MP4 recorder fails.
+- Transcription starts as soon as processing finishes. The app checks for the
+  finished transcript every second, instead of upstream's every three seconds.
+- The share page shows each processing step as it runs: upload, processing,
+  transcript, summary and chapters, then editor readiness.
+
+### Instant, non-destructive editing
+
+Pressing **Done** publishes the edit immediately. Viewers play the edited
+version right away (HLS assembled from the original), and the downloadable MP4
+is built separately in the background.
+
+- **Edit from the transcript.** Select words to delete; select struck-through
+  words to restore them.
+- **Automatic cleanup.** Separate layers remove long no-speech pauses and common
+  filler words. They are enabled together on a fresh transcript, and each can be
+  toggled independently.
+- **Manual cuts, Undo/Redo, Restore original.** Manual, pause and filler cuts stay
+  independent, so turning one layer off restores only its content.
+- **Original always kept.** All cuts are stored as source timestamps. Reopening
+  the editor restores the accepted cuts exactly, frame-aligned to the source.
+- **Clean splices.** Short audio fades at each cut point suppress clicks.
+- **Adjusted watch time.** The player shows the original duration crossed out
+  next to the edited duration at the current playback speed.
+- **Edited downloads.** Downloads from the share page and dashboard are the
+  edited version. Audio at sample rates other than 48 kHz is converted
+  automatically.
+- Captions, transcript, video length in listings and the preview image all
+  follow the published edit.
 
 <table>
   <tr>
     <td width="64%" valign="top">
       <img src=".github/assets/downstream/automatic-cut-controls.jpg" alt="Transcript panel with enabled controls reporting 0.7 seconds of no-speech pauses and four filler words removed">
-      <p><strong>Choose what to remove.</strong> The transcript panel reports the planned or removed amount for each automatic layer. Here it found 0.7 seconds of no-speech pauses and four removable filler words.</p>
+      <p><strong>Choose what to remove.</strong> The transcript panel reports the planned or removed amount for each automatic layer.</p>
     </td>
     <td width="36%" valign="top" align="center">
       <img src=".github/assets/downstream/adjusted-watch-time.jpg" width="260" alt="Video player showing 1.2 times playback and an adjusted watch time of 1 minute 58 seconds beside the crossed-out original duration of 2 minutes 21 seconds">
-      <p><strong>See the time difference.</strong> The player puts the original duration and adjusted watch time under the play button. At 1.2x, this 2m 21s video takes 1m 58s to watch.</p>
+      <p><strong>See the time difference.</strong> At 1.2x, this 2m 21s video takes 1m 58s to watch.</p>
     </td>
   </tr>
 </table>
 
-<p align="center">
-  <img src=".github/assets/downstream/generated-cut-timeline.jpg" alt="Video editor timeline with source clips separated by automatically generated cut markers">
-</p>
-<p align="center"><sub><strong>Generated cuts stay visible.</strong> The timeline shows where the automatic layers will skip source footage, so the result can be inspected before saving.</sub></p>
+### Waveform timeline
 
-Automatic cuts use immutable source timestamps. Manual cuts, no-speech pauses,
-and filler words remain separate layers, so turning one option off restores only
-that layer's content. The same composed ranges drive preview playback, saved
-output, and downloads. Short audio fades are applied at rendered splice points
-to suppress clicks without adding a visual dissolve.
+The editor timeline shows the recording's actual audio waveform, styled like
+Loom's:
+
+- Kept speech appears as rounded, outlined sections.
+- Removed audio shows as a grey waveform with no overlay.
+- The timeline spans the full width, zooms in, and has a sub-second ruler.
+- When zoomed out, cuts too thin to see are hidden and neighbouring sections are
+  merged, so long, heavily edited meetings stay readable.
+- Chapter dividers are drawn across the waveform. This is a deliberate addition
+  that Loom doesn't have.
+
+<p align="center">
+  <img src=".github/assets/downstream/waveform-timeline.jpg" alt="Editor timeline zoomed to 400 pixels per second, showing a smooth mirrored audio waveform under a ruler with tenth-of-a-second labels">
+</p>
+<p align="center"><sub>Zoomed in on a synthetic test recording: real audio peaks and a tenth-of-a-second ruler.</sub></p>
+
+### Summaries
+
+Each video has an owner-editable **Summary** shown under the video, above
+Chapters. Owners paste in meeting notes, for example from a meeting
+assistant. Markdown renders as **Action Items** checklists and **Key Points**.
+Empty videos show a placeholder with a paste action. Summaries are preserved
+through edits, restores and republishing. This fork does not auto-generate
+summaries.
+
+### Chapters
+
+Chapters are generated automatically from the transcript and stay correct
+through every edit.
+
+- **Full coverage of long meetings.** Long transcripts are analysed in 10-minute
+  sections, then combined, with a minimum number of chapters based on length.
+  This keeps chapters spread across the whole recording, not just the first few
+  minutes.
+- **Accurate starts.** Chapter starts are snapped to the nearest transcript cue.
+  The opening chapter aligns to the first speech. AI chapters placed before any
+  speech are discarded, and duplicates and out-of-order starts are cleaned up.
+- **Stored in source time.** The data now keeps the original-recording chapters
+  (`sourceChapters`) separately from the chapters shown for the current edit
+  (`chapters`, tagged with `chaptersRevisionId`). Edits change only the projection:
+  - a chapter inside a cut is hidden, not deleted;
+  - restoring that section brings the chapter back;
+  - a chapter at 0:00 stays at the start;
+  - chapters shorter than 10 seconds after an edit are hidden, following
+    YouTube's rule.
+- Owner chapter edits are validated on the edited timeline. Manually edited
+  chapters are never overwritten by regeneration.
+
+### AI titles and provider fallback
+
+- Generated titles must be **60 characters or fewer**. They are rejected, never
+  cut off. An overlong title gets one retry with the limit spelled out. If that
+  also fails, the video keeps its existing name instead of a generic placeholder.
+- Titles you've edited yourself are never replaced.
+- A second, OpenAI-compatible provider can act as the **fallback**. Set
+  `AI_BASE_URL`, `AI_API_KEY` and `AI_COMPATIBLE_MODEL` (for example, a router
+  such as Requesty with a Gemini Flash Lite model). The primary provider keeps
+  its own model.
+
+### Private, per-video playback
+
+Edited videos are served by a separate media service (`apps/instant-finish-origin`)
+behind the web app:
+
+- Viewers receive a short-lived token for **one video only**, issued after
+  that video's sharing rules are checked. No viewer can list or browse other
+  videos.
+- The player renews the token just before each request when it is close to
+  expiring. Playback never stalls on an expired token, and a paused video
+  can be resumed after any length of time.
+- The unedited original of an edited video is never exposed to viewers.
+- Tokens are kept out of logs and shared caches. The media service has read-only
+  access to the database and storage.
+- Playback fixes for Safari's engine (WebKit): it now plays smoothly across cuts
+  and while seeking.
+
+### Chrome extension for self-hosted servers
+
+Current version **1.0.9**. Download and install instructions are in
+[apps/chrome-extension/README.md](apps/chrome-extension/README.md).
+
+- Point the extension at your own Cap server. It has no default server.
+- Mute now mutes only the microphone.
+- The in-page recorder panel (mode, camera, microphone) is restored.
+- Fixed countdown and stale recorder-tab issues.
+
+### Reliability
+
+- Recordings are only marked ready after their media, timing and audio are
+  verified. See [docs/recording-reliability.md](docs/recording-reliability.md).
+- If a recording can't be read normally (for example, a fragmented MP4 with an
+  empty fragment), it is repaired and processed instead of failing.
+- Interrupted processing resumes safely. Recordings with empty transcripts are
+  preserved, not discarded.
+
+### Our approach
+
+- **Non-destructive by default.** The original upload is never changed. Every
+  edit is a set of source-time ranges that can be reopened, changed or restored.
+- **Publish fast, render later.** Viewers get the edit immediately. The heavy
+  MP4 render happens in the background.
+- **Private by design.** Access is per video. Raw originals are never exposed
+  for edited videos.
+- **Research first.** For new problems, we survey existing open-source
+  JavaScript/TypeScript tools and established approaches before building.
+- **Proof on real recordings.** Features are accepted after browser runs on real
+  long meetings, not only unit tests. Each fix ships with a regression test that
+  fails without it.
+- **Tracked decisions.** Plans, decisions and evidence are recorded in Beads,
+  stored in the repository.
+
+See [RELEASE_NOTES.md](RELEASE_NOTES.md) for deployment prerequisites and known
+limits, and [DOWNSTREAM_MAINTENANCE.md](DOWNSTREAM_MAINTENANCE.md) for branch
+policy and upstream sync.
 
 <img src="https://raw.githubusercontent.com/CapSoftware/Cap/refs/heads/main/apps/web/public/landing-cover.png" alt="Cap app preview">
 

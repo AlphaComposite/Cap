@@ -3,6 +3,41 @@
 These notes describe the maintained `downstream/main` fork, not an official
 CapSoftware release. Runtime configuration and credentials stay outside Git.
 
+## fork-2026.10.08
+
+Git tag `fork-2026.10.08` on `downstream/main`. Chrome extension 1.0.9.
+Feature overview: [README](README.md#what-this-fork-adds).
+
+- **Recording and processing:** Chrome records streaming H.264 MP4 (WebM
+  fallback, 1080p cap). The media server copies stream-ready H.264 and converts
+  only the audio (15-min recording: ~10 s, previously minutes). Chrome
+  fragmented-MP4 duration is recovered. MP4s that crash the probe now get the
+  container repair (`chrome-fragmented-empty-traf.mp4` regression fixture).
+  The transcript is checked every 1 s, and the share page shows each
+  processing step.
+- **Editor:** real waveform peaks (generated server-side, served to owners only),
+  full-width zoomable timeline with a sub-second ruler, Loom-style kept
+  sections, grey removed audio, readable zoomed-out view, and chapter dividers.
+  Readiness gating before editing; Done retries are fenced.
+- **Chapters and AI:** long transcripts are split into 10-minute sections with
+  coverage minimums; cue snapping; projection by source time
+  (`sourceChapters`, `chaptersRevisionId`). Titles of 60 characters or fewer:
+  one retry, otherwise the existing name is kept. Optional OpenAI-compatible
+  fallback via `AI_BASE_URL`/`AI_API_KEY`/`AI_COMPATIBLE_MODEL`.
+- **Playback:** the short-lived per-video media grant renews at request time.
+  This removes mid-playback 401s and segment re-downloads, and resuming after
+  a 30-minute pause was verified logged out.
+- **Chrome extension 1.0.9:** a user-configured server (no default), mic-only
+  mute, restored in-page recorder panel, countdown and stale-tab fixes.
+  1.0.9 is a rebuild of 1.0.8 that includes the final countdown fix.
+
+### Configuration
+
+- New optional `AI_COMPATIBLE_MODEL`, passed through Compose. When it is
+  unset, the OpenAI-compatible provider uses `AI_MODEL` as before.
+- The waveform needs the revision worker to run the current release (it
+  generates peaks). The web and origin images alone are not enough.
+
 ## Deployment parity follow-up
 
 - Persist the tested `ORIGIN_MAX_KEEP_RANGES=1024` in the fork Compose default,
