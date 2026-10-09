@@ -7,6 +7,7 @@ import {
 } from "@/lib/edit-transcript";
 import type { NormalizedSegmentEntry } from "@/lib/segments-audio";
 import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
+import { transcribeTempAudioKey } from "@/lib/transcribe-source";
 
 /**
  * Pure logic for the provisional live transcription of instant-mode
@@ -200,7 +201,7 @@ export interface LiveTranscriptArtifact {
 }
 
 export function getLiveTranscriptObjectKey(ownerId: string, videoId: string) {
-	return `${ownerId}/${videoId}/transcription.live.json`;
+	return transcribeTempAudioKey(ownerId, videoId, "transcription.live.json");
 }
 
 /** Sentinel for "nothing processed yet": 0 is a legitimate segment index in

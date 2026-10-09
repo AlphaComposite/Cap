@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
 	getObject: vi.fn(),
 	getInternalSignedObjectUrl: vi.fn(),
 	startAiGeneration: vi.fn(),
+	probeVideo: vi.fn(),
+	resolveLiveOriginal: vi.fn(),
 	startWorkflow: vi.fn(),
 	updates: [] as Record<string, unknown>[],
 }));
@@ -25,6 +27,8 @@ const schemaMocks = vi.hoisted(() => ({
 		updatedAt: "videos.updatedAt",
 	},
 	organizations: { id: "organizations.id" },
+	users: { id: "users.id" },
+	sourceRelocation: { videoId: "sourceRelocation.videoId" },
 	videoUploads: {
 		videoId: "videoUploads.videoId",
 		rawFileKey: "videoUploads.rawFileKey",
@@ -67,6 +71,12 @@ vi.mock("@cap/database", () => ({
 			from: (table: unknown) => {
 				if (table === schemaMocks.videoUploads) {
 					return { where: () => ({ limit: async () => [] }) };
+				}
+				if (
+					table === schemaMocks.sourceRelocation ||
+					table === schemaMocks.users
+				) {
+					return { where: async () => [] };
 				}
 				if (table === schemaMocks.videoEdits) {
 					return { where: async () => state.editRows };
@@ -146,15 +156,19 @@ vi.mock("@/lib/video-storage", () => ({
 	decodeStorageVideo: (video: unknown) => video,
 }));
 
+vi.mock("@/lib/private-source-read", () => ({
+	resolveLiveOriginal: mocks.resolveLiveOriginal,
+}));
+
+vi.mock("@/lib/ai-generation-entitlement", () => ({
+	isAiGenerationEnabledForUser: () => false,
+}));
+
+vi.mock("@/lib/transcribe", () => ({ transcribeVideo: vi.fn() }));
+
 vi.mock("@/lib/media-client", () => ({
 	isMediaServerConfigured: () => true,
-	probeVideoViaMediaServer: async () => ({
-		audioCodec: "aac",
-		videoCodec: "h264",
-		duration: 4,
-		audioChannels: 2,
-		sampleRate: 48_000,
-	}),
+	probeVideoViaMediaServer: mocks.probeVideo,
 	extractAudioViaMediaServer: async () => Buffer.from("audio"),
 	checkHasAudioTrackViaMediaServer: async () => true,
 }));
@@ -209,6 +223,20 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 			...assemblyAIEditResponse,
 			audio_duration: 4,
 		});
+		mocks.resolveLiveOriginal.mockReset();
+		mocks.resolveLiveOriginal.mockResolvedValue(null);
+		mocks.probeVideo.mockReset();
+		mocks.probeVideo.mockResolvedValue({
+			audioCodec: "aac",
+			videoCodec: "h264",
+			duration: 4,
+			audioChannels: 2,
+			sampleRate: 48_000,
+		});
+		mocks.putObject.mockReset();
+		mocks.deleteObject.mockReset();
+		mocks.getObject.mockReset();
+		mocks.getInternalSignedObjectUrl.mockReset();
 		mocks.putObject.mockImplementation(() => pipeValue(undefined));
 		mocks.deleteObject.mockImplementation(() => pipeValue(undefined));
 		mocks.getObject.mockImplementation(() =>
@@ -310,8 +338,148 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 			});
 			// the provisional live transcript is superseded by the canonical one
 			expect(mocks.deleteObject.mock.calls.map((call) => call[0])).toContain(
-				"user-456/video-123/transcription.live.json",
+				flagged
+					? "private/source/video-123/transcription.live.json"
+					: "user-456/video-123/transcription.live.json",
 			);
+		},
+	);
+
+	it("runs the post-mux pass on the registered private source when a signed segment disappears", async () => {
+		vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", "user-456");
+		const liveKey = "private/source/video-123/original";
+		mocks.resolveLiveOriginal.mockResolvedValue({ liveKey });
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input) => ({
+				arrayBuffer: async () => new TextEncoder().encode("audio").buffer,
+				ok:
+					String(input).includes(liveKey) ||
+					String(input).includes("/audio-temp.mp3"),
+				status:
+					String(input).includes(liveKey) ||
+					String(input).includes("/audio-temp.mp3")
+						? 200
+						: 404,
+			})),
+		);
+		// Execute the queued workflow, not just assert that start was requested.
+		mocks.startWorkflow.mockImplementation(async (workflow, [payload]) =>
+			workflow(payload),
+		);
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		const result = await transcribeVideoWorkflow({
+			videoId: "video-123",
+			userId: "user-456",
+			aiGenerationEnabled: false,
+			earlyFromSegments: true,
+		});
+		expect(result.message).toContain("Segment 0 not accessible: 404");
+		expect(mocks.startWorkflow).toHaveBeenCalledTimes(1);
+		expect(mocks.probeVideo).toHaveBeenCalledWith(
+			`https://storage.test/${liveKey}`,
+		);
+		expect(mocks.transcribe).toHaveBeenCalledTimes(1);
+		expect(mocks.updates).toContainEqual({ transcriptionStatus: "COMPLETE" });
+		expect(mocks.updates).not.toContainEqual({ transcriptionStatus: "ERROR" });
+		expect(mocks.putObject.mock.calls.map(([key]) => key)).toContain(
+			"private/source/video-123/audio-temp.mp3",
+		);
+		expect(
+			mocks.putObject.mock.calls.some(([key]) => key.includes("/segments/")),
+		).toBe(false);
+	});
+
+	it.each([
+		{ flagged: true, inventoryDuringChunk: true },
+		{ flagged: true, inventoryDuringChunk: false },
+		{ flagged: false, inventoryDuringChunk: false },
+	])(
+		"keeps accumulated live words and uses one artifact key (%j)",
+		async ({ flagged, inventoryDuringChunk }) => {
+			vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", flagged ? "user-456" : "");
+			const core = await import("@/lib/live-transcribe-core");
+			const { assertFinishInventoryClear } = await import(
+				"@/lib/source-relocation"
+			);
+			const prefix = "user-456/video-123/";
+			const key = flagged
+				? "private/source/video-123/transcription.live.json"
+				: `${prefix}transcription.live.json`;
+			const prior = core.applyChunkToLiveTranscript(
+				core.createEmptyLiveTranscript("now"),
+				{
+					startMs: 0,
+					durationMs: 2000,
+					lastAudioSegmentIndex: 1,
+					words: core.offsetChunkWords(
+						[{ text: "accumulated", start: 0, end: 1000 }],
+						0,
+						2000,
+					),
+					languageCode: "en",
+					nowIso: "now",
+				},
+			);
+			const objects = new Map([
+				[`${prefix}segments/manifest.json`, JSON.stringify(manifest)],
+				[key, JSON.stringify(prior)],
+			]);
+			const listed = () =>
+				[...objects.keys()].filter((name) => name.startsWith(prefix));
+			mocks.getObject.mockImplementation((name) =>
+				pipeValue(
+					objects.has(name) ? Option.some(objects.get(name)) : Option.none(),
+				),
+			);
+			mocks.putObject.mockImplementation((name, body) => {
+				objects.set(name, body);
+				return pipeValue(undefined);
+			});
+			mocks.deleteObject.mockImplementation((name) => {
+				objects.delete(name);
+				return pipeValue(undefined);
+			});
+			mocks.transcribe.mockImplementation(async () => {
+				// The provider already has the chunk; inventory finishes before its late PUT.
+				if (inventoryDuringChunk) {
+					for (const name of listed()) objects.delete(name);
+					assertFinishInventoryClear(listed(), prefix);
+				}
+				return {
+					status: "completed",
+					language_code: "en",
+					words: [{ text: "late", start: 0, end: 1000 }],
+				};
+			});
+			const { liveTranscribeWorkflow } = await import(
+				"@/workflows/live-transcribe"
+			);
+			const result = await liveTranscribeWorkflow({
+				videoId: "video-123",
+				userId: "user-456",
+			});
+			expect(mocks.putObject.mock.calls.map(([name]) => name)).toContain(key);
+			if (inventoryDuringChunk) {
+				expect(listed()).toEqual([]);
+				expect(() =>
+					assertFinishInventoryClear(listed(), prefix),
+				).not.toThrow();
+				expect(objects.has(`${prefix}transcription.live.json`)).toBe(false);
+				expect(
+					core
+						.parseLiveTranscript(objects.get(key)!)
+						?.words.map((word) => word.text),
+				).toEqual(["accumulated", "late"]);
+			} else {
+				expect(result.message).toBe("Live transcription promoted to canonical");
+				expect(objects.get(`${prefix}transcription.vtt`)).toContain(
+					"accumulated",
+				);
+				expect(objects.get(`${prefix}transcription.vtt`)).toContain("late");
+				expect(mocks.deleteObject).toHaveBeenCalledWith(key);
+				expect(objects.has(key)).toBe(false);
+			}
 		},
 	);
 
