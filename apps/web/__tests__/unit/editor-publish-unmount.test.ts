@@ -172,8 +172,7 @@ let container: HTMLDivElement;
 let root: Root;
 let rejectPublish: (error: unknown) => void;
 
-function seedDraft() {
-	const baseline = createIdentityEditSpec(DURATION);
+function seedDraft(baseline = createIdentityEditSpec(DURATION)) {
 	const cut = createTimelineStateFromEditSpec(
 		normalizeKeepRanges(
 			[
@@ -297,7 +296,7 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
-	it.each(["same session", "other session"])(
+	it.each(["same session", "same session within tolerance", "other session"])(
 		"refreshes the worker baseline after privacy refusals: %s",
 		async (session) => {
 			const { baseline } = seedDraft();
@@ -307,13 +306,18 @@ describe("editor publish unmount", () => {
 			const workerSpec = getTimelineEditSpec(
 				createTimelineStateFromEditSpec(baseline),
 			);
+			if (session === "same session within tolerance") {
+				workerSpec.keepRanges = [{ start: 0.001, end: DURATION }];
+				workerSpec.manualKeepRanges = workerSpec.keepRanges;
+			}
 			expect(expectedEditFenceMatches(workerSpec, baseline)).toBe(false);
 			harness.instant.mockResolvedValue({
 				enabled: true,
 				generation: 3,
 				draftVersion: 2,
-				draftSession:
-					session === "same session" ? draftSession : "another-session",
+				draftSession: session.startsWith("same session")
+					? draftSession
+					: "another-session",
 				expectedEditSpec: workerSpec,
 			});
 			vi.useFakeTimers();
@@ -348,7 +352,7 @@ describe("editor publish unmount", () => {
 				const publishes = harness.post.mock.calls.filter(([path]) =>
 					path.endsWith("/publish"),
 				);
-				if (session === "same session") {
+				if (session.startsWith("same session")) {
 					expect(publishes).toHaveLength(7);
 					expect(publishes[6]?.[1]).toEqual({
 						...publishes[0]?.[1],
@@ -380,6 +384,165 @@ describe("editor publish unmount", () => {
 			}
 		},
 	);
+	it("keeps the baseline fence when a rejected A publish reclaims B's session", async () => {
+		const { baseline, selectedSegmentId } = seedDraft();
+		localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, "A");
+		harness.instant.mockResolvedValue({
+			enabled: true,
+			generation: 3,
+			draftVersion: 0,
+		});
+		const done = await renderEditor(baseline);
+		const savedDraft = localStorage.getItem(getTimelineDraftKey(VIDEO_ID));
+		const publishedB = getTimelineEditSpec(
+			createTimelineStateFromEditSpec(
+				normalizeKeepRanges([{ start: 2, end: 9 }], DURATION),
+			),
+		);
+		let current = baseline;
+		let serverDraftSession = "";
+		let serverDraftVersion = 0;
+		let generation = 3;
+		let attempts = 0;
+		let acceptedPublishes = 0;
+		harness.instant.mockImplementation(async () => {
+			expect(serverDraftSession).toBe("A");
+			expect(serverDraftVersion).toBe(1);
+			expect(current).toBe(publishedB);
+			return {
+				enabled: true,
+				generation,
+				draftVersion: serverDraftVersion,
+				draftSession: serverDraftSession,
+				expectedEditSpec: current,
+			};
+		});
+		harness.post.mockImplementation(async (path: string, body) => {
+			if (path.endsWith("/prepare")) return { generation: 3 };
+			if (attempts === 1) {
+				expect(serverDraftSession).toBe("B");
+				expect(body.draftVersion).toBe(serverDraftVersion);
+			}
+			// recordServerDraft accepts equal versions and records A before the spec fence.
+			expect(body.draftVersion).toBeGreaterThanOrEqual(serverDraftVersion);
+			serverDraftVersion = body.draftVersion;
+			serverDraftSession = body.draftSession;
+			if (++attempts === 1)
+				throw Object.assign(
+					new Error(
+						"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+					),
+					{ status: 409 },
+				);
+			if (!expectedEditFenceMatches(current, body.expectedEditSpec))
+				throw Object.assign(
+					new Error(
+						"This video was edited in another session. Reload before publishing.",
+					),
+					{ status: 409 },
+				);
+			acceptedPublishes++;
+			current = body.editSpec;
+			return { success: true, revisionId: "stale-A", generation: 5 };
+		});
+		vi.useFakeTimers();
+		try {
+			await act(async () => done.click());
+			expect(serverDraftSession).toBe("A");
+			expect(serverDraftVersion).toBe(1);
+			// Separate browser B publishes its different cut at that same draft version.
+			current = publishedB;
+			serverDraftSession = "B";
+			generation = 4;
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1_000);
+			});
+			const publishes = harness.post.mock.calls.filter(([path]) =>
+				path.endsWith("/publish"),
+			);
+			expect(publishes).toHaveLength(3);
+			expect(serverDraftSession).toBe("A");
+			expect(harness.instant).toHaveBeenCalledTimes(2);
+			expect(publishes[2]?.[1]).toEqual({
+				...publishes[0]?.[1],
+				baseGeneration: 4,
+				draftVersion: 2,
+				expectedDraftSession: "A",
+			});
+			expect(acceptedPublishes).toBe(0);
+			expect(current).toEqual(publishedB);
+			expect(harness.push).not.toHaveBeenCalled();
+			expect(localStorage.getItem(getTimelineDraftKey(VIDEO_ID))).toBe(
+				savedDraft,
+			);
+			expect(storedDraft()?.state.selectedSegmentId).toBe(selectedSegmentId);
+			expect(
+				container.querySelector("[data-editor-shell='editor']"),
+			).not.toBeNull();
+			expect(container.textContent).toContain("0:08");
+			expect(doneButton()?.disabled).toBe(false);
+			expect(toast.error).toHaveBeenCalledWith(
+				"This video was edited in another session. Reload before publishing.",
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		"cut baseline",
+		"V2 baseline",
+		"different source",
+		"rendered cut",
+		"manual cut",
+		"enabled autocuts",
+		"latent autocuts",
+	])("preserves the original fence for %s", async (change) => {
+		const identity = createIdentityEditSpec(DURATION);
+		const baseline =
+			change === "cut baseline"
+				? normalizeKeepRanges([{ start: 1, end: 9 }], DURATION)
+				: change === "V2 baseline"
+					? getTimelineEditSpec(createTimelineStateFromEditSpec(identity))
+					: identity;
+		seedDraft(baseline);
+		const fresh = getTimelineEditSpec(
+			createTimelineStateFromEditSpec(baseline),
+		);
+		if (change === "V2 baseline") fresh.autoCuts.silence.thresholdMs++;
+		if (change === "different source") fresh.sourceDuration++;
+		if (change === "rendered cut") fresh.keepRanges = [{ start: 1, end: 9 }];
+		if (change === "manual cut")
+			fresh.manualKeepRanges = [{ start: 1, end: 9 }];
+		if (change === "enabled autocuts") fresh.autoCuts.fillers.enabled = true;
+		if (change === "latent autocuts")
+			fresh.autoCuts.silence.ranges = [{ start: 1, end: 2 }];
+		localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, "A");
+		const done = await renderEditor(baseline);
+		const draft = localStorage.getItem(getTimelineDraftKey(VIDEO_ID));
+		harness.instant.mockResolvedValue({
+			enabled: true,
+			generation: 4,
+			draftVersion: 2,
+			draftSession: "A",
+			expectedEditSpec: fresh,
+		});
+		harness.post.mockImplementation(async (path: string) => {
+			if (path.endsWith("/prepare")) return { generation: 3 };
+			throw Object.assign(new Error("baseline conflict"), { status: 409 });
+		});
+		await act(async () => done.click());
+		const publishes = harness.post.mock.calls.filter(([path]) =>
+			path.endsWith("/publish"),
+		);
+		expect(publishes).toHaveLength(2);
+		expect(publishes[1]?.[1].expectedEditSpec).toEqual(baseline);
+		expect(publishes[1]?.[1].editSpec).toEqual(publishes[0]?.[1].editSpec);
+		expect(localStorage.getItem(getTimelineDraftKey(VIDEO_ID))).toBe(draft);
+		expect(harness.push).not.toHaveBeenCalled();
+		expect(doneButton()?.disabled).toBe(false);
+	});
+
 	it.each(["newer version", "changed contents", "editor state"])(
 		"stops stale Done retries after %s changes",
 		async (change) => {

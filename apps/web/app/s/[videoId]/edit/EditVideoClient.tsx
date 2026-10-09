@@ -74,7 +74,9 @@ import {
 } from "@/lib/video-edit-drafts";
 import {
 	areEditSpecDocumentsEquivalent,
+	areEditSpecsEquivalent,
 	areTimelineStatesEquivalent,
+	createIdentityEditSpec,
 	createTimelineHistory,
 	createTimelineStateFromEditSpec,
 	deleteSelectedTimelineSegment,
@@ -1657,8 +1659,27 @@ export function EditVideoClient({
 								);
 					}
 					publicationState = fresh;
-					// Refresh the fence baseline, never the editor's submitted local cut.
-					expectedEditSpec = fresh.expectedEditSpec ?? expectedEditSpec;
+					// Only rebase the V1 -> V2 uncut bootstrap, never a newer edit.
+					const refreshedSpec = fresh.expectedEditSpec;
+					if (
+						initialEditSpec.version === 1 &&
+						refreshedSpec?.version === 2 &&
+						!refreshedSpec.autoCuts.silence.enabled &&
+						!refreshedSpec.autoCuts.fillers.enabled &&
+						refreshedSpec.autoCuts.silence.ranges.length === 0 &&
+						refreshedSpec.autoCuts.fillers.ranges.length === 0 &&
+						areEditSpecsEquivalent(
+							initialEditSpec,
+							createIdentityEditSpec(initialEditSpec.sourceDuration),
+						) &&
+						areEditSpecsEquivalent(refreshedSpec, initialEditSpec) &&
+						areEditSpecsEquivalent(
+							{ ...refreshedSpec, keepRanges: refreshedSpec.manualKeepRanges },
+							initialEditSpec,
+						)
+					) {
+						expectedEditSpec = refreshedSpec;
+					}
 					expectedDraftSession = fresh.draftSession ?? "";
 					setInstantFinish(publicationState);
 				},
