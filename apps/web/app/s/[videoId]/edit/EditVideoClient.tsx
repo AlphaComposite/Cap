@@ -1603,6 +1603,7 @@ export function EditVideoClient({
 				return;
 			}
 			let publicationState = instantFinish;
+			let expectedEditSpec = initialEditSpec;
 			const submittedDraftVersion = (instantFinish.draftVersion ?? 0) + 1;
 			const submittedDraft = draftStorage?.getItem(draftStorageKey) ?? null;
 			let expectedDraftSession: string | undefined;
@@ -1624,7 +1625,7 @@ export function EditVideoClient({
 						{
 							videoId: video.id,
 							editSpec,
-							expectedEditSpec: initialEditSpec,
+							expectedEditSpec,
 							baseGeneration: publicationState.generation ?? 0,
 							draftVersion: (publicationState.draftVersion ?? 0) + 1,
 							draftSession,
@@ -1656,6 +1657,8 @@ export function EditVideoClient({
 								);
 					}
 					publicationState = fresh;
+					// Refresh the fence baseline, never the editor's submitted local cut.
+					expectedEditSpec = fresh.expectedEditSpec ?? expectedEditSpec;
 					expectedDraftSession = fresh.draftSession ?? "";
 					setInstantFinish(publicationState);
 				},

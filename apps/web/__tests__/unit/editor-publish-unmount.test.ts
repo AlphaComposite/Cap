@@ -24,6 +24,8 @@ import {
 import {
 	createIdentityEditSpec,
 	createTimelineStateFromEditSpec,
+	expectedEditFenceMatches,
+	getTimelineEditSpec,
 	getTimelineSegments,
 	normalizeKeepRanges,
 	selectTimelineSegment,
@@ -295,6 +297,89 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
+	it.each(["same session", "other session"])(
+		"refreshes the worker baseline after privacy refusals: %s",
+		async (session) => {
+			const { baseline } = seedDraft();
+			const draftSession = "this-editor-session";
+			localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, draftSession);
+			const done = await renderEditor(baseline);
+			const workerSpec = getTimelineEditSpec(
+				createTimelineStateFromEditSpec(baseline),
+			);
+			expect(expectedEditFenceMatches(workerSpec, baseline)).toBe(false);
+			harness.instant.mockResolvedValue({
+				enabled: true,
+				generation: 3,
+				draftVersion: 2,
+				draftSession:
+					session === "same session" ? draftSession : "another-session",
+				expectedEditSpec: workerSpec,
+			});
+			vi.useFakeTimers();
+			let attempts = 0;
+			harness.post.mockImplementation(async (path: string, body) => {
+				if (path.endsWith("/prepare")) return { generation: 3 };
+				if (++attempts <= 5)
+					throw Object.assign(
+						new Error(
+							"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+						),
+						{ status: 409 },
+					);
+				if (!expectedEditFenceMatches(workerSpec, body.expectedEditSpec))
+					throw Object.assign(
+						new Error(
+							"This video was edited in another session. Reload before publishing.",
+						),
+						{ status: 409 },
+					);
+				return { success: true, revisionId: "latest-local-cut", generation: 4 };
+			});
+			try {
+				await act(async () => done.click());
+				const savedDraft = localStorage.getItem(getTimelineDraftKey(VIDEO_ID));
+				expect(container.querySelector("output")?.textContent).toContain(
+					"Waiting for source privacy checks",
+				);
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_000);
+				});
+				const publishes = harness.post.mock.calls.filter(([path]) =>
+					path.endsWith("/publish"),
+				);
+				if (session === "same session") {
+					expect(publishes).toHaveLength(7);
+					expect(publishes[6]?.[1]).toEqual({
+						...publishes[0]?.[1],
+						expectedEditSpec: workerSpec,
+						draftVersion: 3,
+						expectedDraftSession: draftSession,
+					});
+					expect(publishes[6]?.[1].editSpec.keepRanges).toEqual([
+						{ start: 0, end: 4 },
+						{ start: 6, end: 10 },
+					]);
+					expect(harness.push).toHaveBeenCalledExactlyOnceWith(
+						`/s/${VIDEO_ID}`,
+					);
+					expect(storedDraft()).toBeNull();
+					expect(toast.error).not.toHaveBeenCalled();
+				} else {
+					expect(publishes).toHaveLength(6);
+					expect(harness.push).not.toHaveBeenCalled();
+					expect(localStorage.getItem(getTimelineDraftKey(VIDEO_ID))).toBe(
+						savedDraft,
+					);
+					expect(toast.error).toHaveBeenCalledWith(
+						"This video was edited in another session. Reload before publishing.",
+					);
+				}
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
 	it.each(["newer version", "changed contents", "editor state"])(
 		"stops stale Done retries after %s changes",
 		async (change) => {

@@ -1,13 +1,16 @@
 "use server";
 
 import { db } from "@cap/database";
+import { editIntent, editRevision } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
+import { and, eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	RevisionPublicationError,
 	recordServerDraft,
 } from "@/lib/revision-publication";
 import { loadOwnerVideo } from "@/lib/revision-publish";
+import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
 
 export async function getEditorInstantFinishState(input: {
 	videoId: Video.VideoId;
@@ -17,11 +20,32 @@ export async function getEditorInstantFinishState(input: {
 		"@/lib/revision-publication-read"
 	);
 	const publication = await getInstantFinishPublicationDto(input);
+	const [intent] = publication.currentRevisionId
+		? await db()
+				.select({ canonicalSpec: editIntent.canonicalSpec })
+				.from(editIntent)
+				.innerJoin(
+					editRevision,
+					and(
+						eq(editRevision.videoId, editIntent.videoId),
+						eq(editRevision.generation, editIntent.generation),
+					),
+				)
+				.where(
+					and(
+						eq(editIntent.videoId, input.videoId),
+						eq(editRevision.revisionId, publication.currentRevisionId),
+					),
+				)
+		: [];
 	return {
 		enabled: publication.enabled,
 		generation: publication.generation,
 		draftVersion: publication.draftVersion,
 		draftSession: publication.draftSession,
+		expectedEditSpec: intent
+			? parseRenderedCanonicalSpec(intent.canonicalSpec)
+			: null,
 	};
 }
 
