@@ -330,6 +330,43 @@ describe("Instant player readiness and failure UX", () => {
 		},
 	);
 
+	it.each(["unmount", "revision change"])(
+		"ignores a deferred grant after player %s",
+		async (change) => {
+			await renderRevision(revision(4));
+			let resolveGrant!: (response: Response) => void;
+			const fetchGrant = vi.fn(
+				() =>
+					new Promise<Response>((resolve) => {
+						resolveGrant = resolve;
+					}),
+			);
+			vi.stubGlobal("fetch", fetchGrant);
+			await revisionError();
+			expect(fetchGrant).toHaveBeenCalledTimes(1);
+			if (change === "unmount") await act(() => root.render(null));
+			else
+				await renderRevision({
+					...revision(1),
+					playlistUrl: revision(4).playlistUrl,
+				});
+			mocks.pause.mockClear();
+			await act(async () =>
+				resolveGrant(
+					Response.json({
+						revisionId: "rev-1",
+						changed: true,
+						grant: "current-grant",
+					}),
+				),
+			);
+			expect(mocks.router.refresh).not.toHaveBeenCalled();
+			expect(mocks.pause).not.toHaveBeenCalled();
+			expect(container.textContent).not.toContain("This video could not load");
+			expect(vi.mocked(fetch).mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+		},
+	);
+
 	it("refreshes server playback props on an authorized changed revision even after 401", async () => {
 		await renderRevision(revision(4));
 		vi.stubGlobal(

@@ -238,42 +238,56 @@ export function HLSVideoPlayer({
 		return () => unbindRevisionSeek(video);
 	}, [revisionPlayback, videoRef.current]);
 
-	const refreshRevisionSource = useCallback(async () => {
-		const revision = revisionRef.current;
-		if (!revision) return { plan: "hold" as const, url: null as string | null };
-		const response = await fetch("/api/media/grant", {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({
-				videoId: revision.videoId,
-				revisionId: revision.revisionId,
-			}),
-		});
-		if (response.status === 401 || response.status === 403) {
-			return { plan: "fail-closed" as const, url: null };
-		}
-		const body = (await response.json().catch(() => null)) as {
-			revisionId?: string;
-			changed?: boolean;
-			grant?: string;
-		} | null;
-		const plan = planGrantRefresh({
-			status: response.status,
-			revisionId: revision.revisionId,
-			body,
-		});
-		// Readback can revert CURRENT after this page received its playlist.
-		if (plan === "refresh-page") router.refresh();
-		if (plan === "reload-same" && body?.grant) {
-			const url = replacePlaylistGrant(videoSrc, body.grant);
-			setGrantState({
-				src: videoSrc,
-				url,
+	const refreshRevisionSource = useCallback(
+		async (signal: AbortSignal) => {
+			const revision = revisionRef.current;
+			if (!revision)
+				return { plan: "hold" as const, url: null as string | null };
+			const isCurrent = () =>
+				!signal.aborted &&
+				revisionRef.current?.videoId === revision.videoId &&
+				revisionRef.current?.revisionId === revision.revisionId;
+			const response = await fetch("/api/media/grant", {
+				signal,
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					videoId: revision.videoId,
+					revisionId: revision.revisionId,
+				}),
+			}).catch((error: unknown) => {
+				if (signal.aborted) return null;
+				throw error;
 			});
-			return { plan, url };
-		}
-		return { plan, url: null };
-	}, [videoSrc, router]);
+			if (!response || !isCurrent()) return null;
+			if (response.status === 401 || response.status === 403) {
+				return { plan: "fail-closed" as const, url: null };
+			}
+			const body = (await response.json().catch(() => null)) as {
+				revisionId?: string;
+				changed?: boolean;
+				grant?: string;
+			} | null;
+			if (!isCurrent()) return null;
+			const plan = planGrantRefresh({
+				status: response.status,
+				revisionId: revision.revisionId,
+				body,
+			});
+			// Readback can revert CURRENT after this page received its playlist.
+			if (plan === "refresh-page") router.refresh();
+			if (plan === "reload-same" && body?.grant) {
+				const url = replacePlaylistGrant(videoSrc, body.grant);
+				setGrantState({
+					src: videoSrc,
+					url,
+				});
+				return { plan, url };
+			}
+			return { plan, url: null };
+		},
+		[videoSrc, router],
+	);
 	const refreshRevisionSourceRef = useRef(refreshRevisionSource);
 	refreshRevisionSourceRef.current = refreshRevisionSource;
 
@@ -417,6 +431,15 @@ export function HLSVideoPlayer({
 	useEffect(() => {
 		const video = videoRef.current;
 		if (!video || !playbackSrc || !isPlaybackSourceReady) return;
+		const controller = new AbortController();
+		const revision = {
+			videoId: revisionPlayback?.videoId,
+			revisionId: revisionPlayback?.revisionId,
+		};
+		const isCurrent = () =>
+			!controller.signal.aborted &&
+			revisionRef.current?.videoId === revision?.videoId &&
+			revisionRef.current?.revisionId === revision?.revisionId;
 
 		setHlsInitFailed(false);
 
@@ -434,8 +457,9 @@ export function HLSVideoPlayer({
 						grant: initialGrant,
 						renew: async () => {
 							const revision = revisionRef.current;
-							if (!revision) return null;
+							if (!revision || !isCurrent()) return null;
 							const response = await fetch("/api/media/grant", {
+								signal: controller.signal,
 								method: "POST",
 								headers: { "content-type": "application/json" },
 								body: JSON.stringify({
@@ -450,7 +474,9 @@ export function HLSVideoPlayer({
 							} | null;
 							// Denied or revision changed: keep the old grant; the segment
 							// error path then fails closed or reloads, as before.
-							return body?.grant && body.revisionId === revision.revisionId
+							return isCurrent() &&
+								body?.grant &&
+								body.revisionId === revision.revisionId
 								? body.grant
 								: null;
 						},
@@ -555,8 +581,9 @@ export function HLSVideoPlayer({
 						resumePlayingRef.current = !video.paused;
 						hls.stopLoad();
 						void refreshRevisionSourceRef
-							.current()
+							.current(controller.signal)
 							.then((result) => {
+								if (!result || !isCurrent()) return;
 								if (result.plan === "fail-closed") {
 									resumeAtRef.current = -1;
 									policyDenied = true;
@@ -664,6 +691,7 @@ export function HLSVideoPlayer({
 			});
 
 			return () => {
+				controller.abort();
 				video.removeEventListener("timeupdate", rememberTime);
 				if (retryTimer) clearTimeout(retryTimer);
 				if (hlsInstance.current) {
@@ -729,8 +757,9 @@ export function HLSVideoPlayer({
 				video.pause();
 				video.autoplay = false;
 				void refreshRevisionSourceRef
-					.current()
+					.current(controller.signal)
 					.then((result) => {
+						if (!result || !isCurrent()) return;
 						if (
 							result.plan === "fail-closed" ||
 							result.plan === "refresh-page"
@@ -751,6 +780,7 @@ export function HLSVideoPlayer({
 			};
 			video.addEventListener("error", onError);
 			return () => {
+				controller.abort();
 				video.removeEventListener("error", onError);
 				video.removeEventListener("timeupdate", onProgress);
 			};
@@ -760,6 +790,8 @@ export function HLSVideoPlayer({
 		}
 	}, [
 		playbackSrc,
+		revisionPlayback?.videoId,
+		revisionPlayback?.revisionId,
 		isLiveSegments,
 		isPlaybackSourceReady,
 		reloadPlayback,
