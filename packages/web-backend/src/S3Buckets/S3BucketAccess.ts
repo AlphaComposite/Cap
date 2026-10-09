@@ -14,6 +14,23 @@ import { S3BucketClientProvider } from "./S3BucketClientProvider.ts";
 
 const DEFAULT_PRESIGNED_GET_EXPIRES_SECONDS = 3600;
 const DEFAULT_PRESIGNED_PUT_EXPIRES_SECONDS = 3600;
+const putSigningArgs = (
+	args: Pick<S3.PutObjectRequest, "Metadata" | "ContentType"> | undefined,
+	signingArgs?: RequestPresigningArguments,
+): RequestPresigningArguments => ({
+	expiresIn: DEFAULT_PRESIGNED_PUT_EXPIRES_SECONDS,
+	...signingArgs,
+	signableHeaders: new Set([
+		...(signingArgs?.signableHeaders ?? []),
+		...(args?.ContentType ? ["content-type"] : []),
+	]),
+	unhoistableHeaders: new Set([
+		...(signingArgs?.unhoistableHeaders ?? []),
+		...Object.keys(args?.Metadata ?? {}).map(
+			(key) => `x-amz-meta-${key.toLowerCase()}`,
+		),
+	]),
+});
 const localHostnames = new Set([
 	"0.0.0.0",
 	"127.0.0.1",
@@ -131,6 +148,7 @@ export const createS3BucketAccess = Effect.gen(function* () {
 										endpoint,
 										forcePathStyle: client.config.forcePathStyle,
 										region: client.config.region,
+										requestChecksumCalculation: "WHEN_REQUIRED",
 									});
 									requestAccessiblePublicClient?.client.destroy();
 									requestAccessiblePublicClient = {
@@ -428,9 +446,7 @@ export const createS3BucketAccess = Effect.gen(function* () {
 						Key: key,
 						...args,
 					}),
-					signingArgs ?? {
-						expiresIn: DEFAULT_PRESIGNED_PUT_EXPIRES_SECONDS,
-					},
+					putSigningArgs(args, signingArgs),
 				),
 			),
 		getInternalPresignedPutUrl: (
@@ -448,9 +464,7 @@ export const createS3BucketAccess = Effect.gen(function* () {
 								Key: key,
 								...args,
 							}),
-							signingArgs ?? {
-								expiresIn: DEFAULT_PRESIGNED_PUT_EXPIRES_SECONDS,
-							},
+							putSigningArgs(args, signingArgs),
 						),
 					),
 				),

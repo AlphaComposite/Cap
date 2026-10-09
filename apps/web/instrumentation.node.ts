@@ -5,7 +5,6 @@
 import {
 	BucketAlreadyOwnedByYou,
 	CreateBucketCommand,
-	PutBucketPolicyCommand,
 	S3Client,
 } from "@aws-sdk/client-s3";
 import { migrateDb } from "@cap/database/migrate";
@@ -80,26 +79,7 @@ async function createS3Bucket() {
 	await s3Client
 		.send(new CreateBucketCommand({ Bucket: serverEnv().CAP_AWS_BUCKET }))
 		.then(() => {
-			console.log("Created S3 bucket");
-			return s3Client.send(
-				new PutBucketPolicyCommand({
-					Bucket: serverEnv().CAP_AWS_BUCKET,
-					Policy: JSON.stringify({
-						Version: "2012-10-17",
-						Statement: [
-							{
-								Effect: "Allow",
-								Principal: "*",
-								Action: ["s3:GetObject"],
-								Resource: [`arn:aws:s3:::${serverEnv().CAP_AWS_BUCKET}/*`],
-							},
-						],
-					}),
-				}),
-			);
-		})
-		.then(() => {
-			console.log("Configured S3 buckeet");
+			console.log("Created private S3 bucket");
 		})
 		.catch((e) => {
 			if (e instanceof BucketAlreadyOwnedByYou) {

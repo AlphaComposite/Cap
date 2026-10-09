@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { Effect, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as serviceAuth from "@/lib/revision-media-token";
 import {
 	ORIGIN_SERVICE_HEADER,
 	signInternalServiceRequest,
@@ -221,6 +223,129 @@ describe("origin exact object URLs", () => {
 				audience: "web-object-url",
 			}),
 		).toBe(true);
+	});
+	it("consumes a nonce before DB awaits and rejects concurrent replay", async () => {
+		const first = request(key);
+		const token = first.headers.get(ORIGIN_SERVICE_HEADER) ?? "";
+		const [a, b] = await Promise.all([
+			POST(first),
+			POST(request(key, "web-object-url", token)),
+		]);
+		expect([a.status, b.status].sort()).toEqual([200, 401]);
+		expect(state.bucket).toHaveBeenCalledTimes(1);
+		expect((await POST(request(key, "web-object-url", token))).status).toBe(
+			401,
+		);
+		expect(state.bucket).toHaveBeenCalledTimes(1);
+	});
+	it("retains a consumed nonce through its valid TTL including future skew", async () => {
+		const now = Math.floor(Date.now() / 1000);
+		vi.spyOn(Date, "now").mockReturnValue(now * 1000);
+		const token = signInternalServiceRequest({
+			method: "POST",
+			path,
+			body: JSON.stringify({ key }),
+			audience: "web-object-url",
+			now: now + 5,
+		});
+		expect((await POST(request(key, "web-object-url", token))).status).toBe(
+			200,
+		);
+		vi.mocked(Date.now).mockReturnValue((now + 35) * 1000);
+		expect((await POST(request(key, "web-object-url", token))).status).toBe(
+			401,
+		);
+		expect(state.bucket).toHaveBeenCalledTimes(1);
+	});
+	it("prunes consumed nonces only after expiry plus skew", async () => {
+		const now = Math.floor(Date.now() / 1000);
+		vi.spyOn(Date, "now").mockReturnValue(now * 1000);
+		const first = request(key);
+		const token = first.headers.get(ORIGIN_SERVICE_HEADER) ?? "";
+		const claims = JSON.parse(
+			Buffer.from(token.split(".")[0] ?? "", "base64url").toString(),
+		);
+		expect((await POST(first)).status).toBe(200);
+		const body = JSON.stringify({ key });
+		const refreshed = (time: number) => {
+			const encoded = Buffer.from(
+				JSON.stringify({ ...claims, iat: time, exp: time + 30 }),
+			).toString("base64url");
+			const hash = createHash("sha256").update(body).digest("hex");
+			const mac = createHmac(
+				"sha256",
+				process.env.REVISION_ORIGIN_SERVICE_SECRET ?? "",
+			)
+				.update(`${encoded}.POST.${path}.${hash}`)
+				.digest("base64url");
+			return `${encoded}.${mac}`;
+		};
+		vi.mocked(Date.now).mockReturnValue((now + 35) * 1000);
+		expect(
+			(await POST(request(key, "web-object-url", refreshed(now + 35)))).status,
+		).toBe(401);
+		vi.mocked(Date.now).mockReturnValue((now + 36) * 1000);
+		expect(
+			(await POST(request(key, "web-object-url", refreshed(now + 36)))).status,
+		).toBe(200);
+	});
+	it.each(["length", "chunked", "lying-length", "single-chunk"])(
+		"rejects oversized %s bodies before MAC/DB and stops reading",
+		async (kind) => {
+			const verify = vi.spyOn(serviceAuth, "verifyInternalServiceRequest");
+			let reads = 0;
+			const cancel = vi.fn();
+			const stream = new ReadableStream<Uint8Array>(
+				{
+					pull(controller) {
+						reads++;
+						if (reads <= 2)
+							controller.enqueue(
+								new Uint8Array(kind === "single-chunk" ? 4097 : 4096),
+							);
+						else controller.close();
+					},
+					cancel,
+				},
+				{ highWaterMark: 0 },
+			);
+			const req = new Request(`http://cap-web:3000${path}`, {
+				method: "POST",
+				body: stream,
+				headers:
+					kind === "length"
+						? { "Content-Length": "4097" }
+						: kind === "lying-length"
+							? { "Content-Length": "1" }
+							: {},
+				duplex: "half",
+			} as RequestInit);
+			expect((await POST(req)).status).toBe(413);
+			expect(reads).toBe(
+				kind === "length" ? 0 : kind === "single-chunk" ? 1 : 2,
+			);
+			expect(cancel).toHaveBeenCalledTimes(1);
+			expect(verify).not.toHaveBeenCalled();
+			expect(state.select).not.toHaveBeenCalled();
+			expect(state.bucket).not.toHaveBeenCalled();
+		},
+	);
+	it("accepts exactly 4 KiB and verifies the original UTF-8 bytes", async () => {
+		const body = JSON.stringify({ key, ignored: "é" });
+		const padded = body + " ".repeat(4096 - Buffer.byteLength(body));
+		const bytes = Buffer.from(padded);
+		const token = signInternalServiceRequest({
+			method: "POST",
+			path,
+			body: bytes,
+			audience: "web-object-url",
+		});
+		const req = new Request(`http://cap-web:3000${path}`, {
+			method: "POST",
+			body: bytes,
+			headers: { [ORIGIN_SERVICE_HEADER]: token, "Content-Length": "4096" },
+		});
+		expect((await POST(req)).status).toBe(200);
 	});
 	it("fails closed if registration or signing fails", async () => {
 		state.select.mockImplementationOnce(() => {

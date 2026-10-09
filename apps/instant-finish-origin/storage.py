@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
+import subprocess
+import sys
 import threading
 import urllib.request
 from dataclasses import dataclass
@@ -127,20 +130,63 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _url_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or any(ord(char) <= 32 or ord(char) == 127 or char == "\\" for char in url)
+            or parsed.netloc.endswith(":") or parsed.port == 0):
+        raise ValueError("invalid object URL")
+    return parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+def _http_fetch(url, method, data, headers, dest):
+    request = urllib.request.Request(url, data=data.encode() if data is not None else None,
+                                     headers=headers, method=method)
+    http = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    with http.open(request, timeout=30) as response:
+        if response.status != 200:
+            raise StorageError("source object unavailable")
+        if dest is not None:
+            with Path(dest).open("wb") as stream:
+                os.chmod(dest, 0o600)
+                shutil.copyfileobj(response, stream, length=1 << 20)
+                if stream.tell() != int(response.headers["Content-Length"]):
+                    raise StorageError("incomplete source object")
+        elif method == "POST":
+            return json.load(response)
+        return {key.lower(): value for key, value in response.headers.items()}
+
+
 class PresignedObjectStore(ObjectStore):
     URL_PATH = "/api/internal/origin/object-url"
+    URL_FETCH_DEADLINE_S = 30
 
     def __init__(self, endpoint: str, service_secret: bytes) -> None:
+        try:
+            origin = os.environ["ORIGIN_STORAGE_ORIGIN"]
+            parsed = urlsplit(origin)
+            self.storage_origin = _url_origin(origin)
+            if parsed.path or "?" in origin or "#" in origin:
+                raise ValueError("storage origin must not include a path")
+            self.fetch_deadline = float(os.environ.get("ORIGIN_OBJECT_FETCH_DEADLINE_S", "600"))
+            if not math.isfinite(self.fetch_deadline) or self.fetch_deadline <= 0:
+                raise ValueError("invalid fetch deadline")
+        except (KeyError, TypeError, ValueError):
+            raise StorageError("valid storage origin and fetch deadline required") from None
         self.endpoint = endpoint.rstrip("/") + self.URL_PATH
         self.service_secret = service_secret
-        self._http = urllib.request.build_opener(_NoRedirect())
 
-    def _open(self, request):
-        response = self._http.open(request, timeout=30)
-        if response.status != 200:
-            response.close()
-            raise StorageError("source object unavailable")
-        return response
+    def _fetch(self, request, timeout, dest=None):
+        # A kill-and-wait subprocess bounds DNS, TLS, headers and trickling reads,
+        # including on origin worker threads; no transfer can outlive cleanup.
+        task = {"url": request.full_url, "method": request.get_method(),
+                "data": request.data.decode() if request.data is not None else None,
+                "headers": dict(request.header_items()), "dest": str(dest) if dest is not None else None}
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                input=json.dumps(task).encode(), stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=timeout, check=True)
+        return json.loads(result.stdout)
 
     def _url(self, key: str, field: str) -> str:
         assert_original_key(key)
@@ -150,12 +196,11 @@ class PresignedObjectStore(ObjectStore):
             request = urllib.request.Request(self.endpoint, data=body, headers={
                 "Content-Type": "application/json", SERVICE_HEADER: token,
             }, method="POST")
-            with self._open(request) as response:
-                url = json.load(response)[field]
-            parsed = urlsplit(url)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
-                raise ValueError("invalid object URL")
-            return url
+            urls = self._fetch(request, self.URL_FETCH_DEADLINE_S)
+            for name in ("getUrl", "headUrl"):
+                if _url_origin(urls[name]) != self.storage_origin:
+                    raise ValueError("unexpected storage origin")
+            return urls[field]
         except Exception:
             raise StorageError("source object URL unavailable") from None
 
@@ -165,11 +210,7 @@ class PresignedObjectStore(ObjectStore):
         private(dest.parent)
         tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            with self._open(urllib.request.Request(url, method="GET")) as response, tmp.open("wb") as stream:
-                os.chmod(tmp, 0o600)
-                shutil.copyfileobj(response, stream, length=1 << 20)
-                if stream.tell() != int(response.headers["Content-Length"]):
-                    raise StorageError("incomplete source object")
+            self._fetch(urllib.request.Request(url, method="GET"), self.fetch_deadline, tmp)
             os.replace(tmp, dest)
             private(dest)
         except Exception:
@@ -180,12 +221,12 @@ class PresignedObjectStore(ObjectStore):
     def head(self, key: str) -> ObjectIdentity:
         url = self._url(key, "headUrl")
         try:
-            with self._open(urllib.request.Request(url, method="HEAD")) as response:
-                size = int(response.headers["Content-Length"])
-                if size < 0:
-                    raise ValueError("invalid object size")
-                return ObjectIdentity(key, response.headers.get("ETag", "").strip('"'),
-                                      response.headers.get("x-amz-version-id", ""), size)
+            headers = self._fetch(urllib.request.Request(url, method="HEAD"), self.fetch_deadline)
+            size = int(headers["content-length"])
+            if size < 0:
+                raise ValueError("invalid object size")
+            return ObjectIdentity(key, headers.get("etag", "").strip('"'),
+                                  headers.get("x-amz-version-id", ""), size)
         except Exception:
             raise StorageError("source object unavailable") from None
 
@@ -245,3 +286,7 @@ class S3ObjectStore(ObjectStore):
                     config=Config(s3={"addressing_style": "path"}, signature_version="s3v4"),
                 )
             return self._s3
+
+
+if __name__ == "__main__":
+    print(json.dumps(_http_fetch(**json.load(sys.stdin))))

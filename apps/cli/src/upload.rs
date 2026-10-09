@@ -143,8 +143,9 @@ impl UploadArgs {
                     let video_id =
                         create_video(&http, &server, &auth, &self.name, self.video_id, &meta)
                             .await?;
-                    let put_url = presign_put(&http, &server, &auth, &video_id, &meta).await?;
-                    upload_file(&http, &put_url, &file_path).await?;
+                    let (put_url, headers) =
+                        presign_put(&http, &server, &auth, &video_id, &meta).await?;
+                    upload_file(&http, &put_url, &headers, &file_path).await?;
                     let link = format!("{server}/s/{video_id}");
                     (video_id, link)
                 }
@@ -248,8 +249,8 @@ pub async fn upload_video_path(file_path: &Path, name: Option<String>) -> Result
             let http = Client::new();
             let auth = format!("Bearer {}", creds.api_key);
             let video_id = create_video(&http, &server, &auth, &name, None, &meta).await?;
-            let put_url = presign_put(&http, &server, &auth, &video_id, &meta).await?;
-            upload_file(&http, &put_url, file_path).await?;
+            let (put_url, headers) = presign_put(&http, &server, &auth, &video_id, &meta).await?;
+            upload_file(&http, &put_url, &headers, file_path).await?;
             Ok(format!("{server}/s/{video_id}"))
         }
         Err(_) => upload_file_with_agent(file_path, name.as_deref(), &meta)
@@ -452,7 +453,7 @@ async fn presign_put(
     auth: &str,
     video_id: &str,
     meta: &VideoMeta,
-) -> Result<String, String> {
+) -> Result<(String, std::collections::BTreeMap<String, String>), String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct SignedResponse {
@@ -461,6 +462,8 @@ async fn presign_put(
     #[derive(Deserialize)]
     struct PresignedPutData {
         url: String,
+        #[serde(default)]
+        headers: std::collections::BTreeMap<String, String>,
     }
 
     let response = http
@@ -491,11 +494,16 @@ async fn presign_put(
     response
         .json::<SignedResponse>()
         .await
-        .map(|r| r.presigned_put_data.url)
+        .map(|r| (r.presigned_put_data.url, r.presigned_put_data.headers))
         .map_err(|e| format!("Unexpected upload-URL response: {e}"))
 }
 
-async fn upload_file(http: &Client, put_url: &str, path: &Path) -> Result<(), String> {
+async fn upload_file(
+    http: &Client,
+    put_url: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+    path: &Path,
+) -> Result<(), String> {
     // Stream the file rather than buffering it into memory — recordings can be gigabytes, so a
     // `tokio::fs::read` would OOM on exactly the long unattended recordings agents produce. S3 PUT
     // needs an explicit Content-Length for a streamed body (it rejects chunked transfer encoding),
@@ -510,10 +518,14 @@ async fn upload_file(http: &Client, put_url: &str, path: &Path) -> Result<(), St
         .len();
     let body = reqwest::Body::wrap_stream(ReaderStream::new(file));
 
-    let response = http
+    let mut request = http
         .put(put_url)
         .header(reqwest::header::CONTENT_LENGTH, total_size)
-        .body(body)
+        .body(body);
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| format!("Upload failed: {e}"))?;

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 
 SERVICE_HEADER = "x-cap-origin-service"
@@ -47,7 +48,7 @@ def sign_request(
         "aud": audience,
         "iat": iat,
         "exp": iat + SERVICE_TTL_S,
-        "nonce": b64url(hashlib.sha256(f"{iat}:{path}:{len(body)}".encode()).digest())[:16],
+        "nonce": secrets.token_urlsafe(12) if audience == "web-object-url" else b64url(hashlib.sha256(f"{iat}:{path}:{len(body)}".encode()).digest())[:16],
     }
     encoded = b64url(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
     mac_input = f"{encoded}.{method.upper()}.{path}.{body_sha256(body)}".encode()

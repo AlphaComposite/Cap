@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest } from "node:http";
 import type { Socket } from "node:net";
-import { S3Bucket } from "@cap/web-domain";
+import { S3Bucket, type Video } from "@cap/web-domain";
+import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
@@ -41,6 +42,8 @@ vi.mock("@cap/web-backend/src/S3Buckets/S3BucketsRepo.ts", async () => {
 
 import { S3Buckets } from "@cap/web-backend/src/S3Buckets";
 import { s3ConnectionPool } from "@cap/web-backend/src/S3Buckets/S3ConnectionPool";
+import { Storage } from "@cap/web-backend/src/Storage";
+import { StorageRepo } from "@cap/web-backend/src/Storage/StorageRepo";
 
 async function storageFixture() {
 	let connections = 0;
@@ -97,6 +100,196 @@ async function storageFixture() {
 }
 
 describe("S3 connection reuse", () => {
+	it.each(["default", "custom"] as const)(
+		"signs %s PUT and UploadPart without optional checksums and binds all metadata headers",
+		async (bucketKind) => {
+			const fixture = await storageFixture();
+			try {
+				mocks.getById.mockReturnValue(
+					Effect.succeed(
+						Option.some(
+							S3Bucket.decodeSync({
+								id: "custom-bucket",
+								ownerId: "owner",
+								region: "us-east-1",
+								endpoint: fixture.endpoint,
+								name: "custom-storage",
+								accessKeyId: "custom-key",
+								secretAccessKey: "custom-secret",
+							}),
+						),
+					),
+				);
+				const [access] = await fixture.runtime.runPromise(
+					fixture.service.getBucketAccess(
+						bucketKind === "default"
+							? Option.none()
+							: Option.some(S3Bucket.S3BucketId.make("custom-bucket")),
+					),
+				);
+				const metadata = {
+					userid: "owner",
+					duration: "0",
+					resolution: "1920x1080",
+					videocodec: "h264",
+					audiocodec: "aac",
+					source: "desktop",
+					Custom: "extra",
+				};
+				const signing = {
+					expiresIn: 123,
+					signingDate: new Date("2026-01-01T00:00:00Z"),
+				};
+				const request = HttpServerRequest.fromWeb(
+					new Request("http://10.0.0.42:3000/upload"),
+				);
+				for (const endpoint of ["public", "internal", "request"] as const) {
+					const put = (values = metadata) => {
+						const effect =
+							endpoint === "internal"
+								? access.getInternalPresignedPutUrl(
+										"result.mp4",
+										{ Metadata: values },
+										signing,
+									)
+								: access.getPresignedPutUrl(
+										"result.mp4",
+										{ Metadata: values },
+										signing,
+									);
+						return endpoint === "request"
+							? effect.pipe(
+									Effect.provideService(
+										HttpServerRequest.HttpServerRequest,
+										request,
+									),
+								)
+							: effect;
+					};
+					const url = new URL(await fixture.runtime.runPromise(put()));
+					expect(url.hostname).toBe(
+						endpoint === "request" ? "10.0.0.42" : "127.0.0.1",
+					);
+					expect(url.searchParams.get("X-Amz-Expires")).toBe("123");
+					expect(
+						url.searchParams.get("X-Amz-SignedHeaders")?.split(";"),
+					).toEqual(
+						[
+							"host",
+							...Object.keys(metadata).map(
+								(key) => `x-amz-meta-${key.toLowerCase()}`,
+							),
+						].sort(),
+					);
+					for (const key of Object.keys(metadata)) {
+						expect(
+							url.searchParams.has(`x-amz-meta-${key.toLowerCase()}`),
+						).toBe(false);
+					}
+					const changed = new URL(
+						await fixture.runtime.runPromise(
+							put({ ...metadata, duration: "1" }),
+						),
+					);
+					expect(changed.searchParams.get("X-Amz-Signature")).not.toBe(
+						url.searchParams.get("X-Amz-Signature"),
+					);
+					const part = access.multipart.getPresignedUploadPartUrl(
+						"result.mp4",
+						"upload-id",
+						1,
+					);
+					const partUrl = new URL(
+						await fixture.runtime.runPromise(
+							endpoint === "request"
+								? part.pipe(
+										Effect.provideService(
+											HttpServerRequest.HttpServerRequest,
+											request,
+										),
+									)
+								: part,
+						),
+					);
+					for (const signed of [url, partUrl]) {
+						expect(signed.searchParams.has("x-amz-checksum-crc32")).toBe(false);
+						expect(
+							signed.searchParams.has("x-amz-sdk-checksum-algorithm"),
+						).toBe(false);
+					}
+				}
+				const fields = Object.fromEntries(
+					Object.entries(metadata).map(([key, value]) => [
+						`x-amz-meta-${key.toLowerCase()}`,
+						value,
+					]),
+				);
+				const target = await Effect.gen(function* () {
+					const presign = vi.spyOn(access, "getPresignedPutUrl");
+					const [storage] = yield* Storage.getAccessForVideo(
+						{
+							bucketId: Option.none(),
+							storageIntegrationId: Option.none(),
+						} as Video.Video,
+						{ resolvePublishedOutput: false },
+					);
+					const target = yield* storage.createUploadTarget("result.mp4", {
+						contentType: "video/mp4",
+						fields,
+					});
+					expect(presign).toHaveBeenCalledWith(
+						"result.mp4",
+						{
+							ContentType: "video/mp4",
+							Metadata: Object.fromEntries(
+								Object.entries(fields).map(([key, value]) => [
+									key.slice("x-amz-meta-".length),
+									value,
+								]),
+							),
+						},
+						{ expiresIn: 1800 },
+					);
+					return target;
+				}).pipe(
+					Effect.provide(
+						Storage.DefaultWithoutDependencies.pipe(
+							Layer.provide(
+								Layer.mergeAll(
+									Layer.succeed(StorageRepo, {} as StorageRepo),
+									Layer.succeed(S3Buckets, {
+										getBucketAccess: () =>
+											Effect.succeed([access, Option.none()]),
+									} as unknown as S3Buckets),
+								),
+							),
+						),
+					),
+					Effect.runPromise,
+				);
+				expect(target.type).toBe("put");
+				if (target.type !== "put") throw new Error("Expected PUT target");
+				expect(target.headers).toEqual({
+					"Content-Type": "video/mp4",
+					...fields,
+				});
+				expect(
+					new URL(target.url).searchParams
+						.get("X-Amz-SignedHeaders")
+						?.split(";"),
+				).toEqual(
+					[
+						"host",
+						...Object.keys(target.headers).map((key) => key.toLowerCase()),
+					].sort(),
+				);
+				expect(fixture.authorizations).toEqual([]);
+			} finally {
+				await fixture.close();
+			}
+		},
+	);
+
 	it("bounds connections across simultaneous recording checkpoints", async () => {
 		const fixture = await storageFixture();
 		try {

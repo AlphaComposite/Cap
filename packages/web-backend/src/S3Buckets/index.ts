@@ -45,6 +45,7 @@ export class S3Buckets extends Effect.Service<S3Buckets>()("S3Buckets", {
 				credentials: defaultConfigs.credentials,
 				forcePathStyle: defaultConfigs.forcePathStyle,
 				requestStreamBufferSize: 16 * 1024,
+				requestChecksumCalculation: "WHEN_REQUIRED",
 				requestHandler,
 			});
 		const defaultInternalClient = createDefaultClient(true);
@@ -83,6 +84,7 @@ export class S3Buckets extends Effect.Service<S3Buckets>()("S3Buckets", {
 						Option.getOrNull,
 					) ?? true,
 				useArnRegion: false,
+				requestChecksumCalculation: "WHEN_REQUIRED",
 				requestHandler,
 			});
 		};
