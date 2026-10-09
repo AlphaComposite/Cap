@@ -68,6 +68,7 @@ import {
 	type OriginClient,
 	type RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
+import { SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
 import { writeRevisionThumbnailSha } from "@/lib/revision-snapshot-patch";
 import {
 	isVerifiedJpeg,
@@ -1348,10 +1349,7 @@ async function readReadySource(
 		);
 	}
 	if (relocations.some((row) => row.state !== "PURGED")) {
-		throw new RevisionPublicationError(
-			409,
-			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
-		);
+		throw new RevisionPublicationError(409, SOURCE_RELOCATION_PENDING_MESSAGE);
 	}
 	const [owner] = await tx
 		.select({ ownerId: videos.ownerId })

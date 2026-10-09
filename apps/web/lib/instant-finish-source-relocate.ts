@@ -12,6 +12,7 @@ import { serverEnv } from "@cap/env";
 import { and, eq } from "drizzle-orm";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
+import { SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
 import {
 	assertFinishInventoryClear,
 	continueRelocation,
@@ -167,7 +168,7 @@ export async function relocateFlaggedSource(input: {
 				409,
 				error instanceof Error
 					? error.message
-					: "Finish refused until source relocation is PURGED and liveKey is the relocated key",
+					: SOURCE_RELOCATION_PENDING_MESSAGE,
 			);
 		}
 	}
@@ -182,20 +183,14 @@ export async function relocateFlaggedSource(input: {
 		referencedKeys: [input.sourceKey, edit?.sourceKey, upload?.rawFileKey],
 	});
 	if (!proof.liveKey || !proof.liveKeyPrivate) {
-		throw new RevisionPublicationError(
-			409,
-			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
-		);
+		throw new RevisionPublicationError(409, SOURCE_RELOCATION_PENDING_MESSAGE);
 	}
 	const [live] = await app
 		.select({ sha256: sourceObject.sha256, liveKey: sourceObject.liveKey })
 		.from(sourceObject)
 		.where(eq(sourceObject.videoId, input.videoId as never));
 	if (live?.liveKey !== proof.liveKey) {
-		throw new RevisionPublicationError(
-			409,
-			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
-		);
+		throw new RevisionPublicationError(409, SOURCE_RELOCATION_PENDING_MESSAGE);
 	}
 	return { liveKey: proof.liveKey, sha256: live.sha256 };
 }

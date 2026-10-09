@@ -80,7 +80,8 @@ vi.mock("@/utils/view-transition", () => ({
 	navigateWithTransition: vi.fn(),
 }));
 
-vi.mock("@/lib/revision-publish-client", () => ({
+vi.mock("@/lib/revision-publish-client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/revision-publish-client")>()),
 	postRevisionRoute: (...args: unknown[]) => harness.post(...args),
 }));
 
@@ -199,28 +200,30 @@ async function flush() {
 	});
 }
 
+function editorElement(baseline: ReturnType<typeof createIdentityEditSpec>) {
+	return createElement(EditVideoClient, {
+		video: {
+			id: VIDEO_ID as never,
+			name: "Timing fixture",
+			ownerId: "owner-1",
+			duration: DURATION,
+			width: 1920,
+			height: 1080,
+			transcriptionStatus: "COMPLETE",
+		},
+		chapters: [],
+		hasExistingEdits: false,
+		initialEditSpec: baseline,
+		playbackSrc: "/original.mp4",
+		usesOriginalSource: false,
+	});
+}
+
 async function renderEditor(
 	baseline: ReturnType<typeof createIdentityEditSpec>,
 ) {
 	await act(async () => {
-		root.render(
-			createElement(EditVideoClient, {
-				video: {
-					id: VIDEO_ID as never,
-					name: "Timing fixture",
-					ownerId: "owner-1",
-					duration: DURATION,
-					width: 1920,
-					height: 1080,
-					transcriptionStatus: "COMPLETE",
-				},
-				chapters: [],
-				hasExistingEdits: false,
-				initialEditSpec: baseline,
-				playbackSrc: "/original.mp4",
-				usesOriginalSource: false,
-			}),
-		);
+		root.render(editorElement(baseline));
 	});
 	for (let attempt = 0; attempt < 20; attempt++) {
 		const done = doneButton();
@@ -292,6 +295,164 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
+	it.each(["newer version", "changed contents", "editor state"])(
+		"stops stale Done retries after %s changes",
+		async (change) => {
+			const { baseline } = seedDraft();
+			const done = await renderEditor(baseline);
+			vi.useFakeTimers();
+			let attempts = 0;
+			harness.post.mockImplementation(async (path: string) => {
+				if (path.endsWith("/prepare")) return { generation: 3 };
+				if (++attempts === 1)
+					throw Object.assign(
+						new Error(
+							"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+						),
+						{ status: 409 },
+					);
+				return { success: true, revisionId: "stale", generation: 4 };
+			});
+			try {
+				await act(async () => done.click());
+				const key = getTimelineDraftKey(VIDEO_ID);
+				const originalDraft = localStorage.getItem(key);
+				if (!originalDraft) throw new Error("missing shared draft");
+				const current = JSON.parse(originalDraft);
+				let newer = JSON.stringify(
+					change === "newer version"
+						? { ...current, draftVersion: 20 }
+						: { ...current, state: { ...current.state, trimEnd: 9 } },
+				);
+				if (change === "editor state") {
+					// Change only the component state: leave shared storage exactly as submitted.
+					newer = originalDraft;
+					await act(async () =>
+						root.render(
+							editorElement(
+								normalizeKeepRanges([{ start: 0, end: 9 }], DURATION),
+							),
+						),
+					);
+				}
+				localStorage.setItem(key, newer);
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(1_000);
+				});
+				expect(attempts).toBe(1);
+				expect(harness.push).not.toHaveBeenCalled();
+				expect(localStorage.getItem(key)).toBe(newer);
+				expect(
+					container.querySelector("[data-editor-shell='editor']"),
+				).not.toBeNull();
+				expect(doneButton()?.disabled).toBe(false);
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it("unmount during privacy wait cancels retries without clearing or navigating", async () => {
+		const { baseline } = seedDraft();
+		const done = await renderEditor(baseline);
+		vi.useFakeTimers();
+		let attempts = 0;
+		let signal: AbortSignal | undefined;
+		harness.post.mockImplementation(
+			async (path: string, _body: unknown, requestSignal: AbortSignal) => {
+				if (path.endsWith("/prepare")) return { generation: 3 };
+				signal = requestSignal;
+				if (++attempts === 1)
+					throw Object.assign(
+						new Error(
+							"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+						),
+						{ status: 409 },
+					);
+				return { success: true, revisionId: "detached", generation: 4 };
+			},
+		);
+		try {
+			await act(async () => done.click());
+			const draft = localStorage.getItem(getTimelineDraftKey(VIDEO_ID));
+			await act(async () => root.unmount());
+			expect(signal?.aborted).toBe(true);
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(61_000);
+			});
+			expect(attempts).toBe(1);
+			expect(harness.push).not.toHaveBeenCalled();
+			expect(localStorage.getItem(getTimelineDraftKey(VIDEO_ID))).toBe(draft);
+			expect(toast.error).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(["success", "failure"])(
+		"ignores late in-flight %s after unmount",
+		async (result) => {
+			const { baseline } = seedDraft();
+			const done = await renderEditor(baseline);
+			let finish: () => void = () => {};
+			harness.post.mockImplementation((path: string) => {
+				if (path.endsWith("/prepare"))
+					return Promise.resolve({ generation: 3 });
+				return new Promise((resolve, reject) => {
+					finish = () =>
+						result === "success"
+							? resolve({ success: true, revisionId: "late", generation: 4 })
+							: reject(new Error("late failure"));
+				});
+			});
+			await act(async () => done.click());
+			const draft = localStorage.getItem(getTimelineDraftKey(VIDEO_ID));
+			await act(async () => root.unmount());
+			await act(async () => finish());
+			expect(harness.push).not.toHaveBeenCalled();
+			expect(localStorage.getItem(getTimelineDraftKey(VIDEO_ID))).toBe(draft);
+			expect(toast.error).not.toHaveBeenCalled();
+		},
+	);
+
+	it("honours an in-flight publish success after 60 seconds and navigates", async () => {
+		const { baseline } = seedDraft();
+		const done = await renderEditor(baseline);
+		vi.useFakeTimers();
+		harness.post.mockImplementation(
+			(path: string, _body: unknown, signal: AbortSignal) => {
+				if (path.endsWith("/prepare"))
+					return Promise.resolve({ generation: 3 });
+				return new Promise((resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), {
+						once: true,
+					});
+					setTimeout(
+						() => resolve({ success: true, revisionId: "slow", generation: 4 }),
+						61_000,
+					);
+				});
+			},
+		);
+		try {
+			await act(async () => done.click());
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+			expect(
+				container.querySelector("[data-editor-shell='publishing']"),
+			).not.toBeNull();
+			expect(storedDraft()).not.toBeNull();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1_000);
+			});
+			expect(harness.push).toHaveBeenCalledExactlyOnceWith(`/s/${VIDEO_ID}`);
+			expect(storedDraft()).toBeNull();
+			expect(toast.error).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("shows privacy progress through delayed Done retries, then navigates", async () => {
 		const { baseline } = seedDraft();
 		const done = await renderEditor(baseline);

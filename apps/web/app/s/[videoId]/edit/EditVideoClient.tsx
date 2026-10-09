@@ -837,6 +837,7 @@ export function EditVideoClient({
 		ready: boolean;
 	} | null>(null);
 	const savingRef = useRef(false);
+	const doneControllerRef = useRef<AbortController | null>(null);
 	const editorSnapshotRef = useRef({
 		history,
 		draftState,
@@ -1101,6 +1102,7 @@ export function EditVideoClient({
 
 	useEffect(
 		() => () => {
+			doneControllerRef.current?.abort();
 			if (playheadFrameRef.current !== 0) {
 				cancelAnimationFrame(playheadFrameRef.current);
 			}
@@ -1566,6 +1568,10 @@ export function EditVideoClient({
 			return;
 		}
 		if (doneRoute(instantFinish) === "wait") return;
+		const controller = new AbortController();
+		doneControllerRef.current = controller;
+		const { signal } = controller;
+		const submittedState = stateRef.current;
 		publishSnapshotRef.current = {
 			history: editorSnapshotRef.current.history,
 			draftState: editorSnapshotRef.current.draftState,
@@ -1577,7 +1583,7 @@ export function EditVideoClient({
 		const restoreEditor = () => {
 			const snapshot = publishSnapshotRef.current;
 			savingRef.current = false;
-			if (snapshot) {
+			if (snapshot && stateRef.current === submittedState) {
 				setHistory(snapshot.history);
 				setDraftState(snapshot.draftState);
 				setPlayhead(snapshot.playhead);
@@ -1590,12 +1596,15 @@ export function EditVideoClient({
 			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
 			if (!instantFinish?.enabled) {
 				await saveVideoEdits(video.id, editSpec, initialEditSpec);
+				signal.throwIfAborted();
 				if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
 				router.push(`/s/${video.id}`);
 				router.refresh();
 				return;
 			}
 			let publicationState = instantFinish;
+			const submittedDraftVersion = (instantFinish.draftVersion ?? 0) + 1;
+			const submittedDraft = draftStorage?.getItem(draftStorageKey) ?? null;
 			let expectedDraftSession: string | undefined;
 			const published = await publishDoneWithRetry(
 				(signal) =>
@@ -1631,12 +1640,14 @@ export function EditVideoClient({
 						error.message === "Editor-open warm expired. Reopen the editor."
 					) {
 						const warmed = await rewarmEditorSource(video.id);
+						signal.throwIfAborted();
 						if (!warmed.success) throw new Error(warmed.error);
 					}
 					const fresh = await getEditorInstantFinishState({
 						videoId: video.id,
 						ownerId: video.ownerId,
 					});
+					signal.throwIfAborted();
 					if (fresh.draftSession && fresh.draftSession !== draftSession) {
 						throw error instanceof Error && error.message
 							? error
@@ -1649,7 +1660,25 @@ export function EditVideoClient({
 					setInstantFinish(publicationState);
 				},
 				() => setWaitingForRelocation(true),
+				{
+					signal,
+					beforeRetry: () => {
+						const localDraft = draftStorage?.getItem(draftStorageKey) ?? null;
+						const draftVersion = JSON.parse(localDraft ?? "null")?.draftVersion;
+						if (
+							localDraft !== submittedDraft ||
+							(Number.isSafeInteger(draftVersion) &&
+								draftVersion > submittedDraftVersion) ||
+							stateRef.current !== submittedState
+						) {
+							throw new Error(
+								"Draft changed while publishing. Review the editor before trying Done again.",
+							);
+						}
+					},
+				},
 			);
+			signal.throwIfAborted();
 			if (published.success) {
 				if (published.playback && typeof sessionStorage !== "undefined") {
 					stashInstantFinishPlayback(
@@ -1672,6 +1701,7 @@ export function EditVideoClient({
 			toast.error("Failed to publish edit");
 			restoreEditor();
 		} catch (error) {
+			if (signal.aborted) return;
 			const status =
 				typeof error === "object" &&
 				error !== null &&

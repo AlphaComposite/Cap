@@ -1,3 +1,5 @@
+import { SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
+
 export type PublishRevisionResult =
 	| { success: true; revisionId?: string; generation?: number }
 	| { success: false; reason?: string; status?: number; message?: string };
@@ -10,43 +12,59 @@ export async function publishDoneWithRetry<T>(
 	publish: (signal: AbortSignal) => Promise<T>,
 	refresh: (error: unknown) => Promise<void>,
 	onRelocationWait?: () => void,
+	{
+		signal = new AbortController().signal,
+		beforeRetry,
+	}: { signal?: AbortSignal; beforeRetry?: () => void } = {},
 ): Promise<T> {
+	// The deadline limits new attempts, not an in-flight server publication.
 	const deadline = performance.now() + 60_000;
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), 60_000);
 	let refreshed = false;
-	try {
-		for (;;) {
-			try {
-				return await publish(controller.signal);
-			} catch (error) {
-				if (
-					typeof error !== "object" ||
-					error === null ||
-					!("status" in error) ||
-					error.status !== 409
-				)
-					throw error;
-				if (
-					"message" in error &&
-					error.message ===
-						"Finish refused until source relocation is PURGED and liveKey is the relocated key"
-				) {
-					if (performance.now() >= deadline) throw error;
-					onRelocationWait?.();
-					await new Promise((resolve) =>
-						setTimeout(resolve, Math.min(1_000, deadline - performance.now())),
+	for (;;) {
+		signal.throwIfAborted();
+		try {
+			const result = await publish(signal);
+			signal.throwIfAborted();
+			return result;
+		} catch (error) {
+			signal.throwIfAborted();
+			if (
+				typeof error !== "object" ||
+				error === null ||
+				!("status" in error) ||
+				error.status !== 409 ||
+				performance.now() >= deadline
+			)
+				throw error;
+			if (
+				"message" in error &&
+				error.message === SOURCE_RELOCATION_PENDING_MESSAGE
+			) {
+				onRelocationWait?.();
+				await new Promise<void>((resolve, reject) => {
+					const abort = () => {
+						clearTimeout(timer);
+						reject(signal.reason);
+					};
+					const timer = setTimeout(
+						() => {
+							signal.removeEventListener("abort", abort);
+							resolve();
+						},
+						Math.min(1_000, deadline - performance.now()),
 					);
-					if (performance.now() >= deadline) throw error;
-				} else {
-					if (refreshed) throw error;
-					refreshed = true;
-					await refresh(error);
-				}
+					signal.addEventListener("abort", abort, { once: true });
+					if (signal.aborted) abort();
+				});
+			} else {
+				if (refreshed) throw error;
+				refreshed = true;
+				await refresh(error);
 			}
+			signal.throwIfAborted();
+			beforeRetry?.();
+			if (performance.now() >= deadline) throw error;
 		}
-	} finally {
-		clearTimeout(timeout);
 	}
 }
 

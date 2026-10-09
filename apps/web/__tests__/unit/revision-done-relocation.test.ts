@@ -2,6 +2,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { publishDoneWithRetry } from "@/lib/revision-done";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
 import {
+	postRevisionRoute,
+	SOURCE_RELOCATION_PENDING_MESSAGE,
+} from "@/lib/revision-publish-client";
+import {
 	assertFinishInventoryClear,
 	assertFinishSourceKey,
 	createMemoryJournal,
@@ -12,7 +16,44 @@ import {
 const refusal =
 	"Finish refused until source relocation is PURGED and liveKey is the relocated key";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	vi.useRealTimers();
+	vi.unstubAllGlobals();
+});
+
+it("external abort cancels the privacy sleep immediately and stops further fetches", async () => {
+	vi.useFakeTimers();
+	const controller = new AbortController();
+	const fetch = vi
+		.fn()
+		.mockResolvedValue(
+			new Response(
+				JSON.stringify({ error: SOURCE_RELOCATION_PENDING_MESSAGE }),
+				{ status: 409 },
+			),
+		);
+	vi.stubGlobal("fetch", fetch);
+	let settled = false;
+	const done = publishDoneWithRetry(
+		(signal) => postRevisionRoute("/publish", {}, signal),
+		vi.fn(),
+		undefined,
+		{ signal: controller.signal },
+	).catch((error) => {
+		settled = true;
+		return error;
+	});
+	await vi.advanceTimersByTimeAsync(0);
+	expect(fetch).toHaveBeenCalledOnce();
+	expect(vi.getTimerCount()).toBe(1);
+	controller.abort();
+	await vi.advanceTimersByTimeAsync(0);
+	expect(settled).toBe(true);
+	expect(await done).toBe(controller.signal.reason);
+	expect(vi.getTimerCount()).toBe(0);
+	await vi.advanceTimersByTimeAsync(60_000);
+	expect(fetch).toHaveBeenCalledOnce();
+});
 
 it("Done waits for a slow rollback copy, then passes the unchanged prepare gates", async () => {
 	vi.useFakeTimers();
@@ -98,22 +139,51 @@ it("stops at 60 seconds and still refuses a genuinely unrelocated source", async
 	await vi.advanceTimersByTimeAsync(1_000);
 	expect((await done).message).toBe(refusal);
 	expect(performance.now() - started).toBe(60_000);
-	expect(signal?.aborted).toBe(true);
+	expect(signal?.aborted).toBe(false);
 });
 
-it("aborts an in-flight publish at the same deadline", async () => {
+it("honours a slow in-flight success after the retry deadline", async () => {
 	vi.useFakeTimers();
-	const publish = vi.fn(
-		(signal: AbortSignal) =>
-			new Promise<never>((_, reject) => {
-				signal.addEventListener("abort", () => reject(new Error("deadline")), {
-					once: true,
-				});
-			}),
+	const publish = vi.fn(async (signal: AbortSignal) => {
+		if (publish.mock.calls.length < 60)
+			throw new RevisionPublicationError(409, refusal);
+		return new Promise<string>((resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), {
+				once: true,
+			});
+			setTimeout(() => resolve("published"), 2_000);
+		});
+	});
+	let settled = false;
+	const done = publishDoneWithRetry(publish, vi.fn()).then(
+		(value) => {
+			settled = true;
+			return value;
+		},
+		(error) => {
+			settled = true;
+			return error;
+		},
 	);
-	const done = publishDoneWithRetry(publish, vi.fn()).catch((error) => error);
 	await vi.advanceTimersByTimeAsync(60_000);
-	expect((await done).message).toBe("deadline");
+	expect(settled).toBe(false);
+	await vi.advanceTimersByTimeAsync(1_000);
+	expect(await done).toBe("published");
+	expect(publish).toHaveBeenCalledTimes(60);
+});
+
+it("does not start a retry if draft validation reaches the deadline", async () => {
+	vi.useFakeTimers();
+	const conflict = new RevisionPublicationError(409, refusal);
+	const publish = vi
+		.fn()
+		.mockRejectedValueOnce(conflict)
+		.mockResolvedValue("published");
+	const done = publishDoneWithRetry(publish, vi.fn(), undefined, {
+		beforeRetry: () => vi.advanceTimersByTime(60_000),
+	}).catch((error) => error);
+	await vi.advanceTimersByTimeAsync(1_000);
+	expect(await done).toBe(conflict);
 	expect(publish).toHaveBeenCalledOnce();
 });
 

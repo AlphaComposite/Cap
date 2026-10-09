@@ -1,3 +1,6 @@
+export const SOURCE_RELOCATION_PENDING_MESSAGE =
+	"Finish refused until source relocation is PURGED and liveKey is the relocated key";
+
 export class RevisionRouteError extends Error {
 	readonly status: number;
 

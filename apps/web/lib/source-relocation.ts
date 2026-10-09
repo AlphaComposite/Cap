@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { RevisionPublicationError } from "@/lib/revision-publication-metadata";
+import { SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
 
 export type RelocationKind = "original" | "rollback";
 
@@ -98,10 +99,7 @@ export function assertFinishInventoryClear(
 	prefix: string,
 ) {
 	if (!listed || listed.some((key) => !isFinishInventoryExempt(key, prefix))) {
-		throw new RevisionPublicationError(
-			409,
-			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
-		);
+		throw new RevisionPublicationError(409, SOURCE_RELOCATION_PENDING_MESSAGE);
 	}
 }
 
@@ -387,9 +385,7 @@ export function assertFinishSourceKey(input: {
 			item.newKey === input.liveKey,
 	);
 	if (!relocated) {
-		throw new Error(
-			"Finish refused until source relocation is PURGED and liveKey is the relocated key",
-		);
+		throw new Error(SOURCE_RELOCATION_PENDING_MESSAGE);
 	}
 	return input.liveKey;
 }
