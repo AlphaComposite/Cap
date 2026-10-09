@@ -512,14 +512,8 @@ app.post(
 							),
 						);
 				}
-			} else if (uploaded < total) {
-				await db().insert(videoUploads).values({
-					videoId,
-					uploaded,
-					total,
-					updatedAt,
-				});
 			}
+			// Upload initiation owns row creation; late progress must not resurrect it.
 			if (uploaded === total) {
 				await invalidateGoogleDriveStorageQuotaCache(
 					video.storageIntegrationId,

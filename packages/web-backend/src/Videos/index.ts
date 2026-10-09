@@ -540,47 +540,25 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 
 				const [record] = yield* db.use((db) =>
 					db
-						.select({
-							video: Db.videos,
-							upload: Db.videoUploads,
-						})
+						.select({ video: Db.videos })
 						.from(Db.videos)
-						.leftJoin(
-							Db.videoUploads,
-							Dz.eq(Db.videos.id, Db.videoUploads.videoId),
-						)
 						.where(Dz.eq(Db.videos.id, videoId)),
 				);
 
 				if (!record) return yield* Effect.fail(new Video.NotFoundError());
 				yield* policy.isOwnerLoaded(record.video);
 
+				// Upload initiation owns row creation; late progress must not resurrect it.
 				yield* db.use((db) =>
-					db.transaction(async (tx) => {
-						if (record.upload) {
-							await tx
-								.update(Db.videoUploads)
-								.set({
-									uploaded,
-									total,
-									updatedAt,
-								})
-								.where(
-									Dz.and(
-										Dz.eq(Db.videoUploads.videoId, videoId),
-										Dz.lte(Db.videoUploads.updatedAt, updatedAt),
-									),
-								);
-							return;
-						}
-
-						await tx.insert(Db.videoUploads).values({
-							videoId,
-							uploaded,
-							total,
-							updatedAt,
-						});
-					}),
+					db
+						.update(Db.videoUploads)
+						.set({ uploaded, total, updatedAt })
+						.where(
+							Dz.and(
+								Dz.eq(Db.videoUploads.videoId, videoId),
+								Dz.lte(Db.videoUploads.updatedAt, updatedAt),
+							),
+						),
 				);
 
 				return true as const;
