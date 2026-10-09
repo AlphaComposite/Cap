@@ -1951,17 +1951,21 @@ def main() -> None:
     if host_publish == "0.0.0.0":
         raise SystemExit("refusing 0.0.0.0 host publish")
     from publication import MySQLPublication
-    from storage import S3ObjectStore
+    from storage import PresignedObjectStore, S3ObjectStore
 
     cache = Path(os.environ.get("ORIGIN_CACHE", "/var/cache/origin"))
     store = MySQLPublication(os.environ["ORIGIN_DATABASE_URL"])
-    objects = S3ObjectStore(
-        os.environ["S3_INTERNAL_ENDPOINT"],
-        os.environ.get("S3_BUCKET", "cap"),
-        os.environ["S3_ACCESS_KEY"],
-        os.environ["S3_SECRET_KEY"],
-        os.environ.get("S3_REGION", "us-east-1"),
-    )
+    endpoint = os.environ.get("ORIGIN_OBJECT_URL_ENDPOINT")
+    if endpoint:
+        objects = PresignedObjectStore(endpoint, os.environ.get("REVISION_ORIGIN_SERVICE_SECRET", "").encode())
+    else:
+        objects = S3ObjectStore(
+            os.environ["S3_INTERNAL_ENDPOINT"],
+            os.environ.get("S3_BUCKET", "cap"),
+            os.environ["S3_ACCESS_KEY"],
+            os.environ["S3_SECRET_KEY"],
+            os.environ.get("S3_REGION", "us-east-1"),
+        )
     grant_keys = grant_mod.parse_key_ring(os.environ.get("REVISION_MEDIA_GRANT_KEYS", ""))
     service = os.environ.get("REVISION_ORIGIN_SERVICE_SECRET", "")
     if not grant_keys or len(service) < 32:

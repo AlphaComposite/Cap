@@ -382,7 +382,7 @@ export function resolveRecordedOriginKeys(
 	return [...keys].sort();
 }
 
-async function recordedOriginReadKeys(app: Database) {
+export async function recordedOriginReadKeys(app: Database) {
 	const sources = await app
 		.select({
 			videoId: sourceObject.videoId,
@@ -404,6 +404,7 @@ async function recordedOriginReadKeys(app: Database) {
 }
 
 export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
+	if (process.env.ORIGIN_READ_MODE === "presign") return true;
 	const recorded = await recordedOriginReadKeys(app);
 	const keys = recorded.includes(liveKey)
 		? recorded
@@ -417,6 +418,7 @@ let missingCredentialHash: string | null = null;
 export async function reconcileOriginReadPolicy(
 	app: Database,
 ): Promise<boolean> {
+	if (process.env.ORIGIN_READ_MODE === "presign") return true;
 	const keys = await recordedOriginReadKeys(app);
 	const hash = createHash("sha256").update(keys.join("\n")).digest("hex");
 	if (hash === publishedKeyHash) return true;

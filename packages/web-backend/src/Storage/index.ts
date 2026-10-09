@@ -113,11 +113,13 @@ const toS3UploadTarget = (data: {
 const toPutUploadTarget = (
 	url: string,
 	contentType: string,
+	metadataHeaders: Record<string, string>,
 ): StorageDomain.UploadTarget => ({
 	type: "put",
 	url,
 	headers: {
 		"Content-Type": contentType,
+		...metadataHeaders,
 	},
 });
 
@@ -501,15 +503,28 @@ const makeS3Access = (s3: S3BucketAccess) => ({
 	multipart: makeS3MultipartAccess(s3),
 	createUploadTarget: (key: string, input: UploadTargetInput) =>
 		Effect.gen(function* () {
-			if (input.method === "put") {
+			if (input.method !== "post") {
+				const metadataHeaders = Object.fromEntries(
+					Object.entries(input.fields ?? {}).filter(([key]) =>
+						key.startsWith("x-amz-meta-"),
+					),
+				);
 				const url = yield* s3
 					.getPresignedPutUrl(
 						key,
-						{ ContentType: input.contentType },
+						{
+							ContentType: input.contentType,
+							Metadata: Object.fromEntries(
+								Object.entries(metadataHeaders).map(([key, value]) => [
+									key.slice("x-amz-meta-".length),
+									value,
+								]),
+							),
+						},
 						{ expiresIn: 1800 },
 					)
 					.pipe(mapStorageError);
-				return toPutUploadTarget(url, input.contentType);
+				return toPutUploadTarget(url, input.contentType, metadataHeaders);
 			}
 
 			const data = yield* s3

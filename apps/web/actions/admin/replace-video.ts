@@ -47,14 +47,13 @@ export async function getVideoReplaceUploadUrl(videoId: string) {
 	const [bucket] = await Storage.getAccessForVideo(decodeStorageVideo(video), {
 		resolvePublishedOutput: false,
 	}).pipe(runPromise);
-	const presignedPostData = await bucket
-		.getPresignedPostUrl(fileKey, {
-			Fields: { "Content-Type": "video/mp4" },
-			Expires: 1800,
+	const uploadTarget = await bucket
+		.createUploadTarget(fileKey, {
+			contentType: "video/mp4",
 		})
 		.pipe(runPromise);
 
-	return { presignedPostData };
+	return { uploadTarget };
 }
 
 export async function invalidateVideoCache(videoId: string) {

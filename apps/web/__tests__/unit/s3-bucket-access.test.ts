@@ -46,6 +46,64 @@ describe("getRequestAccessibleS3Endpoint", () => {
 		).toBeNull();
 	});
 
+	it("signs exact internal GET and HEAD independently with a bounded TTL", async () => {
+		const client = new S3.S3Client({
+			credentials: {
+				accessKeyId: "test-access-key",
+				secretAccessKey: "test-secret-key",
+			},
+			endpoint: "http://internal-storage:9000",
+			forcePathStyle: true,
+			region: "us-east-1",
+		});
+		const publicClient = new S3.S3Client({
+			credentials: {
+				accessKeyId: "test-access-key",
+				secretAccessKey: "test-secret-key",
+			},
+			endpoint: "https://public-storage.example",
+			forcePathStyle: true,
+			region: "us-east-1",
+		});
+		try {
+			const access = await Effect.runPromise(
+				createS3BucketAccess.pipe(
+					Effect.provideService(S3BucketClientProvider, {
+						bucket: "cap",
+						getInternal: Effect.succeed(client),
+						getPublic: Effect.succeed(publicClient),
+						isPathStyle: true,
+					}),
+				),
+			);
+			const key = "private/source/vid/original file.mp4";
+			const signing = {
+				expiresIn: 300,
+				signingDate: new Date("2026-01-01T00:00:00Z"),
+			};
+			const get = new URL(
+				await Effect.runPromise(
+					access.getInternalSignedObjectUrl(key, signing),
+				),
+			);
+			const head = new URL(
+				await Effect.runPromise(access.getInternalSignedHeadUrl(key, signing)),
+			);
+			for (const url of [get, head]) {
+				expect(url.host).toBe("internal-storage:9000");
+				expect(decodeURIComponent(url.pathname)).toBe(`/cap/${key}`);
+				expect(url.searchParams.get("X-Amz-Expires")).toBe("300");
+				expect(url.searchParams.get("X-Amz-Signature")).toBeTruthy();
+			}
+			expect(head.searchParams.get("X-Amz-Signature")).not.toBe(
+				get.searchParams.get("X-Amz-Signature"),
+			);
+		} finally {
+			client.destroy();
+			publicClient.destroy();
+		}
+	});
+
 	it("signs public object URLs for the request-accessible endpoint", async () => {
 		const client = new S3.S3Client({
 			credentials: {

@@ -7,12 +7,23 @@ const mocks = vi.hoisted(() => ({
 	db: vi.fn(),
 	access: vi.fn(),
 	head: vi.fn(),
-	post: vi.fn(),
+	upload: vi.fn(),
 	retire: vi.fn(),
 	env: vi.fn(),
 	fetch: vi.fn(),
 	cloudfront: vi.fn(),
 	auth: vi.fn(),
+	state: vi.fn(),
+	browserUpload: vi.fn(),
+}));
+vi.mock("react", async (importOriginal) => ({
+	...(await importOriginal<typeof import("react")>()),
+	useState: mocks.state,
+	useId: () => "input-id",
+	useCallback: (callback: unknown) => callback,
+}));
+vi.mock("@/utils/upload-target", () => ({
+	uploadWithTarget: mocks.browserUpload,
 }));
 vi.mock("@cap/database", () => ({ db: mocks.db }));
 vi.mock("@cap/database/auth/session", () => ({ getCurrentUser: mocks.auth }));
@@ -75,6 +86,7 @@ import {
 	getVideoReplaceUploadUrl,
 	invalidateVideoCache,
 } from "@/actions/admin/replace-video";
+import { ReplaceVideoPanel } from "@/app/admin/replace-video/ReplaceVideoPanel";
 import { prepareDesktopReupload } from "@/lib/desktop-reupload";
 import {
 	createDesktopReuploadKey,
@@ -223,10 +235,11 @@ beforeEach(() => {
 		events.push("head-canonical");
 		return Effect.succeed({ ETag: '"new-output"', ContentLength: 1000 });
 	});
-	mocks.post.mockReturnValue(
+	mocks.upload.mockReturnValue(
 		Effect.succeed({
+			type: "put",
 			url: "https://storage.test/upload",
-			fields: { key: "user/video/result.mp4" },
+			headers: { "Content-Type": "video/mp4" },
 		}),
 	);
 	mocks.access.mockImplementation(
@@ -234,7 +247,7 @@ beforeEach(() => {
 			Effect.succeed([
 				{
 					headObject: mocks.head,
-					getPresignedPostUrl: mocks.post,
+					createUploadTarget: mocks.upload,
 					getInternalSignedObjectUrl: (key: string) =>
 						Effect.succeed(
 							`https://storage.test/${options?.resolvePublishedOutput === false ? "canonical" : "published"}/${key}`,
@@ -833,15 +846,54 @@ describe("intentional administrator replacements", () => {
 	});
 
 	it("prepares replacement writes against the recording storage without retiring the current publication early", async () => {
-		await getVideoReplaceUploadUrl("video");
+		expect(await getVideoReplaceUploadUrl("video")).toEqual({
+			uploadTarget: {
+				type: "put",
+				url: "https://storage.test/upload",
+				headers: { "Content-Type": "video/mp4" },
+			},
+		});
 		expect(mocks.access).toHaveBeenCalledWith(video, {
 			resolvePublishedOutput: false,
 		});
-		expect(mocks.post).toHaveBeenCalledWith(
-			"user/video/result.mp4",
-			expect.any(Object),
-		);
+		expect(mocks.upload).toHaveBeenCalledWith("user/video/result.mp4", {
+			contentType: "video/mp4",
+		});
 		expect(mocks.retire).not.toHaveBeenCalled();
+	});
+});
+
+describe("replacement browser upload", () => {
+	it("forwards the admin target and file to the shared helper before publishing", async () => {
+		const file = new File(["recording"], "replacement.mp4", {
+			type: "video/mp4",
+		});
+		const setStatus = vi.fn();
+		mocks.state
+			.mockReturnValueOnce([" video ", vi.fn()])
+			.mockReturnValueOnce([file, vi.fn()])
+			.mockReturnValueOnce([{ type: "idle" }, setStatus]);
+		mocks.browserUpload.mockImplementation(async ({ onProgress }) => {
+			expect(mocks.retire).not.toHaveBeenCalled();
+			onProgress({ loaded: 1, total: 2 });
+		});
+		const form = ReplaceVideoPanel().props.children.find(
+			(child: { type?: string }) => child?.type === "form",
+		);
+		await form.props.onSubmit({ preventDefault: vi.fn() });
+		expect(mocks.browserUpload).toHaveBeenCalledWith({
+			target: {
+				type: "put",
+				url: "https://storage.test/upload",
+				headers: { "Content-Type": "video/mp4" },
+			},
+			body: file,
+			fileName: file.name,
+			onProgress: expect.any(Function),
+		});
+		expect(setStatus).toHaveBeenCalledWith({ type: "uploading", progress: 50 });
+		expect(setStatus).toHaveBeenLastCalledWith({ type: "success" });
+		expect(mocks.retire).toHaveBeenCalledOnce();
 	});
 });
 

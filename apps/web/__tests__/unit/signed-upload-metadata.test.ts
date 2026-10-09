@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => {
 		update: vi.fn(() => ({ set: updateSet })),
 	};
 
-	return { db, updateSet, updateWhere };
+	return { db, updateSet, updateWhere, upload: vi.fn() };
 });
 
 vi.mock("@cap/database", () => ({
@@ -40,13 +41,7 @@ vi.mock("@cap/web-backend", async () => {
 			getAccessForVideo: vi.fn(() =>
 				Effect.succeed([
 					{
-						createUploadTarget: vi.fn(() =>
-							Effect.succeed({
-								type: "put",
-								url: "https://upload.test/object",
-								headers: { "Content-Type": "video/mp4" },
-							}),
-						),
+						createUploadTarget: mocks.upload,
 					},
 				]),
 			),
@@ -81,6 +76,17 @@ function requestSignedUpload(metadata: Record<string, unknown> = {}) {
 describe("signed upload metadata", () => {
 	beforeEach(() => {
 		vi.spyOn(console, "log").mockImplementation(() => undefined);
+		mocks.upload.mockImplementation((_key, input) =>
+			Effect.succeed(
+				input.method === "put"
+					? {
+							type: "put",
+							url: "https://upload.test/object",
+							headers: { "Content-Type": "video/mp4", ...input.fields },
+						}
+					: { type: "s3Post", url: "https://upload.test/object", fields: {} },
+			),
+		);
 	});
 
 	it("does not update the video when metadata is omitted", async () => {
@@ -91,7 +97,11 @@ describe("signed upload metadata", () => {
 			presignedPutData: {
 				url: "https://upload.test/object",
 				fields: {},
-				headers: { "Content-Type": "video/mp4" },
+				headers: {
+					"Content-Type": "video/mp4",
+					"x-amz-meta-userid": "user-1",
+					"x-amz-meta-duration": "",
+				},
 				type: "put",
 			},
 		});
@@ -99,6 +109,40 @@ describe("signed upload metadata", () => {
 		expect(mocks.updateSet).not.toHaveBeenCalled();
 		expect(mocks.updateWhere).not.toHaveBeenCalled();
 	});
+
+	it.each(["post", undefined])(
+		"returns PUT data for legacy method %s and preserves segment duration",
+		async (method) => {
+			const response = await requestSignedUpload({
+				method,
+				durationInSecs: "1.25",
+			});
+			expect(response.status).toBe(200);
+			expect(mocks.upload).toHaveBeenCalledWith(
+				"user-1/video-1/segments/video/init.mp4",
+				{
+					contentType: "video/mp4",
+					fields: {
+						"x-amz-meta-userid": "user-1",
+						"x-amz-meta-duration": "1.25",
+					},
+					method: "put",
+				},
+			);
+			expect(await response.json()).toEqual({
+				presignedPutData: {
+					url: "https://upload.test/object",
+					fields: {},
+					headers: {
+						"Content-Type": "video/mp4",
+						"x-amz-meta-userid": "user-1",
+						"x-amz-meta-duration": "1.25",
+					},
+					type: "put",
+				},
+			});
+		},
+	);
 
 	it.each([
 		["durationInSecs", 0],
@@ -112,5 +156,13 @@ describe("signed upload metadata", () => {
 		expect(mocks.db.update).toHaveBeenCalledTimes(1);
 		expect(mocks.updateSet).toHaveBeenCalledTimes(1);
 		expect(mocks.updateWhere).toHaveBeenCalledTimes(1);
+		if (field === "durationInSecs") {
+			expect(mocks.upload).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					fields: expect.objectContaining({ "x-amz-meta-duration": "0" }),
+				}),
+			);
+		}
 	});
 });

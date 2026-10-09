@@ -1,54 +1,17 @@
 "use client";
 
-import type { PresignedPost } from "@aws-sdk/s3-presigned-post";
 import { useCallback, useId, useState } from "react";
 import {
 	getVideoReplaceUploadUrl,
 	invalidateVideoCache,
 } from "@/actions/admin/replace-video";
+import { uploadWithTarget } from "@/utils/upload-target";
 
 type Status =
 	| { type: "idle" }
 	| { type: "uploading"; progress: number }
 	| { type: "success" }
 	| { type: "error"; message: string };
-
-function uploadWithPresignedPost(
-	postData: PresignedPost,
-	file: File,
-	onProgress: (percent: number) => void,
-): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const formData = new FormData();
-		for (const [key, value] of Object.entries(postData.fields)) {
-			formData.append(key, value);
-		}
-		formData.append("file", file);
-
-		const xhr = new XMLHttpRequest();
-
-		xhr.upload.addEventListener("progress", (e) => {
-			if (e.lengthComputable) {
-				onProgress(Math.round((e.loaded / e.total) * 100));
-			}
-		});
-
-		xhr.addEventListener("load", () => {
-			if (xhr.status >= 200 && xhr.status < 300) {
-				resolve();
-			} else {
-				reject(new Error(`Upload failed with status ${xhr.status}`));
-			}
-		});
-
-		xhr.addEventListener("error", () => {
-			reject(new Error("Upload failed"));
-		});
-
-		xhr.open("POST", postData.url);
-		xhr.send(formData);
-	});
-}
 
 export function ReplaceVideoPanel() {
 	const [videoId, setVideoId] = useState("");
@@ -66,10 +29,18 @@ export function ReplaceVideoPanel() {
 			setStatus({ type: "uploading", progress: 0 });
 
 			try {
-				const { presignedPostData } = await getVideoReplaceUploadUrl(trimmedId);
+				const { uploadTarget } = await getVideoReplaceUploadUrl(trimmedId);
 
-				await uploadWithPresignedPost(presignedPostData, file, (progress) => {
-					setStatus({ type: "uploading", progress });
+				await uploadWithTarget({
+					target: uploadTarget,
+					body: file,
+					fileName: file.name,
+					onProgress: ({ loaded, total }) => {
+						setStatus({
+							type: "uploading",
+							progress: Math.round((loaded / total) * 100),
+						});
+					},
 				});
 
 				await invalidateVideoCache(trimmedId);

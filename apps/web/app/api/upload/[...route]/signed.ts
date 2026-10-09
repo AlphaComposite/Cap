@@ -127,8 +127,14 @@ app.post(
 	),
 	async (c) => {
 		const user = c.get("user");
-		const { durationInSecs, width, height, fps, method, ...body } =
-			c.req.valid("json");
+		const {
+			durationInSecs,
+			width,
+			height,
+			fps,
+			method: _method,
+			...body
+		} = c.req.valid("json");
 
 		const fileKey = parseVideoIdOrFileKey(user.id, body);
 		if (isInternalRecordingKey(fileKey)) {
@@ -171,15 +177,13 @@ app.post(
 
 				const Fields = {
 					"x-amz-meta-userid": user.id,
-					"x-amz-meta-duration": durationInSecs
-						? durationInSecs.toString()
-						: "",
+					"x-amz-meta-duration": durationInSecs?.toString() ?? "",
 				};
 
 				return yield* bucket.createUploadTarget(fileKey, {
 					contentType,
 					fields: Fields,
-					method,
+					method: "put",
 				});
 			}).pipe(runPromise);
 

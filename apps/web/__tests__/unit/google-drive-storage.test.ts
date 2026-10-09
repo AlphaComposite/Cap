@@ -11,7 +11,9 @@ vi.mock("@cap/env", () => ({
 	}),
 }));
 
+import { uploadWithTarget } from "@/utils/upload-target";
 import { S3Buckets } from "../../../../packages/web-backend/src/S3Buckets";
+import type { S3BucketAccess } from "../../../../packages/web-backend/src/S3Buckets/S3BucketAccess";
 import { Storage as StorageService } from "../../../../packages/web-backend/src/Storage";
 import {
 	copyGoogleDriveFile,
@@ -41,6 +43,101 @@ const integrationOwnerId = User.UserId.make("integration-owner");
 const videoOwnerId = User.UserId.make("video-owner");
 const videoId = Video.VideoId.make("video-1");
 const resultKey = `${videoOwnerId}/${videoId}/result.mp4`;
+
+describe("S3 upload targets", () => {
+	it.each([undefined, "put"] as const)(
+		"uses PUT for method %s and signs the metadata returned as headers",
+		async (method) => {
+			const put = vi.fn(() => Effect.succeed("https://storage.test/upload"));
+			const post = vi.fn();
+			const s3 = {
+				getPresignedPutUrl: put,
+				getPresignedPostUrl: post,
+			} as unknown as S3BucketAccess;
+			const layer = StorageService.DefaultWithoutDependencies.pipe(
+				Layer.provide(
+					Layer.mergeAll(
+						Layer.succeed(StorageRepo, {} as StorageRepo),
+						Layer.succeed(S3Buckets, {
+							getBucketAccess: () => Effect.succeed([s3, Option.none()]),
+						} as unknown as S3Buckets),
+					),
+				),
+			);
+			const upload = await Effect.gen(function* () {
+				const [access] = yield* StorageService.getAccessForVideo(
+					{
+						bucketId: Option.none(),
+						storageIntegrationId: Option.none(),
+					} as Video.Video,
+					{ resolvePublishedOutput: false },
+				);
+				return yield* access.createUploadTarget(resultKey, {
+					contentType: "video/mp4",
+					method,
+					fields: {
+						"x-amz-meta-userid": videoOwnerId,
+						"x-amz-meta-duration": "1.25",
+						"x-amz-meta-resolution": "",
+						"Content-Type": "ignored/post-only",
+						key: "ignored/post-only",
+					},
+				});
+			}).pipe(Effect.provide(layer), Effect.runPromise);
+			expect(put).toHaveBeenCalledWith(
+				resultKey,
+				{
+					ContentType: "video/mp4",
+					Metadata: { userid: videoOwnerId, duration: "1.25", resolution: "" },
+				},
+				{ expiresIn: 1800 },
+			);
+			expect(post).not.toHaveBeenCalled();
+			expect(upload).toEqual({
+				type: "put",
+				url: "https://storage.test/upload",
+				headers: {
+					"Content-Type": "video/mp4",
+					"x-amz-meta-userid": videoOwnerId,
+					"x-amz-meta-duration": "1.25",
+					"x-amz-meta-resolution": "",
+				},
+			});
+		},
+	);
+
+	it("forwards PUT headers, raw body, and progress through the browser helper", async () => {
+		const xhr = {
+			open: vi.fn(),
+			setRequestHeader: vi.fn(),
+			send: vi.fn(),
+			upload: { onprogress: (_event: unknown) => {} },
+			status: 200,
+			onload: () => {},
+		};
+		vi.stubGlobal(
+			"XMLHttpRequest",
+			vi.fn(() => xhr),
+		);
+		const body = new Blob(["recording"]);
+		const onProgress = vi.fn();
+		const target = {
+			type: "put" as const,
+			url: "https://storage.test/upload",
+			headers: { "Content-Type": "video/mp4", "x-amz-meta-duration": "1.25" },
+		};
+		const uploading = uploadWithTarget({ target, body, onProgress });
+		expect(xhr.open).toHaveBeenCalledWith("PUT", target.url);
+		expect(xhr.setRequestHeader.mock.calls).toEqual(
+			Object.entries(target.headers),
+		);
+		expect(xhr.send).toHaveBeenCalledWith(body);
+		xhr.upload.onprogress({ lengthComputable: true, loaded: 4, total: 8 });
+		expect(onProgress).toHaveBeenCalledWith({ loaded: 4, total: 8 });
+		xhr.onload();
+		await uploading;
+	});
+});
 
 type StoredObject = {
 	id: Storage.StorageObjectId;

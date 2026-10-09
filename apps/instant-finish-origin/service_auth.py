@@ -37,13 +37,14 @@ def sign_request(
     path: str,
     body: bytes = b"",
     now: int | None = None,
+    audience: str = "origin-service",
 ) -> str:
     if len(secret) < 32:
         raise ServiceAuthError("short service secret")
     iat = int(time.time()) if now is None else int(now)
     claims = {
         "v": 1,
-        "aud": "origin-service",
+        "aud": audience,
         "iat": iat,
         "exp": iat + SERVICE_TTL_S,
         "nonce": b64url(hashlib.sha256(f"{iat}:{path}:{len(body)}".encode()).digest())[:16],
@@ -61,6 +62,7 @@ def verify_request(
     path: str,
     body: bytes = b"",
     now: int | None = None,
+    audience: str = "origin-service",
 ) -> bool:
     if len(secret) < 32 or not isinstance(token, str):
         return False
@@ -80,7 +82,7 @@ def verify_request(
         claims = json.loads(b64url_decode(parts[0]).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return False
-    if not isinstance(claims, dict) or claims.get("aud") != "origin-service" or claims.get("v") != 1:
+    if not isinstance(claims, dict) or claims.get("aud") != audience or claims.get("v") != 1:
         return False
     wall = int(time.time()) if now is None else int(now)
     iat = _safe_int(claims.get("iat"))

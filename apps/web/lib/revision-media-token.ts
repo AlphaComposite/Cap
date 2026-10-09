@@ -287,7 +287,7 @@ export function redactGrantBearer(value: string): string {
 
 export type InternalServiceClaims = {
 	v: 1;
-	aud: "origin-service";
+	aud: "origin-service" | "web-object-url";
 	iat: number;
 	exp: number;
 	nonce: string;
@@ -295,6 +295,7 @@ export type InternalServiceClaims = {
 
 export function signInternalServiceRequest(
 	input: {
+		audience?: InternalServiceClaims["aud"];
 		method: string;
 		path: string;
 		body?: string | Uint8Array;
@@ -307,7 +308,7 @@ export function signInternalServiceRequest(
 	const iat = input.now ?? Math.floor(Date.now() / 1000);
 	const claims: InternalServiceClaims = {
 		v: 1,
-		aud: "origin-service",
+		aud: input.audience ?? "origin-service",
 		iat,
 		exp: iat + ORIGIN_SERVICE_TTL_SECONDS,
 		nonce: randomBytes(12).toString("base64url"),
@@ -325,6 +326,7 @@ export function signInternalServiceRequest(
 export function verifyInternalServiceRequest(
 	token: string,
 	input: {
+		audience?: InternalServiceClaims["aud"];
 		method: string;
 		path: string;
 		body?: string | Uint8Array;
@@ -348,7 +350,8 @@ export function verifyInternalServiceRequest(
 	} catch {
 		return false;
 	}
-	if (claims.aud !== "origin-service" || claims.v !== 1) return false;
+	if (claims.aud !== (input.audience ?? "origin-service") || claims.v !== 1)
+		return false;
 	if (
 		!Number.isSafeInteger(claims.iat) ||
 		!Number.isSafeInteger(claims.exp) ||
