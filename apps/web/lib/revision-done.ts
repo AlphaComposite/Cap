@@ -7,23 +7,47 @@ export type DonePlan = "leave" | "legacy" | "published" | "conflict" | "error";
 export type DoneRoute = "wait" | "save" | "publish";
 
 export async function publishDoneWithRetry<T>(
-	publish: () => Promise<T>,
+	publish: (signal: AbortSignal) => Promise<T>,
 	refresh: (error: unknown) => Promise<void>,
+	onRelocationWait?: () => void,
 ): Promise<T> {
+	const deadline = performance.now() + 60_000;
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 60_000);
+	let refreshed = false;
 	try {
-		return await publish();
-	} catch (error) {
-		if (
-			typeof error !== "object" ||
-			error === null ||
-			!("status" in error) ||
-			error.status !== 409
-		) {
-			throw error;
+		for (;;) {
+			try {
+				return await publish(controller.signal);
+			} catch (error) {
+				if (
+					typeof error !== "object" ||
+					error === null ||
+					!("status" in error) ||
+					error.status !== 409
+				)
+					throw error;
+				if (
+					"message" in error &&
+					error.message ===
+						"Finish refused until source relocation is PURGED and liveKey is the relocated key"
+				) {
+					if (performance.now() >= deadline) throw error;
+					onRelocationWait?.();
+					await new Promise((resolve) =>
+						setTimeout(resolve, Math.min(1_000, deadline - performance.now())),
+					);
+					if (performance.now() >= deadline) throw error;
+				} else {
+					if (refreshed) throw error;
+					refreshed = true;
+					await refresh(error);
+				}
+			}
 		}
-		await refresh(error);
+	} finally {
+		clearTimeout(timeout);
 	}
-	return publish();
 }
 
 export function doneRoute(

@@ -292,6 +292,39 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
+	it("shows privacy progress through delayed Done retries, then navigates", async () => {
+		const { baseline } = seedDraft();
+		const done = await renderEditor(baseline);
+		vi.useFakeTimers();
+		let attempts = 0;
+		harness.post.mockImplementation(async (path: string) => {
+			if (path.endsWith("/prepare")) return { generation: 3 };
+			if (++attempts <= 3)
+				throw Object.assign(
+					new Error(
+						"Finish refused until source relocation is PURGED and liveKey is the relocated key",
+					),
+					{ status: 409 },
+				);
+			return { success: true, revisionId: "published", generation: 4 };
+		});
+		try {
+			await act(async () => done.click());
+			expect(container.querySelector("output")?.textContent).toBe(
+				"Waiting for source privacy checks… (up to 60 seconds)",
+			);
+			expect(storedDraft()).not.toBeNull();
+			expect(harness.push).not.toHaveBeenCalled();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(3_000);
+			});
+			expect(attempts).toBe(4);
+			expect(harness.push).toHaveBeenCalledWith(`/s/${VIDEO_ID}`);
+			expect(storedDraft()).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("renders the publishing placeholder and unmounts the timeline before publish resolves", async () => {
 		const { baseline } = seedDraft();
 		const done = await renderEditor(baseline);
@@ -318,6 +351,7 @@ describe("editor publish unmount", () => {
 		expect(harness.post).toHaveBeenCalledWith(
 			"/api/video/revision/publish",
 			expect.objectContaining({ videoId: VIDEO_ID }),
+			expect.any(AbortSignal),
 		);
 		expect(harness.push).not.toHaveBeenCalled();
 	});

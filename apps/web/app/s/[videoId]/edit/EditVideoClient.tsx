@@ -744,6 +744,7 @@ export function EditVideoClient({
 		refresh: refreshOriginalSource,
 	});
 	const [isSaving, setIsSaving] = useState(false);
+	const [waitingForRelocation, setWaitingForRelocation] = useState(false);
 	const thumbnailCount = useThumbnailCount(timelineRef, !isSaving);
 	const draftStorageKey = useMemo(
 		() => getTimelineDraftKey(video.id),
@@ -1571,6 +1572,7 @@ export function EditVideoClient({
 			playhead: editorSnapshotRef.current.playhead,
 		};
 		savingRef.current = true;
+		setWaitingForRelocation(false);
 		setIsSaving(true);
 		const restoreEditor = () => {
 			const snapshot = publishSnapshotRef.current;
@@ -1580,6 +1582,7 @@ export function EditVideoClient({
 				setDraftState(snapshot.draftState);
 				setPlayhead(snapshot.playhead);
 			}
+			setWaitingForRelocation(false);
 			setIsSaving(false);
 		};
 		try {
@@ -1595,7 +1598,7 @@ export function EditVideoClient({
 			let publicationState = instantFinish;
 			let expectedDraftSession: string | undefined;
 			const published = await publishDoneWithRetry(
-				() =>
+				(signal) =>
 					postRevisionRoute<{
 						success: boolean;
 						revisionId: string;
@@ -1607,15 +1610,21 @@ export function EditVideoClient({
 								typeof stashInstantFinishPlayback
 							>[0]["revisionMetadata"];
 						} | null;
-					}>("/api/video/revision/publish", {
-						videoId: video.id,
-						editSpec,
-						expectedEditSpec: initialEditSpec,
-						baseGeneration: publicationState.generation ?? 0,
-						draftVersion: (publicationState.draftVersion ?? 0) + 1,
-						draftSession,
-						...(expectedDraftSession !== undefined && { expectedDraftSession }),
-					}),
+					}>(
+						"/api/video/revision/publish",
+						{
+							videoId: video.id,
+							editSpec,
+							expectedEditSpec: initialEditSpec,
+							baseGeneration: publicationState.generation ?? 0,
+							draftVersion: (publicationState.draftVersion ?? 0) + 1,
+							draftSession,
+							...(expectedDraftSession !== undefined && {
+								expectedDraftSession,
+							}),
+						},
+						signal,
+					),
 				async (error) => {
 					if (
 						error instanceof Error &&
@@ -1639,6 +1648,7 @@ export function EditVideoClient({
 					expectedDraftSession = fresh.draftSession ?? "";
 					setInstantFinish(publicationState);
 				},
+				() => setWaitingForRelocation(true),
 			);
 			if (published.success) {
 				if (published.playback && typeof sessionStorage !== "undefined") {
@@ -2381,7 +2391,11 @@ export function EditVideoClient({
 				data-editor-shell="publishing"
 				className="flex min-h-screen items-center justify-center bg-gray-1 text-gray-12"
 			>
-				<p>Saving / Publishing</p>
+				<output>
+					{waitingForRelocation
+						? "Waiting for source privacy checks… (up to 60 seconds)"
+						: "Saving / Publishing"}
+				</output>
 			</div>
 		);
 	}
