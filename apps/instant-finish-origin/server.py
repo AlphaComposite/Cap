@@ -41,6 +41,8 @@ ARTIFACT_RE = re.compile(
     r"(?P<name>playlist\.m3u8|init\.mp4|seg/(?P<n>\d+)\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg)$"
 )
 SERVICE_HEADER = service_auth.SERVICE_HEADER
+SIDE_CONTENT_TYPES = {"thumbnail.jpg": "image/jpeg", "captions.vtt": "text/vtt", "chapters.json": "application/json"}
+SIDE_MAX_BYTES = 4 * 1024 * 1024
 NO_STORE = "private, no-store"
 REFERRER = "no-referrer"
 _SAFE_LOG_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -1018,6 +1020,8 @@ class OriginApp:
 
     def _artifact(self, snap: dict, kind: str, match: re.Match, token: str) -> tuple[bytes, str]:
         rev = snap["revision"]
+        if kind in SIDE_CONTENT_TYPES:
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, kind), SIDE_CONTENT_TYPES[kind]
         ranges = json.loads((self.cache / "revisions" / rev.revision_id / "ranges.json").read_text())
         origin = self._origin_for(
             rev.video_id,
@@ -1034,12 +1038,6 @@ class OriginApp:
             return origin.ensure_init(), "video/mp4"
         if kind.startswith("seg/"):
             return origin.ensure(int(match.group("n"))), "video/mp4"
-        if kind == "captions.vtt":
-            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "captions.vtt"), "text/vtt"
-        if kind == "chapters.json":
-            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "chapters.json"), "application/json"
-        if kind == "thumbnail.jpg":
-            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "thumbnail.jpg"), "image/jpeg"
         if kind == "download.mp4":
             path = origin.cache / "download.mp4"
             if not path.is_file():
@@ -1311,6 +1309,12 @@ class OriginApp:
         if row is None:
             return self._text(404, b"not found")
         try:
+            if kind in SIDE_CONTENT_TYPES:
+                body = read_verified_side(self.service_secret, self.cache, revision_id, kind)
+                extra = {"Cache-Control": NO_STORE, "Accept-Ranges": "bytes"}
+                if kind == "thumbnail.jpg":
+                    extra["X-Cap-Thumbnail"] = "ready"
+                return 200, body, SIDE_CONTENT_TYPES[kind], extra
             ranges = json.loads(ranges_path.read_text())
             origin = self._origin_for(row.video_id, row.source_id, ranges)
             if origin.rev != _namespace(self.cache, revision_id):
@@ -1328,17 +1332,6 @@ class OriginApp:
                 body, content_type = origin.ensure_init(), "video/mp4"
             elif kind.startswith("seg/"):
                 body, content_type = origin.ensure(int(match.group("n"))), "video/mp4"
-            elif kind == "captions.vtt":
-                body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "captions.vtt"), "text/vtt"
-            elif kind == "chapters.json":
-                body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "chapters.json"), "application/json"
-            elif kind == "thumbnail.jpg":
-                body = read_verified_side(self.service_secret, self.cache, revision_id, "thumbnail.jpg")
-                return 200, body, "image/jpeg", {
-                    "Cache-Control": NO_STORE,
-                    "Accept-Ranges": "bytes",
-                    "X-Cap-Thumbnail": "ready",
-                }
             else:
                 return self._text(404, b"not found")
         except Exception as exc:
@@ -1697,7 +1690,10 @@ def _read_verified_side(secret: bytes, cache: Path, revision_id: str, name: str)
     if not service_auth.verify_attestation(secret, mac, raw):
         raise SideArtifactRejected("side attestation mismatch")
     claims = json.loads(raw)
-    data = path.read_bytes()
+    with path.open("rb") as source:
+        data = source.read(SIDE_MAX_BYTES + 1)
+    if len(data) > SIDE_MAX_BYTES:
+        raise SideArtifactRejected("side artifact too large")
     if (
         claims.get("revisionId") != revision_id
         or claims.get("name") != name
@@ -1826,22 +1822,24 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address, request_handler, max_inflight: int) -> None:
         super().__init__(server_address, request_handler)
         self.admit = threading.BoundedSemaphore(max(1, max_inflight))
+        # ponytail: 16 extra connections for bounded cache reads; resize only from measured demand.
+        self.connections = threading.BoundedSemaphore(max(1, max_inflight) + 16)
 
     def process_request(self, request, client_address) -> None:
-        if not self.admit.acquire(blocking=False):
+        if not self.connections.acquire(blocking=False):
             _reject_overload(request)
             return
         try:
             super().process_request(request, client_address)
         except Exception:
-            self.admit.release()
+            self.connections.release()
             raise
 
     def process_request_thread(self, request, client_address) -> None:
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self.admit.release()
+            self.connections.release()
 
 
 def _reject_bad_media(path: Path) -> str | None:
@@ -1882,6 +1880,7 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        timeout = 10
 
         def do_GET(self) -> None:
             self._dispatch("GET")
@@ -1901,6 +1900,24 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             self._dispatch("POST", headers)
 
         def _dispatch(self, method: str, headers=None) -> None:
+            try:
+                path = urlparse(self.path).path
+                match = MEDIA_RE.fullmatch(path) or ARTIFACT_RE.fullmatch(path)
+            except ValueError:
+                match = None
+            side = method in {"GET", "HEAD"} and match is not None and (
+                match.groupdict().get("kind") or match.groupdict().get("name")
+            ) in SIDE_CONTENT_TYPES
+            if not side and not httpd.admit.acquire(blocking=False):
+                self._emit(503, b"overloaded\n", "text/plain", {"Retry-After": limits.RETRY_AFTER_S})
+                return
+            try:
+                self._dispatch_admitted(method, headers)
+            finally:
+                if not side:
+                    httpd.admit.release()
+
+        def _dispatch_admitted(self, method: str, headers=None) -> None:
             hdrs = headers if headers is not None else {key: value for key, value in self.headers.items()}
             try:
                 status, body, content_type, extra = app.handle(method, self.path, hdrs)
