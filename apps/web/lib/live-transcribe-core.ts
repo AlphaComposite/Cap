@@ -7,7 +7,7 @@ import {
 } from "@/lib/edit-transcript";
 import type { NormalizedSegmentEntry } from "@/lib/segments-audio";
 import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
-import { transcribeTempAudioKey } from "@/lib/transcribe-source";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 
 /**
  * Pure logic for the provisional live transcription of instant-mode
@@ -201,7 +201,10 @@ export interface LiveTranscriptArtifact {
 }
 
 export function getLiveTranscriptObjectKey(ownerId: string, videoId: string) {
-	return transcribeTempAudioKey(ownerId, videoId, "transcription.live.json");
+	// Same owner/key pattern as transcribeTempAudioKey, without its Node-only imports.
+	return isInstantFinishEnabledForOwner(ownerId)
+		? `private/source/${videoId}/transcription.live.json`
+		: `${ownerId}/${videoId}/transcription.live.json`;
 }
 
 /** Sentinel for "nothing processed yet": 0 is a legitimate segment index in
