@@ -1020,8 +1020,6 @@ class OriginApp:
 
     def _artifact(self, snap: dict, kind: str, match: re.Match, token: str) -> tuple[bytes, str]:
         rev = snap["revision"]
-        if kind in SIDE_CONTENT_TYPES:
-            return read_verified_side(self.service_secret, self.cache, rev.revision_id, kind), SIDE_CONTENT_TYPES[kind]
         ranges = json.loads((self.cache / "revisions" / rev.revision_id / "ranges.json").read_text())
         origin = self._origin_for(
             rev.video_id,
@@ -1038,6 +1036,12 @@ class OriginApp:
             return origin.ensure_init(), "video/mp4"
         if kind.startswith("seg/"):
             return origin.ensure(int(match.group("n"))), "video/mp4"
+        if kind == "captions.vtt":
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "captions.vtt"), "text/vtt"
+        if kind == "chapters.json":
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "chapters.json"), "application/json"
+        if kind == "thumbnail.jpg":
+            return read_verified_side(self.service_secret, self.cache, rev.revision_id, "thumbnail.jpg"), "image/jpeg"
         if kind == "download.mp4":
             path = origin.cache / "download.mp4"
             if not path.is_file():
@@ -1053,6 +1057,7 @@ class OriginApp:
         expected_sha: str | None = None,
         source_key: str | None = None,
     ) -> lib_origin.Origin:
+        # ponytail: capb2 cold max 456ms, warm median 0.11ms; keep authorization, profile identity before optimizing.
         mezz, original, source_sha = self._source_files(video_id, source_id, expected_sha, source_key)
         key = f"{source_sha}:{lib_origin.canonical_spec(ranges).hex()}"
         with self._lock:
@@ -1309,12 +1314,6 @@ class OriginApp:
         if row is None:
             return self._text(404, b"not found")
         try:
-            if kind in SIDE_CONTENT_TYPES:
-                body = read_verified_side(self.service_secret, self.cache, revision_id, kind)
-                extra = {"Cache-Control": NO_STORE, "Accept-Ranges": "bytes"}
-                if kind == "thumbnail.jpg":
-                    extra["X-Cap-Thumbnail"] = "ready"
-                return 200, body, SIDE_CONTENT_TYPES[kind], extra
             ranges = json.loads(ranges_path.read_text())
             origin = self._origin_for(row.video_id, row.source_id, ranges)
             if origin.rev != _namespace(self.cache, revision_id):
@@ -1332,6 +1331,17 @@ class OriginApp:
                 body, content_type = origin.ensure_init(), "video/mp4"
             elif kind.startswith("seg/"):
                 body, content_type = origin.ensure(int(match.group("n"))), "video/mp4"
+            elif kind == "captions.vtt":
+                body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "captions.vtt"), "text/vtt"
+            elif kind == "chapters.json":
+                body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "chapters.json"), "application/json"
+            elif kind == "thumbnail.jpg":
+                body = read_verified_side(self.service_secret, self.cache, revision_id, "thumbnail.jpg")
+                return 200, body, "image/jpeg", {
+                    "Cache-Control": NO_STORE,
+                    "Accept-Ranges": "bytes",
+                    "X-Cap-Thumbnail": "ready",
+                }
             else:
                 return self._text(404, b"not found")
         except Exception as exc:
@@ -1889,15 +1899,26 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             self._dispatch("HEAD")
 
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > 1_000_000:
+            raw_length = self.headers.get("Content-Length", "0")
+            if re.fullmatch(r"[0-9]+", raw_length) is None:
+                self._emit(400, b"bad content length", "text/plain", {})
+                return
+            digits = raw_length.lstrip("0") or "0"
+            if len(digits) > 7 or (len(digits) == 7 and digits > "1000000"):
                 self._emit(413, b"too large", "text/plain", {})
                 return
-            body = self.rfile.read(length) if length else b""
-            headers = {key: value for key, value in self.headers.items()}
-            headers["_body"] = body
-            headers["_conn"] = self.connection
-            self._dispatch("POST", headers)
+            length = int(digits)
+            if not httpd.admit.acquire(blocking=False):
+                self._emit(503, b"overloaded\n", "text/plain", {"Retry-After": limits.RETRY_AFTER_S})
+                return
+            try:
+                body = self.rfile.read(length) if length else b""
+                headers = {key: value for key, value in self.headers.items()}
+                headers["_body"] = body
+                headers["_conn"] = self.connection
+                self._dispatch_admitted("POST", headers)
+            finally:
+                httpd.admit.release()
 
         def _dispatch(self, method: str, headers=None) -> None:
             try:
