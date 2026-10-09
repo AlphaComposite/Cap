@@ -1172,8 +1172,14 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		expect(await database.select().from(schema.revisionOutbox)).toHaveLength(1);
 	});
 
-	it("does not delete objects while purged captions are still pending", async () => {
+	it("completes leftover inventory while purged captions are still pending", async () => {
 		await seedAfterPointer({ purged: true });
+		runtime.objects.delete(oldKey);
+		const screenshot = `${ownerId}/${videoId}/screenshot/screen-capture.jpg`;
+		const preview = `${ownerId}/${videoId}/preview/animated-preview.gif`;
+		const audio = `private/source/${videoId}/audio-temp.mp3`;
+		for (const key of [screenshot, preview, audio])
+			runtime.objects.set(key, source);
 		await database
 			.update(schema.videos)
 			.set({ transcriptionStatus: "COMPLETE" });
@@ -1187,9 +1193,11 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		captionBody = "WEBVTT\n";
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
-		expect(runtime.deletes).toEqual([]);
-		expect(runtime.objects.has(oldKey)).toBe(true);
+		expect(runtime.deletes.sort()).toEqual([screenshot, preview].sort());
+		expect(runtime.objects.has(screenshot)).toBe(false);
+		expect(runtime.objects.has(preview)).toBe(false);
 		expect(runtime.objects.has(privateKey)).toBe(true);
+		expect(runtime.objects.has(audio)).toBe(true);
 		await expectCoreAndPeaksJobs(1);
 	});
 
