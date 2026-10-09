@@ -348,11 +348,16 @@ export function revisionHlsErrorAction(input: {
 	| { type: "ignore" } {
 	if (input.policyDenied) return { type: "fail-closed" };
 	const status = input.status ?? 0;
-	if (status === 403 || status === 410) return { type: "stop" };
+	if (status === 403) return { type: "stop" };
 	if (input.refreshAttempts >= input.maxRefreshAttempts) {
 		return { type: "fail-closed" };
 	}
-	if (input.native === true || status === 401 || status >= 500) {
+	if (
+		input.native === true ||
+		status === 401 ||
+		status === 410 ||
+		status >= 500
+	) {
 		return { type: "refresh-grant" };
 	}
 	return { type: "ignore" };

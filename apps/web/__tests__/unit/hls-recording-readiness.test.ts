@@ -4,6 +4,11 @@ import { act, createElement, createRef, type ReactNode, type Ref } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadProgress } from "@/app/s/[videoId]/_components/upload-progress";
+import {
+	preferInstantFinishFirstPaint,
+	stashInstantFinishPlayback,
+} from "@/lib/instant-finish-playback-handoff";
+import type { ClientRevisionPlayback } from "@/lib/revision-playback";
 
 const mocks = vi.hoisted(() => ({
 	progress: null as UploadProgress | null,
@@ -11,11 +16,13 @@ const mocks = vi.hoisted(() => ({
 	handlers: new Map<string, (...args: unknown[]) => void>(),
 	pause: vi.fn(),
 	stopLoad: vi.fn(),
-	refresh: vi.fn(),
+	loadSource: vi.fn(),
+	supported: true,
+	router: { refresh: vi.fn() },
 }));
 
 vi.mock("next/navigation", () => ({
-	useRouter: () => ({ refresh: mocks.refresh }),
+	useRouter: () => mocks.router,
 }));
 vi.mock("@tanstack/react-query", () => ({
 	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
@@ -68,7 +75,12 @@ vi.mock("motion/react", async () => {
 });
 vi.mock("hls.js", () => ({
 	default: class {
-		static isSupported = () => true;
+		static isSupported = () => mocks.supported;
+		static DefaultConfig = {
+			loader: class {
+				load() {}
+			},
+		};
 		static Events = {
 			ERROR: "error",
 			MANIFEST_LOADED: "manifestLoaded",
@@ -77,7 +89,7 @@ vi.mock("hls.js", () => ({
 		};
 		static ErrorTypes = { NETWORK_ERROR: "network", MEDIA_ERROR: "media" };
 		static ErrorDetails = {};
-		loadSource() {}
+		loadSource = mocks.loadSource;
 		attachMedia() {}
 		startLoad() {}
 		stopLoad = mocks.stopLoad;
@@ -125,6 +137,12 @@ describe("Instant player readiness and failure UX", () => {
 	let root: ReturnType<typeof createRoot>;
 	let videoRef: ReturnType<typeof createRef<HTMLVideoElement>>;
 	beforeEach(() => {
+		mocks.supported = true;
+		sessionStorage.clear();
+		vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+		vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue(
+			"probably",
+		);
 		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 		vi.stubGlobal(
 			"fetch",
@@ -173,6 +191,196 @@ describe("Instant player readiness and failure UX", () => {
 		act(async () => {
 			videoRef.current?.dispatchEvent(new Event("loadeddata"));
 		});
+
+	const revision = (
+		generation: number,
+	): Extract<ClientRevisionPlayback, { mode: "hls" }> => ({
+		mode: "hls",
+		videoId: "recording",
+		revisionId: `rev-${generation}`,
+		generation,
+		playlistUrl: `/media/recording/r/rev-${generation}/playlist.m3u8?t=test-grant`,
+		duration: 45,
+		captionsUrl: null,
+		chapters: [],
+		commentTimestamps: null,
+		thumbnailUrl: null,
+		downloadReady: false,
+	});
+	const renderRevision = async (
+		playback: Extract<ClientRevisionPlayback, { mode: "hls" }>,
+	) => {
+		const render = () => {
+			root.render(
+				createElement(HLSVideoPlayer, {
+					videoId: "recording" as Parameters<
+						typeof HLSVideoPlayer
+					>[0]["videoId"],
+					videoSrc: playback.playlistUrl,
+					revisionPlayback: playback,
+					videoRef,
+					chaptersSrc: "",
+					captionsSrc: "",
+				}),
+			);
+		};
+		await act(render);
+		// Settle the initial null -> mounted videoRef effect dependency before errors.
+		await act(render);
+	};
+	const revisionError = () =>
+		act(async () => {
+			if (mocks.supported) {
+				const error = mocks.handlers.get("error");
+				// A burst must coalesce into one authorization/readback request.
+				error?.("error", {
+					response: { code: 410 },
+					fatal: false,
+					details: "fragLoadError",
+				});
+				error?.("error", {
+					response: { code: 410 },
+					fatal: false,
+					details: "fragLoadError",
+				});
+			} else {
+				videoRef.current?.dispatchEvent(new Event("error"));
+				videoRef.current?.dispatchEvent(new Event("error"));
+			}
+		});
+
+	it.each([true, false])(
+		"recovers gen4 handoff to CURRENT gen1 after readback revert (hls.js=%s)",
+		async (supported) => {
+			mocks.supported = supported;
+			const published = revision(4);
+			stashInstantFinishPlayback(
+				{
+					...published,
+					grantExpiresAt: 60,
+					revisionMetadata: {
+						playlistPath: "playlist.m3u8",
+						duration: 45,
+						chapters: [],
+						captionsAvailable: false,
+						commentTimestamps: {},
+						thumbnailAvailable: false,
+						downloadReady: false,
+						summaryStatus: "persisted",
+						summaryDerived: false,
+						summaryText: null,
+						captions: "unavailable",
+						chaptersStatus: "revision",
+						thumbnail: "seg0-first-frame",
+						download: "preparing",
+						commentClock: "output-time",
+						removedRangeComments: "hidden",
+					},
+				},
+				sessionStorage,
+			);
+			const arrival = preferInstantFinishFirstPaint({
+				videoId: "recording",
+				ssr: published,
+				storage: sessionStorage,
+				nowMs: 0,
+			});
+			expect(arrival.fromHandoff).toBe(true);
+			await renderRevision(arrival.playback as typeof published);
+			const fetchGrant = vi.fn(async () =>
+				Response.json({
+					revisionId: "rev-1",
+					changed: true,
+					grant: "current-grant",
+				}),
+			);
+			vi.stubGlobal("fetch", fetchGrant);
+			await revisionError();
+			expect(fetchGrant).toHaveBeenCalledTimes(1);
+			expect(fetchGrant).toHaveBeenCalledWith(
+				"/api/media/grant",
+				expect.objectContaining({
+					method: "POST",
+					body: JSON.stringify({ videoId: "recording", revisionId: "rev-4" }),
+				}),
+			);
+			expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
+			expect(mocks.pause).toHaveBeenCalled();
+			// Model the server props delivered by router.refresh, not a new grant on gen4.
+			const current = preferInstantFinishFirstPaint({
+				videoId: "recording",
+				ssr: revision(1),
+				storage: sessionStorage,
+				nowMs: 0,
+			});
+			expect(current.fromHandoff).toBe(false);
+			mocks.loadSource.mockClear();
+			await renderRevision(current.playback as typeof published);
+			if (supported)
+				expect(mocks.loadSource.mock.calls).toEqual([
+					[revision(1).playlistUrl],
+				]);
+			else
+				expect(videoRef.current?.getAttribute("src")).toBe(
+					revision(1).playlistUrl,
+				);
+			await decodeFrame();
+			expect(container.textContent).toContain("Ready to play");
+			expect(container.textContent).not.toContain("This video could not load");
+		},
+	);
+
+	it("refreshes server playback props on an authorized changed revision even after 401", async () => {
+		await renderRevision(revision(4));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				Response.json({
+					revisionId: "rev-1",
+					changed: true,
+					grant: "current-grant",
+				}),
+			),
+		);
+		await act(async () =>
+			mocks.handlers.get("error")?.("error", {
+				response: { code: 401 },
+				fatal: false,
+			}),
+		);
+		expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([401, 403])(
+		"does not recover a revoked viewer when grant reauthorization returns %s",
+		async (status) => {
+			await renderRevision(revision(4));
+			const fetchGrant = vi.fn(async () => new Response(null, { status }));
+			vi.stubGlobal("fetch", fetchGrant);
+			mocks.loadSource.mockClear();
+			await revisionError();
+			expect(fetchGrant).toHaveBeenCalledTimes(1);
+			expect(mocks.router.refresh).not.toHaveBeenCalled();
+			expect(mocks.loadSource).not.toHaveBeenCalled();
+			expect(mocks.pause).toHaveBeenCalled();
+			expect(container.textContent).toContain("This video could not load");
+		},
+	);
+
+	it("stops on origin 403 without refreshing or requesting a grant", async () => {
+		await renderRevision(revision(4));
+		const fetchGrant = vi.fn();
+		vi.stubGlobal("fetch", fetchGrant);
+		await act(async () =>
+			mocks.handlers.get("error")?.("error", {
+				response: { code: 403 },
+				fatal: false,
+			}),
+		);
+		expect(fetchGrant).not.toHaveBeenCalled();
+		expect(mocks.router.refresh).not.toHaveBeenCalled();
+		expect(mocks.pause).toHaveBeenCalled();
+	});
 
 	it("waits for a decoded frame, not just a parsed playlist", async () => {
 		await render();

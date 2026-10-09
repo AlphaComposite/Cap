@@ -492,6 +492,7 @@ async function reuseVerifiedReady(
 			},
 			attested,
 			captionsVtt: row.metadataSnapshot.captionsVtt,
+			chapters: row.metadataSnapshot.chapters,
 		};
 	});
 	if (!found) return null;
@@ -505,6 +506,9 @@ async function reuseVerifiedReady(
 	});
 	const chapters = chapterState.chapters;
 	const sourceChapters = chapterState.sourceChapters;
+	// READY side artifacts belong to the prepare snapshot, not newer AI metadata.
+	// Allocate/prepare afresh if chapters changed; never attest old bytes as new.
+	if (!sameChapterPayload(found.chapters, chapters)) return null;
 	await transition(app, found.allocated.revisionId, "PUBLISHING", now());
 	await app.transaction(async (tx) => {
 		await flipCurrent(

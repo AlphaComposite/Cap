@@ -118,7 +118,9 @@ import {
 } from "@/lib/revision-media-token";
 import {
 	finishInventoryProbe,
+	prepareInstantFinishRevision,
 	publishInstantFinishRevision,
+	runRevisionReadback,
 } from "@/lib/revision-publication";
 import {
 	chaptersDocument,
@@ -133,9 +135,13 @@ import { getInstantFinishPublicationDto } from "@/lib/revision-publication-read"
 import { generateAiWorkflow } from "@/workflows/generate-ai";
 
 const fixtureDir = process.env.CAP_TEST_FIXTURE_DIR;
-const suite = describe.skipIf(!fixtureDir);
+const suite = describe.skipIf(
+	!fixtureDir && !process.env.CAP_CHAPTER_CLOCK_MYSQL,
+);
 
 function regressionUrl() {
+	if (process.env.CAP_CHAPTER_CLOCK_MYSQL)
+		return process.env.CAP_CHAPTER_CLOCK_MYSQL;
 	if (!fixtureDir) return "";
 	const text = readFileSync(path.join(fixtureDir, "parent-test.env"), "utf8");
 	const values: Record<string, string> = {};
@@ -449,8 +455,12 @@ suite("prepared chapter snapshot cannot overwrite a later AI save", () => {
 		if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
 			throw new Error("refusing non-local database host");
 		}
-		if (parsed.pathname !== "/cap57_test_regression") {
-			throw new Error("refusing database other than cap57_test_regression");
+		if (
+			!["/cap57_test_regression", "/cap57_test_chapters"].includes(
+				parsed.pathname,
+			)
+		) {
+			throw new Error("refusing non-test chapter database");
 		}
 		process.env.CAP_INSTANT_FINISH_OWNERS = ownerId;
 		process.env.REVISION_ORIGIN_SERVICE_SECRET =
@@ -692,6 +702,74 @@ suite("prepared chapter snapshot cannot overwrite a later AI save", () => {
 		expect(afterConflict?.currentRevisionId).not.toBe(retried.revisionId);
 	});
 
+	it("re-prepares READY artifacts when AI chapters change before Done", async () => {
+		await seedVideo(laterVideoId);
+		const identity = await publishInstantFinishRevision(
+			database,
+			{
+				videoId: laterVideoId,
+				editSpec: fullSpec,
+				baseGeneration: 0,
+				draftVersion: 1,
+				draftSession: "editor",
+				chapters: OLD_CHAPTERS,
+				sourceChapters: OLD_CHAPTERS,
+			},
+			{ origin: origin.client() },
+		);
+		const before = await publicationRow(laterVideoId);
+		const input = {
+			videoId: laterVideoId,
+			editSpec: cutSpec,
+			baseGeneration: before?.generation ?? 0,
+			draftVersion: 2,
+			draftSession: "editor",
+			chapters: OLD_CHAPTERS,
+			sourceChapters: OLD_CHAPTERS,
+		};
+		const prepared = await prepareInstantFinishRevision(database, input, {
+			origin: origin.client(),
+		});
+		const oldArtifact = origin.prepared.get(prepared.revisionId)?.chaptersJson;
+		expect(oldArtifact).toContain("Old opening");
+		await generateAiWorkflow({
+			videoId: laterVideoId,
+			userId: ownerId,
+			generationId: "generation-1",
+		});
+		// AI updates DB metadata, not the prepared origin artifact.
+		expect(origin.prepared.get(prepared.revisionId)?.chaptersJson).toBe(
+			oldArtifact,
+		);
+		const metadata = await videoMetadata(laterVideoId);
+		const published = await publishInstantFinishRevision(
+			database,
+			{
+				...input,
+				chapters: metadata?.chapters,
+				sourceChapters: metadata?.sourceChapters,
+			},
+			{ origin: origin.client() },
+		);
+		const readback = await runRevisionReadback(database, {
+			revisionId: published.revisionId,
+			origin: origin.client(),
+		});
+		expect(readback).toMatchObject({
+			ok: true,
+			reverted: false,
+			skipped: false,
+		});
+		expect(published.revisionId).not.toBe(prepared.revisionId);
+		expect(published.revisionId).not.toBe(identity.revisionId);
+		expect((await publicationRow(laterVideoId))?.currentRevisionId).toBe(
+			published.revisionId,
+		);
+		expect(origin.prepared.get(published.revisionId)?.chaptersJson).not.toBe(
+			oldArtifact,
+		);
+	});
+
 	it("projects an AI save through the revision that flipped before the save", async () => {
 		await seedVideo(laterVideoId);
 		const published = await publishInstantFinishRevision(
@@ -708,11 +786,23 @@ suite("prepared chapter snapshot cannot overwrite a later AI save", () => {
 			},
 			{ origin: origin.client() },
 		);
+		const preparedChapters = origin.prepared.get(
+			published.revisionId,
+		)?.chaptersJson;
 		await generateAiWorkflow({
 			videoId: laterVideoId,
 			userId: ownerId,
 			generationId: "generation-1",
 		});
+		expect(origin.prepared.get(published.revisionId)?.chaptersJson).toBe(
+			preparedChapters,
+		);
+		expect(
+			await runRevisionReadback(database, {
+				revisionId: published.revisionId,
+				origin: origin.client(),
+			}),
+		).toMatchObject({ ok: true, reverted: false, skipped: false });
 		const metadata = await videoMetadata(laterVideoId);
 		const expected = deriveRevisionChapterState({
 			storedChapters: [],

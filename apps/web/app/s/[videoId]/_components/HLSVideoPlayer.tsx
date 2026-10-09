@@ -262,6 +262,8 @@ export function HLSVideoPlayer({
 			revisionId: revision.revisionId,
 			body,
 		});
+		// Readback can revert CURRENT after this page received its playlist.
+		if (plan === "refresh-page") router.refresh();
 		if (plan === "reload-same" && body?.grant) {
 			const url = replacePlaylistGrant(videoSrc, body.grant);
 			setGrantState({
@@ -271,7 +273,7 @@ export function HLSVideoPlayer({
 			return { plan, url };
 		}
 		return { plan, url: null };
-	}, [videoSrc]);
+	}, [videoSrc, router]);
 	const refreshRevisionSourceRef = useRef(refreshRevisionSource);
 	refreshRevisionSourceRef.current = refreshRevisionSource;
 

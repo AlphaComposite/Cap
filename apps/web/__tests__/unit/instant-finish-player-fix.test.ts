@@ -18,7 +18,7 @@ const root = path.resolve(
 );
 
 describe("F12 grant refresh on origin 401", () => {
-	it.each([401, 500, 503])(
+	it.each([401, 410, 500, 503])(
 		"refreshes a revision playlist on hls status %s",
 		(status) => {
 			expect(
@@ -64,15 +64,7 @@ describe("F12 grant refresh on origin 401", () => {
 				policyDenied: false,
 			}),
 		).toEqual({ type: "stop" });
-		expect(
-			revisionHlsErrorAction({
-				status: 410,
-				fatal: false,
-				refreshAttempts: 0,
-				maxRefreshAttempts: 2,
-				policyDenied: false,
-			}),
-		).toEqual({ type: "stop" });
+
 		expect(hlsResumePosition(62.4)).toBe(62.4);
 		expect(hlsResumePosition(0)).toBe(-1);
 	});
@@ -110,6 +102,23 @@ describe("F12 grant refresh on origin 401", () => {
 			{ type: "refresh-grant" },
 			{ type: "fail-closed" },
 		]);
+	});
+
+	it("bounds stale-publication retries and keeps policy denial closed", () => {
+		expect(
+			replayRevisionHlsEvents([
+				{ status: 410 },
+				{ status: 410 },
+				{ status: 410 },
+			]),
+		).toEqual([
+			{ type: "refresh-grant" },
+			{ type: "refresh-grant" },
+			{ type: "fail-closed" },
+		]);
+		expect(
+			replayRevisionHlsEvents([{ status: 410, policyDenied: true }]),
+		).toEqual([{ type: "fail-closed" }]);
 	});
 
 	it("treats the Safari native error as the same refresh, including policy denial", () => {
@@ -169,7 +178,9 @@ describe("grant refresh keeps the viewer's sound", () => {
 			path.join(root, "app/s/[videoId]/_components/HLSVideoPlayer.tsx"),
 			"utf8",
 		);
-		expect(player).not.toMatch(/autoplay \|\| startAt > 0\) \{\s*video\.muted = true/);
+		expect(player).not.toMatch(
+			/autoplay \|\| startAt > 0\) \{\s*video\.muted = true/,
+		);
 		expect(player).toContain("if (autoplay) video.muted = true;");
 		expect(player).toContain("resumePlayingRef.current = !video.paused;");
 	});
