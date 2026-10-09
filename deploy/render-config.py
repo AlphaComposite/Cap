@@ -55,7 +55,13 @@ def url(value, label):
 def load_config(filename):
     filename = Path(filename).resolve()
     config = yaml.safe_load(filename.read_text())
-    require_keys(config, [*ENV_KEYS, "images", "paths", "worker"], "config")
+    require_keys(config, [*ENV_KEYS, "images", "paths", "worker", *(["storage"] if "storage" in config else [])], "config")
+    if "storage" in config:
+        require_keys(config["storage"], ["env_file", "origin_object_url_endpoint", "origin_storage_origin"], "storage")
+        text(config["storage"]["env_file"], "storage.env_file")
+        config["storage"]["env_file"] = str((filename.parent / config["storage"]["env_file"]).resolve())
+        for key in ["origin_object_url_endpoint", "origin_storage_origin"]:
+            url(config["storage"][key], f"storage.{key}")
     require_keys(config["images"], SERVICES, "images")
     require_keys(config["paths"], PATH_KEYS, "paths")
     require_keys(config["worker"], WORKER_KEYS, "worker")
@@ -72,7 +78,7 @@ def load_config(filename):
                 raise ValueError(f"{key}: invalid memory limit")
         elif key.endswith("_url"):
             url(value, key)
-        elif key not in {"images", "paths", "worker"}:
+        elif key not in {"images", "paths", "worker", "storage"}:
             text(value, key, empty=True)
     extension = config["chrome_extension_id"]
     if extension and not re.fullmatch(r"[a-p]{32}", extension):
@@ -123,6 +129,22 @@ def render(config):
         "volumes": [{"type": "bind", "source": paths["workflow_data"], "target": "/app/apps/web/.workflow-data", "bind": {"create_host_path": True}}],
     })
     services["instant-finish-origin"]["env_file"] = [paths["origin_env_file"]]
+    if "storage" in config:
+        storage = config["storage"]
+        credential_file = Path(storage["env_file"])
+        if credential_file.stat().st_mode & 0o077:
+            raise ValueError("storage.env_file: requires mode 0600")
+        values = dict(line.split("=", 1) for line in credential_file.read_text().splitlines() if line and not line.startswith("#") and "=" in line)
+        keys = "CAP_AWS_ACCESS_KEY CAP_AWS_SECRET_KEY CAP_AWS_BUCKET CAP_AWS_REGION CAP_AWS_ENDPOINT S3_INTERNAL_ENDPOINT S3_PUBLIC_ENDPOINT S3_PATH_STYLE ORIGIN_READ_MODE".split()
+        if any(not values.get(key) for key in keys) or values["ORIGIN_READ_MODE"] != "presign":
+            raise ValueError("storage.env_file: missing B2-mode settings")
+        services["cap-web"]["environment"] = {key: values[key] for key in keys}
+        services["instant-finish-origin"]["environment"] = {
+            **{key: None for key in "S3_INTERNAL_ENDPOINT S3_BUCKET S3_REGION S3_ACCESS_KEY S3_SECRET_KEY".split()},
+            "ORIGIN_READ_MODE": "presign",
+            "ORIGIN_OBJECT_URL_ENDPOINT": storage["origin_object_url_endpoint"],
+            "ORIGIN_STORAGE_ORIGIN": storage["origin_storage_origin"],
+        }
     override = yaml.safe_dump({"services": services}, sort_keys=True)
     private_write(directory / ".env.deploy", environment)
     private_write(directory / "docker-compose.override.yml", override)
@@ -158,6 +180,23 @@ def self_check():
             else:
                 raise AssertionError(f"accepted invalid {key}")
         assert all(value.startswith("/") for value in config["paths"].values())
+        credentials = root / "storage.env"
+        credentials.write_text("\n".join(f"{key}=test" for key in "CAP_AWS_ACCESS_KEY CAP_AWS_SECRET_KEY CAP_AWS_BUCKET CAP_AWS_REGION CAP_AWS_ENDPOINT S3_INTERNAL_ENDPOINT S3_PUBLIC_ENDPOINT S3_PATH_STYLE".split()) + "\nORIGIN_READ_MODE=presign\n")
+        credentials.chmod(0o600)
+        config["storage"] = {"env_file": str(credentials), "origin_object_url_endpoint": "http://web:3000", "origin_storage_origin": "https://storage.example.com"}
+        render(config)
+        override = yaml.safe_load(files[1].read_text())
+        assert override["services"]["cap-web"]["environment"]["ORIGIN_READ_MODE"] == "presign"
+        origin = override["services"]["instant-finish-origin"]["environment"]
+        assert origin["ORIGIN_OBJECT_URL_ENDPOINT"] == "http://web:3000"
+        assert all(value is None for key, value in origin.items() if key.startswith("S3_"))
+        credentials.chmod(0o644)
+        try:
+            render(config)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("accepted public storage credential file")
     print("renderer self-check passed")
 
 

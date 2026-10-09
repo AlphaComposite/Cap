@@ -22,7 +22,8 @@ def main():
         for line in Path(worker["env_file"]).read_text().splitlines()
         if line and not line.startswith("#") and "=" in line
     )
-    names = [worker[key] for key in ["web_container", "mysql_container", "minio_container"]]
+    presign = "storage" in config
+    names = [worker[key] for key in (["web_container", "mysql_container"] if presign else ["web_container", "mysql_container", "minio_container"])]
     containers = json.loads(subprocess.check_output(["docker", "inspect", *names], stderr=subprocess.PIPE))
     items = {item["Name"].removeprefix("/"): item for item in containers}
     web = dict(value.split("=", 1) for value in items[names[0]]["Config"]["Env"] if "=" in value)
@@ -33,9 +34,16 @@ def main():
     env.update(origin)
     mysql_ip = items[names[1]]["NetworkSettings"]["Networks"][worker["network"]]["IPAddress"]
     env["DATABASE_URL"] = env["DATABASE_URL"].replace("@mysql:", "@" + mysql_ip + ":")
-    minio = dict(value.split("=", 1) for value in items[names[2]]["Config"]["Env"] if "=" in value)
-    for key in ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"]:
-        env[key] = minio[key]
+    if presign:
+        if origin.get("ORIGIN_READ_MODE") != "presign" or not all(origin.get(key) for key in ["CAP_AWS_ACCESS_KEY", "CAP_AWS_SECRET_KEY"]):
+            raise ValueError("worker.env_file must supply B2-mode credentials")
+        for key in list(env):
+            if key.startswith(("MINIO_", "ORIGIN_S3_")):
+                del env[key]
+    else:
+        minio = dict(value.split("=", 1) for value in items[names[2]]["Config"]["Env"] if "=" in value)
+        for key in ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"]:
+            env[key] = minio[key]
     env["S3_INTERNAL_ENDPOINT"] = worker["s3_internal_url"]
     env["CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL"] = worker["origin_internal_url"]
     env["CAP_INSTANT_FINISH_ORIGIN_URL"] = config["web_url"]
@@ -102,6 +110,17 @@ def self_check():
         else:
             raise AssertionError("accepted a competing in-process worker")
         execute.assert_not_called()
+        containers[0]["Config"]["Env"][1] = "CAP_REVISION_WORKER_MODE=external"
+        config["storage"] = {}
+        inspect.reset_mock()
+        inspect.return_value = json.dumps(containers[:2]).encode()
+        with patch.object(Path, "read_text", return_value="ORIGIN_READ_MODE=presign\nCAP_AWS_ACCESS_KEY=test-web\nCAP_AWS_SECRET_KEY=test-worker-secret\n"):
+            main()
+        inspect.assert_called_once_with(["docker", "inspect", worker["web_container"], worker["mysql_container"]], stderr=subprocess.PIPE)
+        environment = execute.call_args.args[2]
+        assert environment["CAP_AWS_SECRET_KEY"] == "test-worker-secret"
+        assert not any(key.startswith("MINIO_") for key in environment)
+        assert environment["ORIGIN_READ_MODE"] == "presign"
     print("worker launcher self-check passed (mocked Docker/exec; no worker started)")
 
 
