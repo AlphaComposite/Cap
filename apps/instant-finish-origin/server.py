@@ -1919,6 +1919,9 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
             headers.pop("Content-Length", None)
             headers.setdefault("Cache-Control", NO_STORE)
             headers.setdefault("Referrer-Policy", REFERRER)
+            # Admission bounds connections; idle keep-alives must not hold slots.
+            headers["Connection"] = "close"
+            self.close_connection = True
             try:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
