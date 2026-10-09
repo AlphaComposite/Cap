@@ -81,7 +81,6 @@ export async function GET(request: NextRequest) {
 				ownerId: video.ownerId,
 				artifact: "thumbnail",
 				child: "thumbnail.jpg",
-				origin: request.nextUrl.origin,
 			});
 			if (!thumbnailUrl) {
 				return new Response(

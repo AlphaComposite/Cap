@@ -7,6 +7,19 @@ const mocks = vi.hoisted(() => ({
 	access: vi.fn(),
 	list: vi.fn(),
 	sign: vi.fn(),
+	flagged: vi.fn(),
+	eligible: vi.fn(),
+	artifact: vi.fn(),
+}));
+vi.mock("@/lib/instant-finish-flag", () => ({
+	isInstantFinishEnabledForOwner: mocks.flagged,
+}));
+vi.mock("@/lib/flagged-unedited", async (original) => ({
+	...(await original<typeof import("@/lib/flagged-unedited")>()),
+	loadEligibleLegacy: mocks.eligible,
+}));
+vi.mock("@/lib/revision-media-grant", () => ({
+	revisionArtifactUrl: mocks.artifact,
 }));
 vi.mock("@cap/database", () => ({ db: vi.fn() }));
 vi.mock("@cap/web-backend", () => ({
@@ -34,6 +47,8 @@ const request = () =>
 	new NextRequest("https://cap.test/api/thumbnail?videoId=video");
 beforeEach(() => {
 	vi.resetAllMocks();
+	mocks.flagged.mockReturnValue(false);
+	mocks.eligible.mockResolvedValue(false);
 	mocks.access.mockReturnValue(
 		Effect.succeed([
 			{
@@ -53,6 +68,48 @@ beforeEach(() => {
 });
 
 describe("published edit thumbnails", () => {
+	it("returns a same-origin revision thumbnail even when Next reports its internal origin", async () => {
+		mocks.flagged.mockReturnValue(true);
+		const screen = "/media/video/r/current/thumbnail.jpg?t=test-grant";
+		mocks.artifact.mockResolvedValue(screen);
+		mocks.policy.mockResolvedValue(
+			Exit.succeed([
+				{
+					id: "video",
+					ownerId: "owner",
+					source: { type: "webMP4", thumbnailKey },
+				},
+			]),
+		);
+		const response = await GET(
+			new NextRequest("http://0.0.0.0:3000/api/thumbnail?videoId=video"),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ screen });
+		expect(mocks.artifact).toHaveBeenCalledExactlyOnceWith({
+			videoId: "video",
+			ownerId: "owner",
+			artifact: "thumbnail",
+			child: "thumbnail.jpg",
+		});
+		expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+		expect(mocks.access).not.toHaveBeenCalled();
+	});
+	it("does not fall back to an older thumbnail when the revision thumbnail is unavailable", async () => {
+		mocks.flagged.mockReturnValue(true);
+		mocks.artifact.mockResolvedValue(null);
+		mocks.policy.mockResolvedValue(
+			Exit.succeed([
+				{
+					id: "video",
+					ownerId: "owner",
+					source: { type: "webMP4", thumbnailKey },
+				},
+			]),
+		);
+		expect((await GET(request())).status).toBe(404);
+		expect(mocks.access).not.toHaveBeenCalled();
+	});
 	it.each(["desktopMP4", "webMP4"])(
 		"serves the current %s thumbnail without scanning older screenshots",
 		async (type) => {
@@ -83,9 +140,11 @@ describe("published edit thumbnails", () => {
 		);
 	});
 	it("checks viewing access before resolving an internal thumbnail", async () => {
+		mocks.flagged.mockReturnValue(true);
 		mocks.policy.mockResolvedValue(Exit.fail("Forbidden"));
 		expect((await GET(request())).status).toBe(404);
 		expect(mocks.access).not.toHaveBeenCalled();
 		expect(mocks.sign).not.toHaveBeenCalled();
+		expect(mocks.artifact).not.toHaveBeenCalled();
 	});
 });

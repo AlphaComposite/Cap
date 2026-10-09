@@ -43,6 +43,7 @@ export {
 	registerEditedDownloadUrlLookup,
 	revisionDownloadOutcome,
 } from "./Videos/editedDownload.ts";
+export { registerEditedThumbnailUrlLookup } from "./Videos/editedThumbnail.ts";
 export { findScreenshotObjectKey, Videos } from "./Videos/index.ts";
 export {
 	buildCanView,

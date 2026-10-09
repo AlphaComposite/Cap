@@ -27,14 +27,17 @@ const env = {
 
 const dialect = new MySqlDialect();
 
-function executor() {
+function executor(
+	state = "READY",
+	currentRevisionId: string | null = "revdownload01",
+) {
 	return {
 		execute: async (query: Parameters<MySqlDialect["sqlToQuery"]>[0]) => {
 			const text = dialect.sqlToQuery(query).sql;
 			if (text.includes("video_publication")) {
 				return [
 					{
-						currentRevisionId: "revdownload01",
+						currentRevisionId,
 						generation: 1,
 						currentGeneration: 1,
 						publicationEpoch: 2,
@@ -43,7 +46,7 @@ function executor() {
 				];
 			}
 			if (text.includes("revision_artifact_status")) {
-				return [{ state: "READY" }];
+				return [{ state }];
 			}
 			return [];
 		},
@@ -92,5 +95,28 @@ describe("download media grant", () => {
 			executor(),
 		);
 		expect(artifactOf(thumbnail)).toBeUndefined();
+		expect(
+			thumbnail?.startsWith(
+				"/media/viddownload1/r/revdownload01/thumbnail.jpg?t=",
+			),
+		).toBe(true);
 	});
+	it.each([
+		{ state: "PENDING", currentRevisionId: "revdownload01" },
+		{ state: "READY", currentRevisionId: null },
+	])(
+		"does not mint a thumbnail for $state with publication $currentRevisionId",
+		async ({ state, currentRevisionId }) => {
+			const thumbnail = await revisionArtifactUrl(
+				{
+					videoId: "viddownload1",
+					ownerId: "owner",
+					artifact: "thumbnail",
+					child: "thumbnail.jpg",
+				},
+				executor(state, currentRevisionId),
+			);
+			expect(thumbnail).toBeNull();
+		},
+	);
 });

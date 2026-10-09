@@ -26,6 +26,7 @@ import {
 	currentEditedDownloadUrlLookup,
 	editedDownloadFromLookup,
 } from "./editedDownload.ts";
+import { currentEditedThumbnailUrlLookup } from "./editedThumbnail.ts";
 import { isInstantFinishEnabledForOwner } from "./instantFinishFlag.ts";
 import { bumpPolicyEpochIfFlagged } from "./policyEpoch.ts";
 import { VideosPolicy } from "./VideosPolicy.ts";
@@ -857,7 +858,16 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 							ownerId: video.ownerId,
 						}),
 					);
-					if (!eligible) return Option.none();
+					if (!eligible) {
+						const lookup = currentEditedThumbnailUrlLookup();
+						return Option.fromNullable(
+							lookup
+								? yield* Effect.promise(() =>
+										lookup({ videoId: video.id, ownerId: video.ownerId }),
+									)
+								: null,
+						);
+					}
 				}
 
 				const [bucket] = yield* storage.getAccessForVideo(video);

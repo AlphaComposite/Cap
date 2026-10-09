@@ -4,9 +4,11 @@ import { HttpServer } from "@effect/platform";
 import { RpcSerialization, RpcServer } from "@effect/rpc";
 import { Layer } from "effect";
 import { ensureEditedDownloadLookup } from "@/lib/register-edited-download";
+import { ensureEditedThumbnailLookup } from "@/lib/register-edited-thumbnail";
 import { Dependencies } from "@/lib/server";
 
 ensureEditedDownloadLookup();
+ensureEditedThumbnailLookup();
 
 const rpcLayer = Layer.mergeAll(
 	RpcAuthMiddlewareLive,

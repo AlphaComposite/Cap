@@ -551,8 +551,6 @@ def plan_timeline(ranges: list[dict], ticks: list[int], durs: list[int], video_t
             raise RuntimeError(
                 f"range {index} audio/slot adjustment {adjust} exceeds {MAX_ADJUST} samples"
             )
-        if adjust and index == 0 and index == len(ranges) - 1:
-            raise RuntimeError(f"range {index} needs a {adjust}-sample adjustment and has no fade window")
         slots.append(RangeSlot(index, start, end, v0, v1, src_lo, src_hi, out_lo, out_hi, adjust, video_tb))
         out_lo = out_hi
     pad = (FRAME - out_lo % FRAME) % FRAME
@@ -598,13 +596,13 @@ def _slot_source(slot: RangeSlot, rel: int, last: int) -> int:
     if adjust == 0:
         return slot.src_lo + rel
     if adjust > 0:
-        if slot.index != last:
+        if slot.index == 0 or slot.index != last:
             return slot.src_lo + rel
         if slot.index:
             return slot.src_lo + adjust + rel
         raise RuntimeError(f"range {slot.index} trim has no fade window")
     need = -adjust
-    if slot.index != last:
+    if slot.index == 0 or slot.index != last:
         if rel < src_n:
             return slot.src_lo + rel
         return slot.src_hi - 1
@@ -661,7 +659,8 @@ def _apply_fades(pcm: np.ndarray, timeline: Timeline, out_lo: int) -> None:
     for slot in timeline.slots:
         if slot.index:
             _scale(pcm, out_lo, slot.slot_lo, ramp_in)
-        if slot.index != last:
+        # A lone keep corrects sample rounding at its kept tail, never in removed audio.
+        if slot.index != last or (last == 0 and slot.adjust):
             _scale(pcm, out_lo, slot.slot_hi - FADE_N, ramp_out)
 
 
