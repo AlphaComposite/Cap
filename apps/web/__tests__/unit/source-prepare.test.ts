@@ -191,6 +191,77 @@ describe("untouched editor V2", () => {
 });
 
 describe("source-prepare worker", () => {
+	it.each([
+		["initial publish", {}],
+		[
+			"readable identity",
+			{
+				currentRevisionId: "rev-identity",
+				currentIsIdentity: true,
+				currentReadable: true,
+			},
+		],
+		[
+			"relocated identity",
+			{
+				currentRevisionId: "rev-identity",
+				currentIsIdentity: true,
+				currentReadable: true,
+				relocated: true,
+			},
+		],
+		[
+			"relocated edit",
+			{
+				currentRevisionId: "rev-cut",
+				currentReadable: true,
+				hasUserEdit: true,
+				relocated: true,
+			},
+		],
+		[
+			"resumed edit deletion",
+			{
+				currentRevisionId: "rev-cut",
+				currentReadable: true,
+				hasUserEdit: true,
+				deletionPending: true,
+				journalOldKey: "owner-flagged/video-ready-01/result.mp4",
+				journalNewKey: "private/source/video-ready-01/original",
+			},
+		],
+	] as const)(
+		"completes inventory before pending captions: %s",
+		async (_name, overrides) => {
+			const order: string[] = [];
+			const result = await advanceSourcePrepare(snapshot(overrides), {
+				...effects(order),
+				completeInventory: async () => {
+					order.push("inventory");
+				},
+			});
+			expect(
+				order.filter((step) => step === "inventory" || step === "captions"),
+			).toEqual(["inventory", "captions"]);
+			expect(result.done).toBe(false);
+		},
+	);
+
+	it("keeps inventory when the current revision is unreadable during deletion", async () => {
+		const order: string[] = [];
+		const result = await advanceSourcePrepare(
+			snapshot({ currentRevisionId: "rev-identity", deletionPending: true }),
+			{
+				...effects(order),
+				completeInventory: async () => {
+					order.push("inventory");
+				},
+			},
+		);
+		expect(order).toEqual([]);
+		expect(result.done).toBe(false);
+	});
+
 	it("claims one due job, leases it, and exhausts without a second encode", () => {
 		const now = 1_000_000;
 		const first = {

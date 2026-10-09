@@ -1,7 +1,20 @@
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	type RelocationState,
 	resolveLegacySourceKey,
 } from "@/lib/source-relocation";
+
+export function transcribeTempAudioKey(
+	userId: string,
+	videoId: string,
+	filename: string,
+	env: Record<string, string | undefined> = process.env,
+): string {
+	// Inventory may finish between audio extraction and the transcription step.
+	return isInstantFinishEnabledForOwner(userId, env)
+		? `private/source/${videoId}/${filename}`
+		: `${userId}/${videoId}/${filename}`;
+}
 
 export function transcribeSourceCandidateKeys(input: {
 	userId: string;

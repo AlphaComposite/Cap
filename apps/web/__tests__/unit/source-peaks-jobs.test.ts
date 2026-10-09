@@ -596,8 +596,8 @@ describe("optional peaks do not block core preparation", () => {
 			"prepare",
 			"publish",
 			"relocate",
-			"captions",
 			"inventory",
+			"captions",
 			"enqueue",
 		]);
 		expect(order).not.toContain("peaks-inline");

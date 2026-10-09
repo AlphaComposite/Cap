@@ -499,6 +499,8 @@ export async function advanceSourcePrepare(
 				oldKey: resumeDeletion.oldKey,
 			});
 		}
+		if (snapshot.currentReadable && (snapshot.relocated || resumeDeletion))
+			await effects.completeInventory({ videoId: snapshot.videoId });
 		if (
 			snapshot.currentRevisionId &&
 			snapshot.currentReadable &&
@@ -507,8 +509,6 @@ export async function advanceSourcePrepare(
 			const claim = await effects.refreshCaptions({
 				videoId: snapshot.videoId,
 			});
-			if (claim !== "pending" && (snapshot.relocated || resumeDeletion))
-				await effects.completeInventory({ videoId: snapshot.videoId });
 			await scheduleOptionalPeaks(snapshot, effects);
 			return {
 				done: claim !== "pending",
@@ -517,8 +517,6 @@ export async function advanceSourcePrepare(
 				playback: "hls",
 			};
 		}
-		if (snapshot.currentReadable && (snapshot.relocated || resumeDeletion))
-			await effects.completeInventory({ videoId: snapshot.videoId });
 		await scheduleOptionalPeaks(snapshot, effects);
 		return { done: true, exhaustedSafe: true, calls, playback };
 	}
@@ -538,6 +536,7 @@ export async function advanceSourcePrepare(
 				oldKey: snapshot.sourceObjectKey,
 			});
 		}
+		await effects.completeInventory({ videoId: snapshot.videoId });
 		if (!snapshot.captionsClaimed) {
 			const claim = await effects.refreshCaptions({
 				videoId: snapshot.videoId,
@@ -547,7 +546,6 @@ export async function advanceSourcePrepare(
 				return { done: false, exhaustedSafe: true, calls, playback: "hls" };
 			}
 		}
-		await effects.completeInventory({ videoId: snapshot.videoId });
 		await scheduleOptionalPeaks(snapshot, effects);
 		return { done: true, exhaustedSafe: true, calls, playback: "hls" };
 	}
@@ -601,6 +599,7 @@ export async function advanceSourcePrepare(
 				snapshot.publicResultEligible && !snapshot.relocated ? "legacy" : "hls",
 		};
 	}
+	await effects.completeInventory({ videoId: snapshot.videoId });
 	if (!snapshot.captionsClaimed) {
 		const claim = await effects.refreshCaptions({ videoId: snapshot.videoId });
 		if (claim === "pending") {
@@ -616,7 +615,6 @@ export async function advanceSourcePrepare(
 			};
 		}
 	}
-	await effects.completeInventory({ videoId: snapshot.videoId });
 	await scheduleOptionalPeaks(snapshot, effects);
 	return {
 		done: true,

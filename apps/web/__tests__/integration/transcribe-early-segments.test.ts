@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Option } from "effect";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assemblyAIEditResponse } from "../fixtures/assemblyai-edit-response";
 
 const mocks = vi.hoisted(() => ({
@@ -79,6 +79,10 @@ vi.mock("@cap/database", () => ({
 				};
 			},
 		}),
+		transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+			const { db } = await import("@cap/database");
+			return fn(db());
+		},
 		update: () => ({
 			set: (values: Record<string, unknown>) => {
 				mocks.updates.push(values);
@@ -128,6 +132,10 @@ vi.mock("@cap/web-backend/src/Storage/index", () => ({
 				]),
 		}),
 	},
+}));
+
+vi.mock("@/lib/source-prepare-worker", () => ({
+	enqueueSourceCaptionsAfterTranscript: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/workflow-runtime", () => ({
@@ -231,64 +239,81 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 		);
 	});
 
-	it("transcribes straight from segment audio before any mux exists", async () => {
-		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+	afterEach(() => vi.unstubAllEnvs());
 
-		const result = await transcribeVideoWorkflow({
-			videoId: "video-123",
-			userId: "user-456",
-			aiGenerationEnabled: false,
-			earlyFromSegments: true,
-		});
+	it.each([false, true])(
+		"transcribes straight from segment audio before any mux exists (flagged=%s)",
+		async (flagged) => {
+			vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", flagged ? "user-456" : "");
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
 
-		expect(result.success).toBe(true);
-		expect(mocks.transcribe).toHaveBeenCalledTimes(1);
+			const result = await transcribeVideoWorkflow({
+				videoId: "video-123",
+				userId: "user-456",
+				aiGenerationEnabled: false,
+				earlyFromSegments: true,
+			});
 
-		const signedKeys = mocks.getInternalSignedObjectUrl.mock.calls.map(
-			(call) => call[0],
-		);
-		expect(signedKeys).toContain("user-456/video-123/segments/audio/init.mp4");
-		expect(signedKeys).toContain(
-			"user-456/video-123/segments/audio/segment_001.m4s",
-		);
-		expect(signedKeys).toContain(
-			"user-456/video-123/segments/audio/segment_002.m4s",
-		);
-		// never touches the video track
-		expect(signedKeys.join()).not.toContain("segments/video");
+			expect(result.success).toBe(true);
+			expect(mocks.transcribe).toHaveBeenCalledTimes(1);
 
-		const writtenKeys = mocks.putObject.mock.calls.map((call) => call[0]);
-		expect(writtenKeys).toContain("user-456/video-123/audio-temp.mp3");
-		expect(writtenKeys).toContain("user-456/video-123/transcription.vtt");
-		expect(writtenKeys).toContain(
-			"user-456/video-123/transcription.edit.v3.json",
-		);
+			const signedKeys = mocks.getInternalSignedObjectUrl.mock.calls.map(
+				(call) => call[0],
+			);
+			expect(signedKeys).toContain(
+				"user-456/video-123/segments/audio/init.mp4",
+			);
+			expect(signedKeys).toContain(
+				"user-456/video-123/segments/audio/segment_001.m4s",
+			);
+			expect(signedKeys).toContain(
+				"user-456/video-123/segments/audio/segment_002.m4s",
+			);
+			// never touches the video track
+			expect(signedKeys.join()).not.toContain("segments/video");
 
-		// duration falls back to the manifest sum (2s + 2.5s) when the video row
-		// has no duration yet (it is only set by the post-mux webhook)
-		const { parseEditTranscript } = await import("@/lib/edit-transcript");
-		const { decryptEditTranscriptObject } = await import(
-			"@/lib/edit-transcript-storage"
-		);
-		const write = mocks.putObject.mock.calls.find(
-			(call) => call[0] === "user-456/video-123/transcription.edit.v3.json",
-		);
-		const stored = parseEditTranscript(
-			decryptEditTranscriptObject(
-				write?.[1] as string,
-				"user-456",
-				"video-123",
-			) ?? "",
-		);
-		expect(stored?.durationMs).toBe(4500);
+			const writtenKeys = mocks.putObject.mock.calls.map((call) => call[0]);
+			const audioKey = flagged
+				? "private/source/video-123/audio-temp.mp3"
+				: "user-456/video-123/audio-temp.mp3";
+			expect(writtenKeys).toContain(audioKey);
+			expect(signedKeys).toContain(audioKey);
+			expect(mocks.deleteObject).toHaveBeenCalledWith(audioKey);
+			expect(writtenKeys).toContain("user-456/video-123/transcription.vtt");
+			expect(writtenKeys).toContain(
+				"user-456/video-123/transcription.edit.v3.json",
+			);
 
-		expect(mocks.updates).toContainEqual({ transcriptionStatus: "COMPLETE" });
-		expect(mocks.updates).not.toContainEqual({ transcriptionStatus: "ERROR" });
-		// the provisional live transcript is superseded by the canonical one
-		expect(mocks.deleteObject.mock.calls.map((call) => call[0])).toContain(
-			"user-456/video-123/transcription.live.json",
-		);
-	});
+			// duration falls back to the manifest sum (2s + 2.5s) when the video row
+			// has no duration yet (it is only set by the post-mux webhook)
+			const { parseEditTranscript } = await import("@/lib/edit-transcript");
+			const { decryptEditTranscriptObject } = await import(
+				"@/lib/edit-transcript-storage"
+			);
+			const write = mocks.putObject.mock.calls.find(
+				(call) => call[0] === "user-456/video-123/transcription.edit.v3.json",
+			);
+			const stored = parseEditTranscript(
+				decryptEditTranscriptObject(
+					write?.[1] as string,
+					"user-456",
+					"video-123",
+				) ?? "",
+			);
+			expect(stored?.durationMs).toBe(4500);
+
+			expect(mocks.updates).toContainEqual({ transcriptionStatus: "COMPLETE" });
+			expect(mocks.updates).not.toContainEqual({
+				transcriptionStatus: "ERROR",
+			});
+			// the provisional live transcript is superseded by the canonical one
+			expect(mocks.deleteObject.mock.calls.map((call) => call[0])).toContain(
+				"user-456/video-123/transcription.live.json",
+			);
+		},
+	);
 
 	it("defers back to the post-mux queue when the manifest is missing", async () => {
 		mocks.getObject.mockImplementation(() => pipeValue(Option.none()));

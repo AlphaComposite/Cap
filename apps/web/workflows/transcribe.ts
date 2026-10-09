@@ -50,7 +50,10 @@ import { resolveLiveOriginal } from "@/lib/private-source-read";
 import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
 import { downloadConcatenatedSegments } from "@/lib/segments-audio-download";
 import type { RelocationState } from "@/lib/source-relocation";
-import { transcribeSourceCandidateKeys } from "@/lib/transcribe-source";
+import {
+	transcribeSourceCandidateKeys,
+	transcribeTempAudioKey,
+} from "@/lib/transcribe-source";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
 
@@ -607,7 +610,7 @@ async function extractAudio(
 		`[transcribe] Extracted audio for ${videoId}: ${audioBuffer.length} bytes`,
 	);
 
-	const audioKey = `${userId}/${videoId}/${tempAudioFilename}`;
+	const audioKey = transcribeTempAudioKey(userId, videoId, tempAudioFilename);
 
 	await bucket
 		.putObject(audioKey, audioBuffer, {
@@ -813,7 +816,7 @@ async function extractAudioFromSegmentsImpl(
 			// contract is untouched.
 			const audioBuffer = await fs.readFile(concatPath);
 
-			const audioKey = `${userId}/${videoId}/${tempAudioFilename}`;
+			const audioKey = transcribeTempAudioKey(userId, videoId, tempAudioFilename);
 			await bucket
 				.putObject(audioKey, audioBuffer, {
 					contentType: "audio/mp4",
@@ -1115,7 +1118,7 @@ async function cleanupTempAudio(
 ): Promise<void> {
 	"use step";
 
-	const audioKey = `${userId}/${videoId}/${tempAudioFilename}`;
+	const audioKey = transcribeTempAudioKey(userId, videoId, tempAudioFilename);
 
 	try {
 		const [bucket] = await Storage.getAccessForVideo(
