@@ -19,7 +19,7 @@ import lib_audio
 from storage import atomic_write, private, sha256_file
 
 JIT_X264 = "scenecut=0:open-gop=0:b-adapt=0:repeat-headers=1"
-SEGMENT_PLAN_VERSION = 2
+SEGMENT_PLAN_VERSION = 3
 ATTESTATION_VERSION = 2
 AUDIO_ALIGN_VERSION = 6
 MAPPING_VERSION = 1
@@ -274,16 +274,15 @@ def range_snaps(ticks: list[int], durs: list[int], ranges: list[dict], tb: int) 
 def _prefix_to_keyframe(frames: tuple[FrameRec, ...], keyframes: list[dict] | None, tb: int) -> tuple[FrameRec, ...]:
     if not frames:
         raise RuntimeError("segment 0 plan is empty")
-    if not keyframes:
-        return frames
     first = frames[0].index
-    nxt = next((item["index"] for item in keyframes if item["index"] > first), None)
+    nxt = next((item["index"] for item in (keyframes or []) if item["index"] > first), None)
     chosen: list[FrameRec] = []
     acc = 0
     for frame in frames:
         if nxt is not None and frame.index >= nxt and chosen:
             break
-        if chosen and acc >= tb:
+        # A short independent startup fragment; never split a VFR frame/hold.
+        if chosen and acc >= tb // 2:
             break
         chosen.append(frame)
         acc += frame.dur
