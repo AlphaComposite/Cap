@@ -128,13 +128,13 @@ export function drizzleRelocationJournal(app: Database): RelocationJournal {
 	};
 }
 
-let objectStore: ObjectStore | undefined;
+let s3Client: S3Client | undefined;
 
-export function runtimeObjectStore(): ObjectStore {
-	// Reuse the SDK keep-alive connections, never inventory or privacy results.
-	if (objectStore) return objectStore;
+export function runtimeS3Client(): S3Client {
+	// The SDK already keeps connections alive; preserve the client, not results.
+	if (s3Client) return s3Client;
 	const env = serverEnv();
-	const client = new S3Client({
+	return (s3Client = new S3Client({
 		region: env.CAP_AWS_REGION,
 		endpoint: env.S3_INTERNAL_ENDPOINT,
 		forcePathStyle: env.S3_PATH_STYLE,
@@ -142,8 +142,11 @@ export function runtimeObjectStore(): ObjectStore {
 			accessKeyId: env.CAP_AWS_ACCESS_KEY ?? "",
 			secretAccessKey: env.CAP_AWS_SECRET_KEY ?? "",
 		},
-	});
-	return (objectStore = createS3Store(client, env.CAP_AWS_BUCKET));
+	}));
+}
+
+export function runtimeObjectStore(): ObjectStore {
+	return createS3Store(runtimeS3Client(), serverEnv().CAP_AWS_BUCKET);
 }
 
 export async function relocateFlaggedSource(input: {

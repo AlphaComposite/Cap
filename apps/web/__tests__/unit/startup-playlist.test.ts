@@ -36,10 +36,13 @@ it("joins the handoff playlist and returns manifest text without a second GET", 
 		item = new Loader(),
 		success = vi.fn();
 	prefetchInstantFinishPlaylist(url);
-	item.load({ url, responseType: "text" }, {}, { onSuccess: success });
+	item.load({ url, type: "manifest", responseType: "text" }, {}, { onSuccess: success });
 	release();
 	await vi.waitFor(() => expect(success).toHaveBeenCalledTimes(1));
 	expect(success.mock.calls[0][0].data).toBe(manifest);
+	const levelSuccess = vi.fn();
+	item.load({ url, type: "level", responseType: "text" }, {}, { onSuccess: levelSuccess });
+	expect(levelSuccess.mock.calls[0][0].data).toBe(manifest);
 	expect(network).not.toHaveBeenCalled();
 	expect(fetchMock.mock.calls.filter(([u]) => u === url)).toHaveLength(1);
 	expect(readPrefetchedFragment(url)).toBeNull();

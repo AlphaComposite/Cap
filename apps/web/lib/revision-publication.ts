@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import type { db } from "@cap/database";
 import {
 	comments,
@@ -23,7 +23,7 @@ import {
 	parseEditTranscript,
 } from "@/lib/edit-transcript";
 import { decryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
-import { runtimeObjectStore } from "@/lib/instant-finish-source-relocate";
+import { runtimeObjectStore, runtimeS3Client } from "@/lib/instant-finish-source-relocate";
 import {
 	deriveRevisionChapterState,
 	projectSourceChapters,
@@ -1545,15 +1545,7 @@ async function readTranscriptObject(key: string): Promise<string | null> {
 	try {
 		const env = serverEnv();
 		if (!env.CAP_AWS_BUCKET) return null;
-		const client = new S3Client({
-			region: env.CAP_AWS_REGION,
-			endpoint: env.S3_INTERNAL_ENDPOINT,
-			forcePathStyle: env.S3_PATH_STYLE,
-			credentials: {
-				accessKeyId: env.CAP_AWS_ACCESS_KEY ?? "",
-				secretAccessKey: env.CAP_AWS_SECRET_KEY ?? "",
-			},
-		});
+		const client = runtimeS3Client();
 		const response = await client.send(
 			new GetObjectCommand({ Bucket: env.CAP_AWS_BUCKET, Key: key }),
 		);

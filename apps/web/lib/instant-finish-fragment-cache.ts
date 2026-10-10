@@ -104,6 +104,9 @@ function deliverFragment(
 	bytes: ArrayBuffer,
 	context: unknown,
 ) {
+	// hls.js loads a direct media playlist as manifest, then as its first level.
+	if ((context as { type?: string })?.type === "manifest")
+		rememberPrefetchedFragment(url, bytes);
 	const now = Date.now();
 	onSuccess(
 		{
