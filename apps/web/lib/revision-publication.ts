@@ -715,13 +715,11 @@ export async function prepareInstantFinishRevision(
 	const authored = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
-	const sealed = await canonicalizeKeepRanges(
-		app,
-		input,
-		authored,
-		deps.origin,
-		now(),
-	);
+	// Stored words use the source clock; derive captions only after frame selection.
+	const [sealed, transcript] = await Promise.all([
+		canonicalizeKeepRanges(app, input, authored, deps.origin, now()),
+		loadStoredEditTranscript(app, input.videoId, authored),
+	]);
 	const spec = sealed.spec;
 	await expireAbandonedPreparedRevisions(app, now());
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
@@ -746,11 +744,11 @@ export async function prepareInstantFinishRevision(
 	try {
 		await transition(app, allocated.revisionId, "PREPARING", now());
 		const prepared = await produceAndVerify(
-			app,
 			input,
 			spec,
 			allocated,
 			deps.origin,
+			transcript,
 		);
 		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
 		const ready = await transition(
@@ -858,13 +856,11 @@ export async function publishInstantFinishRevision(
 			}
 		}
 	}
-	const sealed = await canonicalizeKeepRanges(
-		app,
-		input,
-		authored,
-		deps.origin,
-		now(),
-	);
+	// Stored words use the source clock; derive captions only after frame selection.
+	const [sealed, transcript] = await Promise.all([
+		canonicalizeKeepRanges(app, input, authored, deps.origin, now()),
+		loadStoredEditTranscript(app, input.videoId, authored),
+	]);
 	const spec = sealed.spec;
 	timing("canonicalized");
 	const reused = await reuseVerifiedReady(
@@ -940,11 +936,11 @@ export async function publishInstantFinishRevision(
 		if (deps.onAllocated) await deps.onAllocated(allocated);
 		await transition(app, allocated.revisionId, "PREPARING", now());
 		const prepared = await produceAndVerify(
-			app,
 			input,
 			spec,
 			allocated,
 			deps.origin,
+			transcript,
 		);
 		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
 		const ready = await transition(
@@ -1605,15 +1601,15 @@ export async function loadStoredEditTranscript(
 }
 
 async function produceAndVerify(
-	app: Database,
 	input: PublishRevisionInput,
 	spec: VideoEditSpecV2,
 	allocated: Allocated,
 	origin: OriginClient,
+	transcript: EditTranscript | null,
 ) {
 	const durationSeconds = getEditSpecOutputDuration(spec);
 	const captions = deriveRevisionCaptions({
-		transcript: await loadStoredEditTranscript(app, input.videoId, spec),
+		transcript,
 		nextSpec: spec,
 	});
 	const chapterState = deriveRevisionChapterState({
