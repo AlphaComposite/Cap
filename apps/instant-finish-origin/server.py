@@ -926,7 +926,9 @@ class OriginApp:
             return self._text(401, b"unauthorized")
         if parsed.video_id != video_id or parsed.revision_id != revision_id:
             return self._text(403, b"forbidden")
+        started = time.perf_counter()
         snap = self._authorize(video_id, revision_id, parsed)
+        authorized = time.perf_counter()
         if isinstance(snap, tuple):
             return snap
         kind = match.group("kind")
@@ -955,9 +957,12 @@ class OriginApp:
         except (lib_origin.MezzanineRequired, lib_origin.CacheIntegrityError, Exception) as exc:
             _log_failed("media", exc, video=video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
+        artifact_ready = time.perf_counter()
         if self.before_send is not None:
             self.before_send(snap)
         again = self._recheck(video_id, revision_id)
+        if os.environ.get("CAP_WORKER_TIMING") == "1":
+            print("origin-media-timing " + json.dumps({"videoId": video_id, "revisionId": revision_id, "kind": kind, "authorizeMs": round((authorized - started) * 1000, 3), "artifactMs": round((artifact_ready - authorized) * 1000, 3), "recheckMs": round((time.perf_counter() - artifact_ready) * 1000, 3)}), flush=True)
         if again is None:
             return self._text(410, b"gone")
         if (
@@ -1058,7 +1063,11 @@ class OriginApp:
         source_key: str | None = None,
     ) -> lib_origin.Origin:
         # ponytail: capb2 cold max 456ms, warm median 0.11ms; keep authorization, profile identity before optimizing.
+        started = time.perf_counter()
         mezz, original, source_sha = self._source_files(video_id, source_id, expected_sha, source_key)
+        source_ready = time.perf_counter()
+        if os.environ.get("CAP_WORKER_TIMING") == "1":
+            print("origin-source-timing " + json.dumps({"videoId": video_id, "ms": round((source_ready - started) * 1000, 3)}), flush=True)
         key = f"{source_sha}:{lib_origin.canonical_spec(ranges).hex()}"
         with self._lock:
             found = self._origins.get(key)
@@ -1379,6 +1388,10 @@ class OriginApp:
         except StorageError:
             return
         self._sha_cache.put(ident, sha256)
+        with self._lock:
+            self._sha_ident[key] = (ident, time.monotonic())
+            while len(self._sha_ident) > limits.SHA_CACHE_MAX:
+                self._sha_ident.pop(next(iter(self._sha_ident)))
 
 
 def cache_source_id(source_id: str) -> str:
@@ -1940,6 +1953,7 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
 
         def _dispatch_admitted(self, method: str, headers=None) -> None:
             hdrs = headers if headers is not None else {key: value for key, value in self.headers.items()}
+            started = time.perf_counter()
             try:
                 status, body, content_type, extra = app.handle(method, self.path, hdrs)
             except Exception as exc:
@@ -1949,6 +1963,8 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
                     pass
                 status, body, content_type, extra = 500, b"unavailable", "text/plain", {"Cache-Control": NO_STORE}
             self._emit(status, body, content_type, extra)
+            if os.environ.get("CAP_WORKER_TIMING") == "1":
+                print("origin-request-timing " + json.dumps({"method": method, "endpoint": self.path.split("?", 1)[0].rsplit("/", 1)[-1], "status": status, "ms": round((time.perf_counter() - started) * 1000, 3)}), flush=True)
 
         def _emit(self, status: int, body: bytes | StreamedBody, content_type: str, extra: dict) -> None:
             streamed = isinstance(body, StreamedBody)

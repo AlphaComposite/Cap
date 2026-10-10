@@ -821,6 +821,13 @@ export async function publishInstantFinishRevision(
 	const app = database as Database;
 	const authored = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
+	const started = performance.now();
+	const timing = (phase: string) => {
+		if (process.env.CAP_WORKER_TIMING === "1")
+			console.log(
+				`revision-publish-timing ${JSON.stringify({ videoId: input.videoId, phase, ms: Math.round(performance.now() - started) })}`,
+			);
+	};
 	const now = deps.now ?? (() => new Date());
 	const identityReuse = await reuseCurrentUntouched(app, input, authored);
 	if (identityReuse) return identityReuse;
@@ -859,6 +866,7 @@ export async function publishInstantFinishRevision(
 		now(),
 	);
 	const spec = sealed.spec;
+	timing("canonicalized");
 	const reused = await reuseVerifiedReady(
 		app,
 		input,
@@ -867,6 +875,7 @@ export async function publishInstantFinishRevision(
 		now,
 		sealed.binding,
 	);
+	timing(reused ? "ready-reused" : "ready-miss");
 	if (reused) return reused;
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
 	const publishInput = await allocateInputAfterPreclick(app, input);
@@ -953,10 +962,12 @@ export async function publishInstantFinishRevision(
 				allocated.revisionId,
 			);
 		}
+		timing("prepared");
 		await transition(app, allocated.revisionId, "PUBLISHING", now());
 		await app.transaction(async (tx) => {
 			await flipCurrent(tx, input, spec, allocated, prepared, now());
 		});
+		timing("flip");
 		return {
 			success: true,
 			revisionId: allocated.revisionId,
@@ -1360,9 +1371,14 @@ async function readReadySource(
 		.from(videos)
 		.where(eq(videos.id, videoId(id)));
 	const prefix = `${owner?.ownerId ?? ""}/${id}/`;
+	const listStarted = performance.now();
 	const listed = finishInventoryProbe.listPrefix
 		? await finishInventoryProbe.listPrefix(prefix)
 		: await runtimeObjectStore().list?.(prefix);
+	if (process.env.CAP_WORKER_TIMING === "1")
+		console.log(
+			`revision-inventory-timing ${JSON.stringify({ videoId: id, ms: Math.round(performance.now() - listStarted) })}`,
+		);
 	assertFinishInventoryClear(listed, prefix);
 	return {
 		key: row.liveKey,
@@ -1558,7 +1574,12 @@ export async function loadStoredEditTranscript(
 		.where(eq(videos.id, videoId(id)));
 	if (!video?.ownerId) return null;
 	const key = getEditTranscriptObjectKey(video.ownerId, id);
+	const started = performance.now();
 	let raw = await readTranscriptObject(key);
+	if (process.env.CAP_WORKER_TIMING === "1")
+		console.log(
+			`revision-transcript-timing ${JSON.stringify({ videoId: id, ms: Math.round(performance.now() - started), hit: Boolean(raw) })}`,
+		);
 	if (!raw) {
 		const rows = await app
 			.select({

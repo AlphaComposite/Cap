@@ -91,10 +91,19 @@ export function prefetchInstantFinishPlaylist(url: string): void {
 	if (typeof fetch !== "function" || !url.includes("t=")) return;
 	// Prepare writes a tiny seg0. Chromium will not paint until the next
 	// fragment is appended, and that encode is cold unless it starts here.
-	void fetch(url, { credentials: "same-origin" })
-		.then(async (response) => {
-			if (!response.ok) return;
-			const assets = instantFinishStartupUrls(url, await response.text());
+	const playlist = fetch(url, { credentials: "same-origin" }).then(
+		async (response) => {
+			if (!response.ok) throw new Error("prefetch failed");
+			return response.arrayBuffer();
+		},
+	);
+	registerInflightFragment(url, playlist);
+	void playlist
+		.then(async (bytes) => {
+			const assets = instantFinishStartupUrls(
+				url,
+				new TextDecoder().decode(bytes),
+			);
 			await Promise.all(
 				assets.map(async (asset) => {
 					let resolveBytes: (bytes: ArrayBuffer) => void = () => {};

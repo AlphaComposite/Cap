@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,10 +184,15 @@ class PresignedObjectStore(ObjectStore):
         task = {"url": request.full_url, "method": request.get_method(),
                 "data": request.data.decode() if request.data is not None else None,
                 "headers": dict(request.header_items()), "dest": str(dest) if dest is not None else None}
-        result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
-                                input=json.dumps(task).encode(), stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, timeout=timeout, check=True)
-        return json.loads(result.stdout)
+        started = time.perf_counter()
+        try:
+            result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                    input=json.dumps(task).encode(), stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, timeout=timeout, check=True)
+            return json.loads(result.stdout)
+        finally:
+            if os.environ.get("CAP_WORKER_TIMING") == "1":
+                print("origin-storage-timing " + json.dumps({"method": request.get_method(), "ms": round((time.perf_counter() - started) * 1000, 3)}), flush=True)
 
     def _url(self, key: str, field: str) -> str:
         assert_original_key(key)

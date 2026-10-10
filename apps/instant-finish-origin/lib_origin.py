@@ -1222,7 +1222,7 @@ class Origin:
         elapsed = time.perf_counter() - started
         self._last_produce = {
             "aac_pool_miss": bool(audio_box.get("aac_pool_miss")),
-            "phases": phases,
+            "phases": {**phases, "audio_encode_ms": audio_box["audio_encode_ms"]},
             "produce_ms": round(elapsed * 1000.0, 3),
         }
         self._served_body = body
@@ -1262,6 +1262,11 @@ class Origin:
         if index < 0 or index >= len(self.segments):
             raise IndexError(index)
         wall0 = time.perf_counter()
+        cached = self._segment_bytes.get(index)
+        path = self.segment_path(index)
+        if cached is not None and path.is_file() and sidecar_path(path).is_file():
+            self._record(index, (time.perf_counter() - wall0) * 1000.0, hit=True, retry=False)
+            return cached
         with self._lock:
             cached = self._segment_bytes.get(index)
             path = self.segment_path(index)
@@ -1302,6 +1307,9 @@ class Origin:
                 self.end_playback()
 
     def _ensure_init(self) -> bytes:
+        cached = self._init_bytes
+        if cached is not None and self.init_path.is_file() and sidecar_path(self.init_path).is_file():
+            return cached
         with self._lock:
             return self._ensure_init_locked()
 
@@ -1400,6 +1408,8 @@ class Origin:
             "produce_ms": 0.0 if hit else produced.get("produce_ms"),
             "seg": index,
         })
+        if os.environ.get("CAP_WORKER_TIMING") == "1":
+            print("origin-segment-timing " + json.dumps(self.productions[-1]), flush=True)
 
 
 def map_source_time(t: float, ranges: list[dict]) -> float | None:

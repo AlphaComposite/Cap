@@ -153,7 +153,15 @@ export async function prepareOwnerRevision(
 	input: PublishVideoRevisionInput,
 	options?: { signal?: AbortSignal },
 ) {
+	const started = performance.now();
+	const timing = (phase: string) => {
+		if (process.env.CAP_WORKER_TIMING === "1")
+			console.log(
+				`revision-owner-timing ${JSON.stringify({ videoId: input.videoId, phase, ms: Math.round(performance.now() - started) })}`,
+			);
+	};
 	const { video } = await loadOwnerVideo(input.videoId);
+	timing("authorized");
 	if (!isInstantFinishEnabledForOwner(video.ownerId)) {
 		throw new RevisionPublicationError(
 			403,
@@ -182,7 +190,15 @@ export async function publishOwnerRevision(
 	input: PublishVideoRevisionInput,
 	headerList: Headers,
 ) {
+	const started = performance.now();
+	const timing = (phase: string) => {
+		if (process.env.CAP_WORKER_TIMING === "1")
+			console.log(
+				`revision-owner-timing ${JSON.stringify({ videoId: input.videoId, phase, ms: Math.round(performance.now() - started) })}`,
+			);
+	};
 	const { video } = await loadOwnerVideo(input.videoId);
+	timing("authorized");
 	if (!isInstantFinishEnabledForOwner(video.ownerId)) {
 		throw new RevisionPublicationError(
 			403,
@@ -206,6 +222,7 @@ export async function publishOwnerRevision(
 		),
 		{ origin: httpOriginClient() },
 	);
+	timing("flipped");
 	revalidatePath(`/s/${input.videoId}`);
 	const playback = await loadPublishPlayback(
 		{
@@ -215,6 +232,7 @@ export async function publishOwnerRevision(
 		},
 		headerList,
 	);
+	timing("playback");
 	return { ...published, playback };
 }
 

@@ -440,7 +440,8 @@ class DownloadTests(unittest.TestCase):
             result: dict = {}
 
             def play() -> None:
-                result["hit"] = self._req(f"/media/{VIDEO}/r/{REV}/seg/0.m4s?t={playback}")
+                # A prepared seg0 is lock-free; a cold seg1 must still get priority.
+                result["hit"] = self._req(f"/media/{VIDEO}/r/{REV}/seg/1.m4s?t={playback}")
 
             thread = threading.Thread(target=play)
             thread.start()

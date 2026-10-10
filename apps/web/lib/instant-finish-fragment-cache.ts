@@ -1,4 +1,4 @@
-const MAX_STARTUP_FRAGMENTS = 3;
+const MAX_STARTUP_FRAGMENTS = 4; // playlist, init, seg0, seg1
 const prefetched = new Map<string, ArrayBuffer>();
 const inflight = new Map<string, Promise<ArrayBuffer>>();
 let boundRevision: string | null = null;
@@ -106,7 +106,14 @@ function deliverFragment(
 ) {
 	const now = Date.now();
 	onSuccess(
-		{ url, data: bytes, code: 200 },
+		{
+			url,
+			data:
+				(context as { responseType?: string })?.responseType === "text"
+					? new TextDecoder().decode(bytes)
+					: bytes,
+			code: 200,
+		},
 		{
 			aborted: false,
 			loaded: bytes.byteLength,
