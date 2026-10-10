@@ -15,6 +15,8 @@ vi.mock("../../hooks/use-edit-readiness", () => ({
 }));
 vi.mock("server-only", () => ({}));
 
+import { RevisionRouteError, SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
+import { SETTLE_PREPARE_DEBOUNCE_MS } from "@/lib/revision-settle-fence";
 import { toast } from "sonner";
 import { EditVideoClient } from "@/app/s/[videoId]/edit/EditVideoClient";
 import {
@@ -296,6 +298,21 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
+	it("retries relocation-pending prepare while editing and stops after READY", async () => {
+		vi.useFakeTimers();
+		try {
+			const { baseline } = seedDraft();
+			harness.post.mockRejectedValueOnce(new RevisionRouteError(409, SOURCE_RELOCATION_PENDING_MESSAGE));
+			await renderEditor(baseline);
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS); });
+			expect(harness.post).toHaveBeenCalledTimes(1);
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS); });
+			expect(harness.post).toHaveBeenCalledTimes(2);
+			expect(harness.post.mock.calls.every(c => c[0] === "/api/video/revision/prepare")).toBe(true);
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS * 3); });
+			expect(harness.post).toHaveBeenCalledTimes(2);
+		} finally { vi.useRealTimers(); }
+	});
 	it("immediate Done publishes without starting a competing prepare", async () => {
 		vi.useFakeTimers();
 		try {

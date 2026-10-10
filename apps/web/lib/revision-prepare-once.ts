@@ -4,6 +4,7 @@ export type PrepareOnce = {
 	cancelTimer: () => void;
 	sentKey: () => string | null;
 	forgetIfDifferent: (key: string) => void;
+	forgetSent: (key: string) => void;
 };
 
 export function createPrepareOnce(): PrepareOnce {
@@ -34,6 +35,9 @@ export function createPrepareOnce(): PrepareOnce {
 		},
 		cancelTimer,
 		sentKey: () => sentKey,
+		forgetSent(key) {
+			if (sentKey === key) sentKey = null;
+		},
 		forgetIfDifferent(key) {
 			if (sentKey !== null && sentKey !== key) sentKey = null;
 		},

@@ -42,6 +42,17 @@ describe("one prepare per Done", () => {
 		expect(posts).toEqual(["b"]);
 	});
 
+	it("can retry the failed key without forgetting a newer key", () => {
+		const once = createPrepareOnce();
+		const send = vi.fn();
+		once.flush("a", send);
+		once.forgetSent("old");
+		expect(once.sentKey()).toBe("a");
+		once.forgetSent("a");
+		once.flush("a", send);
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
 	it("uses a stable key for the same spec value", () => {
 		const spec = { start: 0, end: 12 };
 		expect(prepareSpecKey(spec)).toBe(prepareSpecKey({ ...spec }));

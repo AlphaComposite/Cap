@@ -57,7 +57,7 @@ import {
 	restoreRoute,
 } from "@/lib/revision-done";
 import { createPrepareOnce, prepareSpecKey } from "@/lib/revision-prepare-once";
-import { postRevisionRoute } from "@/lib/revision-publish-client";
+import { postRevisionRoute, RevisionRouteError, SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
 import {
 	acceptSettledPrepare,
 	beginDoneFence,
@@ -1444,7 +1444,20 @@ export function EditVideoClient({
 							: existing,
 					);
 				})
-				.catch(() => undefined);
+				.catch((error) => {
+					if (
+						!(error instanceof RevisionRouteError) ||
+						error.status !== 409 ||
+						error.message !== SOURCE_RELOCATION_PENDING_MESSAGE ||
+						!acceptSettledPrepare(requestId, settleRequestRef.current) ||
+						prepareTrackRef.current?.requestId !== requestId ||
+						started.controller.signal.aborted || savingRef.current
+					) return;
+					// Relocation is still progressing; retry the same fenced intent.
+					prepareTrackRef.current.sent = false;
+					once.forgetSent(key);
+					once.arm(key, SETTLE_PREPARE_DEBOUNCE_MS, fire);
+				});
 		};
 		once.arm(key, SETTLE_PREPARE_DEBOUNCE_MS, fire);
 		settleTimerRef.current = {
