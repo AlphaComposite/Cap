@@ -28,6 +28,7 @@ import {
 	deriveRevisionChapterState,
 	projectSourceChapters,
 } from "@/lib/revision-chapter-source";
+import { isAbortLike } from "@/lib/revision-request-error";
 import { sweepRevisionDownloads } from "@/lib/revision-download-job";
 import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
@@ -769,6 +770,11 @@ export async function prepareInstantFinishRevision(
 			generation: allocated.generation,
 		};
 	} catch (error) {
+		if (isAbortLike(error)) {
+			// A replaced editor intent is cancellation, not failed publication.
+			await transition(app, allocated.revisionId, "SUPERSEDED", now(), "PREPARING");
+			throw new RevisionPublicationError(499, "Prepare aborted", allocated.generation, allocated.revisionId);
+		}
 		await failOpenRevision(app, allocated.revisionId, error, now());
 		if (error instanceof RevisionPublicationError) throw error;
 		throw new RevisionPublicationError(

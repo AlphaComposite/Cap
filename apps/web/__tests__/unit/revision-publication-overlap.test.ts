@@ -215,6 +215,20 @@ afterEach(() => {
 });
 
 describe("publication independent transcript read", () => {
+	it.each([
+		[new DOMException("This operation was aborted", "AbortError"), "SUPERSEDED"],
+		[new Error("encoder failed"), "FAILED"],
+	])("retains cancellation separately from genuine prepare failure (%#)", async (error, state) => {
+		const { database, rows, origin, input } = fixture();
+		finishInventoryProbe.getObject = async () => transcript;
+		finishInventoryProbe.listPrefix = async () => [];
+		vi.mocked(origin.prepareRevision).mockRejectedValueOnce(error);
+		await expect(prepareInstantFinishRevision(database, input, {
+			origin, randomRevisionId: () => "revision",
+		})).rejects.toThrow();
+		expect(rows.get(editRevision)?.[0]?.state).toBe(state);
+		expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
+	});
 	it.each([publishInstantFinishRevision])(
 		"overlaps the read with canonicalization, but prepares only the sealed spec (%#)",
 		async (publish) => {
