@@ -611,9 +611,11 @@ def _decoder(mezz: Path):
         found = _DECODERS.get(key)
         if found is None:
             import av
+            import limits
             container = av.open(key)
             stream = container.streams.video[0]
             stream.thread_type = "SLICE"
+            stream.thread_count = limits.origin_cpus()
             found = (container, stream, threading.Lock())
             _DECODERS[key] = found
             _evict_decoders()

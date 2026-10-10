@@ -1627,6 +1627,7 @@ def _decode_check(init: bytes, seg0: bytes) -> int:
     container = av.open(io.BytesIO(blob))
     try:
         stream = container.streams.video[0]
+        stream.thread_count = limits.origin_cpus()
         count = 0
         for frame in container.decode(stream):
             if frame.pts is None:

@@ -297,7 +297,7 @@ def audio_source_for(source: Path, timeline: Path) -> Path:
     """Audio input for a source. Video-only sources get a source-bound silent AAC track, as long as
     the served video timeline (the mezzanine), beside the original, so the editor and renders work
     instead of refusing the recording."""
-    if _has_audio_stream(source):
+    if _reusable_audio_index(source) is not None or _has_audio_stream(source):
         return source
     source_sha = _sha256(source)
     dest = source.with_name(f"silent-{source_sha[:32]}.m4a")
