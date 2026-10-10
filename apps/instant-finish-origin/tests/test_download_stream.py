@@ -94,6 +94,7 @@ class StreamRemuxTests(unittest.TestCase):
             cache = Path(tmp)
             origin = object.__new__(lib_origin.Origin)
             origin.cache = cache
+            origin.rev = "revcache01"
             origin.segments = list(range(count))
             origin._segment_bytes = {}
             origin._lock = threading.Lock()

@@ -89,6 +89,13 @@ export function instantFinishStartupUrls(
 
 export function prefetchInstantFinishPlaylist(url: string): void {
 	if (typeof fetch !== "function" || !url.includes("t=")) return;
+	// Warm code, not a player: SSR still authorizes CURRENT before mounting it.
+	if (typeof window !== "undefined") {
+		void Promise.all([
+			import("../app/s/[videoId]/Share"),
+			import("../app/s/[videoId]/_components/HLSVideoPlayer"),
+		]).catch(() => undefined);
+	}
 	// Prepare writes a tiny seg0. Chromium will not paint until the next
 	// fragment is appended, and that encode is cold unless it starts here.
 	const playlist = fetch(url, { credentials: "same-origin" }).then(

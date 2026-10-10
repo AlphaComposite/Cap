@@ -398,6 +398,20 @@ describe("revision download exhaustion", () => {
 		expect(artifact.state).toBe("PENDING");
 	});
 
+	it("marks outbox exports automatic and skips an origin supersession race", async () => {
+		const artifact: Artifact = { revisionId: "rev-race", videoId: "vid-race", state: "PENDING", attempts: 0, heartbeatAt: null, current: true };
+		const jobs: Job[] = [{ id: 9, revisionId: artifact.revisionId, videoId: artifact.videoId, createdAt: new Date(0), payload: { job: "download", revisionId: artifact.revisionId, videoId: artifact.videoId, attempts: DOWNLOAD_MAX_FAILURES } }];
+		const requestDownload = vi.fn(async () => ({ status: 409 }));
+		await sweepRevisionDownloads(workerDb([artifact], jobs, []), {
+			origin: { prepareRevision: vi.fn(), selectFrames: vi.fn(), fetchArtifact: vi.fn(), requestDownload },
+			now: new Date(1_000_000), limit: 1,
+		});
+		expect(requestDownload).toHaveBeenCalledWith({ videoId: artifact.videoId, revisionId: artifact.revisionId, automatic: true });
+		expect(jobs).toHaveLength(0);
+		expect(artifact.state).toBe("PENDING");
+		expect(artifact.attempts).toBe(0);
+	});
+
 	it("still marks the artifact FAILED when real origin errors are exhausted", async () => {
 		const artifact: Artifact = {
 			revisionId: "rev-err",

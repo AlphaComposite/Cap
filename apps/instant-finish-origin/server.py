@@ -172,13 +172,15 @@ class DownloadYield(Exception):
     pass
 
 
-def _yield_to_playback(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> None:
+def _yield_to_playback(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot, current: Callable[[], bool] | None = None) -> None:
+    if current is not None and not current():
+        slot.cancel("superseded")
     _slot_cancelled(slot)
     if origin.playback_waiting():
         raise DownloadYield()
 
 
-def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> None:
+def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot, current: Callable[[], bool] | None = None) -> None:
     dest = origin.cache / "download.mp4"
     if dest.is_file() and dest.stat().st_size > 0:
         return
@@ -187,16 +189,16 @@ def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> No
     tmp_out = dest.with_name(f".download-out-{ident}.mp4")
     try:
         with tmp_in.open("wb") as stream:
-            _yield_to_playback(origin, slot)
+            _yield_to_playback(origin, slot, current)
             init = origin.read_init_for_download()
             stream.write(init)
             del init
             for index in range(len(origin.segments)):
-                _yield_to_playback(origin, slot)
+                _yield_to_playback(origin, slot, current)
                 segment = _without_styp(origin.read_segment_for_download(index))
                 stream.write(segment)
                 del segment
-            _slot_cancelled(slot)
+            _yield_to_playback(origin, slot, current)
         os.chmod(tmp_in, 0o600)
         result = limits.run_cmd(
             [
@@ -222,6 +224,7 @@ def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot) -> No
         )
         if result.returncode or not tmp_out.is_file() or tmp_out.stat().st_size < 8:
             raise RuntimeError("download remux failed")
+        _yield_to_playback(origin, slot, current)
         os.chmod(tmp_out, 0o600)
         os.replace(tmp_out, dest)
         private(dest)
@@ -342,7 +345,14 @@ class OriginApp:
             return self._prepare_revision(revision.group("rev"), headers)
         download = REVISION_DOWNLOAD_RE.match(path)
         if download:
-            return self._request_download(download.group("rev"))
+            try:
+                payload = json.loads(body or b"{}")
+                automatic = payload.get("automatic", False)
+                if type(automatic) is not bool:
+                    return self._text(400, b"bad request")
+            except (json.JSONDecodeError, AttributeError):
+                return self._text(400, b"bad request")
+            return self._request_download(download.group("rev"), automatic=automatic)
         caption = REVISION_CAPTION_RE.match(path)
         if caption:
             return self._write_captions(caption.group("rev"), headers)
@@ -744,16 +754,26 @@ class OriginApp:
             if not joined:
                 slot.finish()
 
-    def _request_download(self, revision_id: str) -> tuple[int, bytes, str, dict[str, str]]:
+    def _download_current(self, video_id: str, revision_id: str) -> bool:
+        row = self.store.recheck(video_id, revision_id)
+        return bool(row and row["revision_state"] == "CURRENT"
+                    and row["current_revision_id"] == revision_id
+                    and row["current_generation"] is not None
+                    and row["current_generation"] == row["revision_generation"])
+
+    def _request_download(self, revision_id: str, *, automatic: bool = False) -> tuple[int, bytes, str, dict[str, str]]:
         row = self.store.revision(revision_id)
         if row is None:
             return self._text(404, b"not found")
+        if automatic and not self._download_current(row.video_id, revision_id):
+            return self._text(409, b"superseded")
         ranges_path = self.cache / "revisions" / _safe(revision_id) / "ranges.json"
         if not ranges_path.is_file():
             return self._text(404, b"not found")
+        hold = lib_origin.begin_download_hold(row.video_id, revision_id)
         try:
             ranges = json.loads(ranges_path.read_text())
-            origin = self._origin_for(row.video_id, row.source_id, ranges)
+            origin = self._origin_for(row.video_id, row.source_id, ranges) if hold is not None else None
         except Exception as exc:
             _log_failed(
                 "revision-download",
@@ -763,9 +783,12 @@ class OriginApp:
                 kind="download.mp4",
             )
             return self._text(500, b"unavailable")
-        path = origin.cache / "download.mp4"
+        finally:
+            if hold is not None:
+                hold.finish()
+        path = origin.cache / "download.mp4" if origin is not None else None
         with self._download_lock:
-            ready = path.is_file() and path.stat().st_size > 0
+            ready = path is not None and path.is_file() and path.stat().st_size > 0
             job = self._downloads.get(revision_id)
             if ready and (job is None or job.thread is None or not job.thread.is_alive()):
                 self._downloads.pop(revision_id, None)
@@ -781,7 +804,7 @@ class OriginApp:
             job = DownloadJob()
             thread = threading.Thread(
                 target=self._run_download,
-                args=(revision_id, row.video_id, row.source_id, ranges, job),
+                args=(revision_id, row.video_id, row.source_id, ranges, job, automatic),
                 name="revision-download",
                 daemon=True,
             )
@@ -797,6 +820,7 @@ class OriginApp:
         source_id: str,
         ranges: list[dict],
         job: DownloadJob,
+        automatic: bool = False,
     ) -> None:
         try:
             _lower_child_priority()
@@ -810,6 +834,8 @@ class OriginApp:
                 origin = None
                 deadline = time.monotonic() + limits.FFMPEG_TIMEOUT_S
                 while slot is None:
+                    if automatic and not self._download_current(video_id, revision_id):
+                        return
                     if time.monotonic() > deadline:
                         raise TimeoutError("encode busy")
                     slot = lib_origin.begin_download_hold(video_id, revision_id)
@@ -818,7 +844,10 @@ class OriginApp:
                 lib_origin.bind_encode_slot(slot)
                 try:
                     origin = self._origin_for(video_id, source_id, ranges)
-                    remux_download(origin, slot)
+                    if automatic:
+                        remux_download(origin, slot, lambda: self._download_current(video_id, revision_id))
+                    else:
+                        remux_download(origin, slot)
                     slot.finish()
                     return
                 except lib_origin.EncodeCancelled:
@@ -828,6 +857,7 @@ class OriginApp:
                         return
                     continue
                 except DownloadYield:
+                    slot.finish()
                     if origin is None:
                         continue
                     deadline = time.monotonic() + 30
@@ -1976,7 +2006,9 @@ def serve(app: OriginApp, host: str, port: int) -> ThreadingHTTPServer:
                 status, body, content_type, extra = 500, b"unavailable", "text/plain", {"Cache-Control": NO_STORE}
             self._emit(status, body, content_type, extra)
             if os.environ.get("CAP_WORKER_TIMING") == "1":
-                print("origin-request-timing " + json.dumps({"method": method, "endpoint": self.path.split("?", 1)[0].rsplit("/", 1)[-1], "status": status, "ms": round((time.perf_counter() - started) * 1000, 3)}), flush=True)
+                path = self.path.split("?", 1)[0]
+                revision = re.search(r"/revisions/([^/]+)/", path)
+                print("origin-request-timing " + json.dumps({"method": method, "endpoint": path.rsplit("/", 1)[-1], "revisionId": revision.group(1) if revision else None, "status": status, "ms": round((time.perf_counter() - started) * 1000, 3)}), flush=True)
 
         def _emit(self, status: int, body: bytes | StreamedBody, content_type: str, extra: dict) -> None:
             streamed = isinstance(body, StreamedBody)

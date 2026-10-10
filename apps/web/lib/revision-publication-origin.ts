@@ -167,6 +167,7 @@ export type OriginClient = {
 	requestDownload?(input: {
 		videoId: string;
 		revisionId: string;
+		automatic?: boolean;
 	}): Promise<{ status: number }>;
 	writeCaptions?(input: {
 		videoId: string;
@@ -304,7 +305,7 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 		},
 		async requestDownload(input) {
 			const path = `/internal/revisions/${input.revisionId}/download`;
-			const encoded = JSON.stringify({ videoId: input.videoId });
+			const encoded = JSON.stringify({ videoId: input.videoId, automatic: input.automatic === true });
 			const response = await signedFetch(path, "POST", encoded);
 			return { status: response.status };
 		},

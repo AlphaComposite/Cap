@@ -770,6 +770,11 @@ class EncodeSlot:
     def finish(self) -> None:
         self.finished = True
         self.done.set()
+        with _ENCODE_LOCK:
+            # ponytail: scan active slots; index only if concurrency makes it costly.
+            for key, slot in list(_ACTIVE_ENCODES.items()):
+                if slot is self:
+                    _ACTIVE_ENCODES.pop(key)
 
     def _log_terminated(self) -> None:
         with self._lock:
@@ -794,6 +799,8 @@ def begin_revision_encode(video_id: str, spec_key: str, revision_id: str) -> tup
             return current, True
         if current is not None and not current.finished and current.spec_key != spec_key:
             current.cancel("superseded")
+            # Cancelled native work remains in flight until its owner finishes.
+            _ACTIVE_ENCODES[f"superseded:{id(current)}"] = current
         slot = EncodeSlot(video_id, spec_key, revision_id)
         _ACTIVE_ENCODES[video_id] = slot
         return slot, False
@@ -840,7 +847,7 @@ def reset_revision_encodes() -> None:
 
 def _raise_if_encode_cancelled() -> None:
     slot = current_encode_slot()
-    if slot is not None and slot.cancelled.is_set():
+    if slot is not None and (slot.cancelled.is_set() or foreign_encode_active(slot.video_id, slot)):
         raise EncodeCancelled(slot.reason or "cancelled")
 
 
@@ -1241,11 +1248,18 @@ class Origin:
                 raise RemovedRangeError("produced a removed frame")
         return body, elapsed
 
-    def begin_playback(self) -> None:
+    def begin_playback(self, *, startup: bool = False) -> EncodeSlot | None:
         with self._playback_lock:
             self._playback_waiting += 1
+        if startup:
+            # Thread-keyed slots keep concurrent startup reads separate from publish.
+            slot, _ = begin_revision_encode(f"startup:{threading.get_ident()}", self.rev, self.rev)
+            return slot
+        return None
 
-    def end_playback(self) -> None:
+    def end_playback(self, slot: EncodeSlot | None = None) -> None:
+        if slot is not None:
+            slot.finish()
         with self._playback_lock:
             if self._playback_waiting > 0:
                 self._playback_waiting -= 1
@@ -1255,14 +1269,35 @@ class Origin:
             return self._playback_waiting > 0
 
     def ensure(self, index: int) -> bytes:
-        playback = current_encode_slot() is None
-        if playback:
+        if index >= 2 and current_encode_slot() is None:
+            # Future-segment work uses the same background admission/yield as exports.
             self.begin_playback()
+            try:
+                while True:
+                    slot = begin_download_hold(f"segment:{self.rev}", self.rev)
+                    if slot is None:
+                        time.sleep(0.05)
+                        continue
+                    bind_encode_slot(slot)
+                    try:
+                        return self._ensure(index)
+                    except EncodeCancelled:
+                        if slot.cancelled.is_set():
+                            raise
+                    finally:
+                        bind_encode_slot(None)
+                        slot.finish()
+            finally:
+                self.end_playback()
+        playback = current_encode_slot() is None
+        slot = None
+        if playback:
+            slot = self.begin_playback(startup=index < 2)
         try:
             return self._ensure(index)
         finally:
             if playback:
-                self.end_playback()
+                self.end_playback(slot)
 
     def _ensure(self, index: int) -> bytes:
         if index < 0 or index >= len(self.segments):
@@ -1304,13 +1339,14 @@ class Origin:
 
     def ensure_init(self) -> bytes:
         playback = current_encode_slot() is None
+        slot = None
         if playback:
-            self.begin_playback()
+            slot = self.begin_playback(startup=True)
         try:
             return self._ensure_init()
         finally:
             if playback:
-                self.end_playback()
+                self.end_playback(slot)
 
     def _ensure_init(self) -> bytes:
         cached = self._init_bytes

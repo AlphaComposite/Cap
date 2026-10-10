@@ -53,7 +53,7 @@ export function planDownloadAttempt(input: {
 	polls: number;
 	nowMs: number;
 }): DownloadPlan {
-	if (!input.current) return { action: "skip" };
+	if (!input.current || input.originStatus === 409) return { action: "skip" };
 	if (input.originStatus === 200) return { action: "ready" };
 	if (input.originStatus === 202) {
 		const polls = input.polls + 1;
@@ -296,6 +296,7 @@ async function finishDownload(
 		const response = await origin.requestDownload({
 			videoId: claimed.payload.videoId,
 			revisionId: claimed.payload.revisionId,
+			automatic: true,
 		});
 		status = response.status;
 	} catch (error) {
