@@ -76,6 +76,7 @@ class Profile:
     timescale: int
     width: int
     height: int
+    encoder_thread_count: str | None = None
 
 
 def encoder_threads() -> str:
@@ -83,7 +84,7 @@ def encoder_threads() -> str:
     return str(limits.origin_cpus())
 
 
-def jit_options() -> dict[str, str]:
+def jit_options(threads: str | None = None) -> dict[str, str]:
     return {
         "bf": "0",
         "crf": "18",
@@ -92,7 +93,7 @@ def jit_options() -> dict[str, str]:
         "level": "4.1",
         "preset": "veryfast",
         "profile": "high",
-        "threads": encoder_threads(),
+        "threads": threads or encoder_threads(),
         "x264-params": JIT_X264,
     }
 
@@ -101,7 +102,7 @@ def jit_args(profile: Profile) -> list[str]:
     return [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
         "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1",
-        "-bf", "0", "-g", "300", "-forced-idr", "1", "-threads", encoder_threads(),
+        "-bf", "0", "-g", "300", "-forced-idr", "1", "-threads", profile.encoder_thread_count or encoder_threads(),
         "-x264-params", JIT_X264,
         "-fps_mode", "passthrough",
         "-enc_time_base:v", f"1/{profile.timescale}",
@@ -926,7 +927,7 @@ def _encode_pyav(frames_yuv, dest: Path, profile: Profile) -> None:
         stream.height = profile.height
         stream.pix_fmt = "yuv420p"
         stream.time_base = Fraction(1, profile.timescale)
-        stream.options = jit_options()
+        stream.options = jit_options(profile.encoder_thread_count)
         for index, frame in enumerate(frames_yuv):
             _raise_if_encode_cancelled()
             frame.pts = index * (profile.timescale // 30)
@@ -1048,7 +1049,10 @@ class Origin:
         self.audio_index, _audio_prep = lib_audio.load_audio_index(self.audio_source)
         self.audio_sha256 = self.audio_index.source_sha256
         self.ranges = ranges
-        for version in (SEGMENT_PLAN_VERSION, 2) if expected_rev is not None else (SEGMENT_PLAN_VERSION,):
+        # ponytail: also recognize v2's historical four-thread identity; never relabel.
+        choices = ((SEGMENT_PLAN_VERSION, None), (2, None), (2, "4")) if expected_rev is not None else ((SEGMENT_PLAN_VERSION, None),)
+        for version, threads in choices:
+            self.profile = Profile(self.profile.timescale, self.profile.width, self.profile.height, threads)
             self.segment_plan_version = version
             self.encoder_hash = encoder_config_hash(self.profile, version)
             self.rev = revision_content_hash(ranges, self.source_sha256, self.encoder_hash, version)

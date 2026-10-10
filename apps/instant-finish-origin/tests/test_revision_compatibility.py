@@ -91,6 +91,46 @@ class RevisionCompatibilityTests(unittest.TestCase):
         self.assertEqual(self.legacy_cache.joinpath("namespace.json").read_bytes(), self.namespace_before)
         self.assertEqual(server._namespace(self.cache, REV), self.content_hash)
 
+    def test_persisted_v2_legacy_four_threads_survive_current_two_cpu_bound(self):
+        import shutil
+        import numpy as np
+        import av
+        identity = lib_origin.encoder_identity(self.profile)
+        identity["segment_plan"] = 2
+        args = identity["jit_args"]
+        args[args.index("-threads") + 1] = "4"
+        encoder = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        content = {"encoder": encoder, "mapping": 1, "segment_plan": 2, "source_sha256": "c" * 64, "spec": lib_origin.canonical_spec(RANGES).decode()}
+        rev = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        namespace = f'{"a" * 64}/{"b" * 64}/{rev}/{encoder}'
+        old_cache = self.cache / "ns" / namespace
+        shutil.copytree(self.legacy_cache, old_cache)
+        for path in old_cache.rglob("*.bind.json"):
+            bind = json.loads(path.read_text())
+            bind.update(encoder=encoder, rev=rev, namespace=namespace)
+            if bind["artifact"] == "namespace":
+                record = json.loads(old_cache.joinpath("namespace.json").read_text())
+                record.update(encoder=encoder, rev=rev, namespace=namespace)
+                data = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                old_cache.joinpath("namespace.json").write_bytes(data)
+                bind["sha256"] = hashlib.sha256(data).hexdigest()
+            path.write_text(json.dumps(bind))
+        server._namespace_path(self.cache, REV).write_text(rev)
+        before = old_cache.joinpath("namespace.json").read_bytes()
+        self.assertEqual(self.artifact("init.mp4"), self.init)
+        self.assertEqual(self.artifact("seg/2.m4s"), b"v2-seg2")
+        origin = next(iter(self.app._origins.values()))[0]
+        self.assertEqual(origin.encoder_hash, encoder)
+        self.assertEqual(origin.namespace, namespace)
+        self.assertEqual(lib_origin.jit_args(origin.profile)[args.index("-threads") + 1], "4")
+        frame = av.VideoFrame.from_ndarray(np.zeros((180, 320, 3), dtype=np.uint8), format="rgb24").reformat(format="yuv420p")
+        with patch("lib_origin.jit_options", wraps=lib_origin.jit_options) as options:
+            lib_origin._encode_pyav([frame], self.root / "cold-four-threads.mp4", origin.profile)
+            self.assertEqual(options.call_args.args, ("4",))
+        self.assertEqual(old_cache.joinpath("namespace.json").read_bytes(), before)
+        self.assertEqual(server._namespace(self.cache, REV), rev)
+        self.assertEqual(lib_origin.jit_options()["threads"], "2")
+
     def test_v2_without_keyframes_retains_historical_whole_prefix(self):
         self.keys.clear()
         playlist = self.artifact("playlist.m3u8")
