@@ -215,7 +215,7 @@ afterEach(() => {
 });
 
 describe("publication independent transcript read", () => {
-	it.each([publishInstantFinishRevision, prepareInstantFinishRevision])(
+	it.each([publishInstantFinishRevision])(
 		"overlaps the read with canonicalization, but prepares only the sealed spec (%#)",
 		async (publish) => {
 			const { database, rows, origin, input } = fixture();

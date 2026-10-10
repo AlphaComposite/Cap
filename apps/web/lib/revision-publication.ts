@@ -715,11 +715,9 @@ export async function prepareInstantFinishRevision(
 	const authored = requireV2Spec(input.editSpec);
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
-	// Stored words use the source clock; derive captions only after frame selection.
-	const [sealed, transcript] = await Promise.all([
-		canonicalizeKeepRanges(app, input, authored, deps.origin, now()),
-		loadStoredEditTranscript(app, input.videoId, authored),
-	]);
+	const sealed = await canonicalizeKeepRanges(
+		app, input, authored, deps.origin, now(),
+	);
 	const spec = sealed.spec;
 	await expireAbandonedPreparedRevisions(app, now());
 	const mintRevisionId = deps.randomRevisionId ?? newRevisionId;
@@ -748,7 +746,7 @@ export async function prepareInstantFinishRevision(
 			spec,
 			allocated,
 			deps.origin,
-			transcript,
+			await loadStoredEditTranscript(app, input.videoId, spec),
 		);
 		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
 		const ready = await transition(
