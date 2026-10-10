@@ -821,6 +821,10 @@ class OriginApp:
                     slot.finish()
                     return
                 except lib_origin.EncodeCancelled:
+                    # A newer revision owns the existing encode slot. Obsolete
+                    # exports may be requested again; do not keep retrying them.
+                    if slot.reason == "superseded":
+                        return
                     continue
                 except DownloadYield:
                     if origin is None:
