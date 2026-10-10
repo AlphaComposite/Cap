@@ -1752,6 +1752,12 @@ def schedule_thumbnail(
     revision_id: str | None = None,
 ) -> None:
     def run() -> None:
+        # Reuse this deferred worker: prepare startup continuity before its thumbnail.
+        if revision_id and len(origin.segments) > 1:
+            try:
+                origin.ensure(1)
+            except Exception as exc:
+                _log_failed("revision-prefetch", exc, rev=revision_id, kind="seg/1.m4s")
         for delay in (0.0, 0.25, 0.5, 1.0):
             if delay:
                 time.sleep(delay)
