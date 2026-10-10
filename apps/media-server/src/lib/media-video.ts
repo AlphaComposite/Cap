@@ -1286,7 +1286,9 @@ export async function downloadVideoToTemp(
 }
 
 // ponytail: one knob for the main transcode only; set MEDIA_TRANSCODE_THREADS to match the container's cpus.
-export function transcodeThreads(env: Record<string, string | undefined> = process.env): string {
+export function transcodeThreads(
+	env: Record<string, string | undefined> = process.env,
+): string {
 	const n = Number.parseInt(env.MEDIA_TRANSCODE_THREADS ?? "", 10);
 	return Number.isInteger(n) && n >= 1 && n <= 16 ? String(n) : "2";
 }

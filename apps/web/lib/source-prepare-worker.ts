@@ -448,7 +448,9 @@ function prepareEffects(app: App, origin: unknown) {
 			const t0 = performance.now();
 			const mark = (step: string) => {
 				if (process.env.CAP_WORKER_TIMING === "1")
-					console.log(`copy-stable-timing ${JSON.stringify({ videoId: input.videoId, step, ms: Math.round(performance.now() - t0) })}`);
+					console.log(
+						`copy-stable-timing ${JSON.stringify({ videoId: input.videoId, step, ms: Math.round(performance.now() - t0) })}`,
+					);
 			};
 			const sourceSha = await store.sha256(input.from);
 			mark("sha-source");
