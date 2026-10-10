@@ -312,6 +312,7 @@ export const Share = ({
 	const isScreenshot = data.isScreenshot === true;
 	const [arrivalPlayback, setArrivalPlayback] = useState(revisionPlayback);
 	const [fromHandoff, setFromHandoff] = useState(false);
+	const [arrivalResolved, setArrivalResolved] = useState(!revisionPlayback);
 	useLayoutEffect(() => {
 		const preferred = preferInstantFinishFirstPaint({
 			videoId: data.id,
@@ -321,6 +322,7 @@ export const Share = ({
 		});
 		setArrivalPlayback(preferred.playback);
 		setFromHandoff(preferred.fromHandoff);
+		setArrivalResolved(true);
 	}, [data.id, revisionPlayback]);
 	const playback = arrivalPlayback;
 	// Memoized: a fresh Date each render would defeat the memoized `data`
@@ -999,7 +1001,7 @@ export const Share = ({
 														src={screenshotImageUrl}
 														alt={data.name}
 													/>
-												) : (
+												) : arrivalResolved ? (
 													<ShareVideo
 														initialPlaybackUrl={initialPlaybackUrl}
 														revisionPlayback={playback}
@@ -1053,7 +1055,7 @@ export const Share = ({
 														viewerIsOwner={viewerId === data.owner.id}
 														ref={playerRef}
 													/>
-												)}
+												) : null}
 											</div>
 										</div>
 									</motion.div>
