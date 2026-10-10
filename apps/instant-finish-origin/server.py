@@ -799,6 +799,7 @@ class OriginApp:
         job: DownloadJob,
     ) -> None:
         try:
+            _lower_child_priority()
             gate = self.download_gate
             if gate is not None:
                 gate()
