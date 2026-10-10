@@ -9,6 +9,8 @@ import {
 import { sha256Hex } from "@/lib/revision-publication-metadata";
 
 export const INTERNAL_TOKEN_HEADER = ORIGIN_SERVICE_HEADER;
+// Origin's immutable media plan, not the web intent profile's version.
+export const CURRENT_ORIGIN_SEGMENT_PLAN_VERSION = 3;
 
 export type SourcePrepareBody = {
 	videoId: string;
@@ -156,6 +158,7 @@ export function assertFrameSelection(
 }
 
 export type OriginClient = {
+	readonly signal?: AbortSignal;
 	prepareRevision(body: RevisionPrepareBody): Promise<RevisionPrepareResult>;
 	selectFrames(body: FrameSelectionRequest): Promise<FrameSelectionResult>;
 	fetchArtifact(input: {
@@ -230,6 +233,7 @@ async function signedFetch(
 
 export function httpOriginClient(signal?: AbortSignal): OriginClient {
 	return {
+		signal,
 		async prepareRevision(body) {
 			const path = `/internal/revisions/${body.revisionId}/prepare`;
 			const encoded = JSON.stringify(body);

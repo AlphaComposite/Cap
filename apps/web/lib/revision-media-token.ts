@@ -377,6 +377,7 @@ export type RangeSnap = {
 
 export type OriginAttestation = {
 	attestationVersion: 2;
+	segmentPlanVersion?: number;
 	decodedFrames: number;
 	durationSeconds: number;
 	durationTicks: number;
@@ -518,6 +519,9 @@ export function parseVerifiedOriginAttestation(
 		}
 		return {
 			attestationVersion: ATTESTATION_VERSION,
+			...(Number.isSafeInteger(parsed.segmentPlanVersion)
+				? { segmentPlanVersion: parsed.segmentPlanVersion as number }
+				: {}),
 			decodedFrames: decodedFrames as number,
 			durationSeconds,
 			durationTicks: durationTicks as number,

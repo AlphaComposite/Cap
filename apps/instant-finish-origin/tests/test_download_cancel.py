@@ -36,7 +36,7 @@ class DownloadCancelTests(unittest.TestCase):
         import threading
         from types import SimpleNamespace
         with patch("server.os.nice") as nice, patch("server.remux_download") as remux:
-            def source(*args):
+            def source(*args, **kwargs):
                 nice.assert_called_once_with(10)
                 return object()
             app = SimpleNamespace(download_gate=None, _download_lock=threading.Lock(), download_builds=0, _origin_for=source)

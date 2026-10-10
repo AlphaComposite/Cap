@@ -5,6 +5,19 @@ vi.mock("@/lib/revision-media-token", () => ({ ORIGIN_SERVICE_HEADER: "x-service
 vi.mock("@/lib/revision-publication-metadata", () => ({ sha256Hex: vi.fn() }));
 import { httpOriginClient } from "@/lib/revision-publication-origin";
 describe("download admission intent", () => {
+ it("exposes the exact signal used by origin prepare transport", async () => {
+  vi.stubEnv("CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL", "http://origin.test");
+  const controller = new AbortController();
+  try {
+   const client = httpOriginClient(controller.signal);
+   expect(client.signal).toBe(controller.signal);
+   await expect(client.prepareRevision({ revisionId: "revision" } as never)).rejects.toThrow();
+   const [, options] = fetch.mock.calls.at(-1)! as unknown as [string, RequestInit];
+   expect(options.signal).toBe(client.signal);
+   controller.abort();
+   expect(client.signal?.aborted).toBe(true);
+  } finally { vi.unstubAllEnvs(); }
+ });
  it("sends automatic intent in the signed body and keeps omitted intent explicit", async () => {
   vi.stubEnv("CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL", "http://origin.test");
   try {

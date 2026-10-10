@@ -288,6 +288,7 @@ class FakeOrigin {
 				const snap = snapsCoveringRanges(body.keepRanges, 1000);
 				const payload = {
 					attestationVersion: 2,
+					segmentPlanVersion: 3,
 					ready: true,
 					intentId: body.intentId,
 					decoded: true,
@@ -1136,6 +1137,60 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 		);
 		expect(origin.preparePosts).toBe(posts + 1);
 		expect(published.revisionId).toBe(prepared.revisionId);
+	});
+
+	it.each([2, undefined, 1, 4])("allocates current-plan bytes instead of flipping incompatible READY plan %s", async (plan) => {
+		const [before] = await database.select().from(videoPublication).where(eq(videoPublication.videoId, videoId as never));
+		const input = {
+			videoId, editSpec: spec(3 + [2, undefined, 1, 4].indexOf(plan) / 10),
+			baseGeneration: before?.generation ?? 0,
+			draftVersion: (before?.latestDraftVersion ?? 0) + 1,
+			draftSession: before?.draftSession || "editor",
+		};
+		const prepared = await prepareInstantFinishRevision(database, input, { origin: origin.client() });
+		const [row] = await database.select().from(editRevision).where(eq(editRevision.revisionId, prepared.revisionId));
+		const snapshot = row!.metadataSnapshot!;
+		const body = JSON.parse(snapshot.attestationBody!);
+		expect(body.segmentPlanVersion).toBe(3);
+		if (plan === undefined) delete body.segmentPlanVersion;
+		else body.segmentPlanVersion = plan;
+		const attestationBody = `${JSON.stringify(body)}\n`;
+		await database.update(editRevision).set({ metadataSnapshot: {
+			...snapshot, attestationBody, attestationMac: signOriginAttestation(attestationBody),
+		} }).where(eq(editRevision.revisionId, prepared.revisionId));
+		const posts = origin.preparePosts;
+		const published = await publishInstantFinishRevision(database, input, { origin: origin.client() });
+		expect(origin.preparePosts).toBe(posts + 1);
+		expect(published.revisionId).not.toBe(prepared.revisionId);
+		expect(published.generation).toBe(prepared.generation + 1);
+		const [old] = await database.select().from(editRevision).where(eq(editRevision.revisionId, prepared.revisionId));
+		expect(old?.state).toBe("EXPIRED");
+		expect(old?.metadataSnapshot?.attestationBody).toBe(attestationBody);
+		const [current] = await database.select().from(editRevision).where(eq(editRevision.revisionId, published.revisionId));
+		expect(current?.state).toBe("CURRENT");
+		expect(origin.prepared.get(published.revisionId)?.init.toString()).toContain(published.revisionId);
+	});
+
+	it.each([2, undefined])("refuses a new prepare returning incompatible origin plan %s before publication", async (plan) => {
+		const [before] = await database.select().from(videoPublication).where(eq(videoPublication.videoId, videoId as never));
+		const client = origin.client();
+		const prepare = client.prepareRevision;
+		client.prepareRevision = async (request) => {
+			const result = await prepare(request);
+			const body = JSON.parse(result.attestationBody);
+			if (plan === undefined) delete body.segmentPlanVersion;
+			else body.segmentPlanVersion = plan;
+			const attestationBody = `${JSON.stringify(body)}\n`;
+			return { ...result, attestationBody, attestationMac: signOriginAttestation(attestationBody) };
+		};
+		await expect(publishInstantFinishRevision(database, {
+			videoId, editSpec: spec(3.5), baseGeneration: before?.generation ?? 0,
+			draftVersion: (before?.latestDraftVersion ?? 0) + 1, draftSession: before?.draftSession || "editor",
+		}, { origin: client })).rejects.toThrow(/segment plan/i);
+		const [after] = await database.select().from(videoPublication).where(eq(videoPublication.videoId, videoId as never));
+		expect(after?.currentRevisionId).toBe(before?.currentRevisionId);
+		const [failed] = await database.select().from(editRevision).where(eq(editRevision.generation, after!.generation));
+		expect(failed?.state).toBe("FAILED");
 	});
 
 	it("refuses a tampered stored attestation", async () => {

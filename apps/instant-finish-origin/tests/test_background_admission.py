@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import lib_origin
@@ -119,6 +119,11 @@ class BackgroundAdmissionTests(unittest.TestCase):
     def playback_origin():
         origin = lib_origin.Origin.__new__(lib_origin.Origin)
         origin.rev = 'different-origin'
+        frame = lib_origin.FrameRec(0, 0, 1, 0, 0)
+        origin.segments = [lib_origin.Segment(i, (frame,), 0, 1) for i in range(3)]
+        origin._segment_bytes = {}
+        origin.segment_path = lambda index: Path('missing-segment')
+        origin._read_bound = Mock(side_effect=lib_origin.CacheIntegrityError('missing'))
         origin._playback_lock = threading.Lock()
         origin._playback_waiting = 0
         return origin

@@ -153,6 +153,7 @@ class CachedDownloadRepairTests(unittest.TestCase):
         origin.cache = cache
         origin.segments = [0]
         origin.encoder_hash = "enc"
+        origin.segment_plan_version = lib_origin.SEGMENT_PLAN_VERSION
         origin.namespace = "ns"
         origin.rev = "rev"
         origin.mezz_sha256 = "mezz"

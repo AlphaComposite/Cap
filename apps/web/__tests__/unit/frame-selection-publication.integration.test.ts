@@ -125,6 +125,7 @@ class SelectingOrigin {
 				this.playlist = `#EXTM3U\n#EXTINF:${snap.durationSeconds.toFixed(3)},\nseg/0.m4s\n#EXT-X-ENDLIST\n`;
 				const payload = {
 					attestationVersion: 2 as const,
+					segmentPlanVersion: 3,
 					ready: true,
 					intentId: body.intentId,
 					decoded: true,

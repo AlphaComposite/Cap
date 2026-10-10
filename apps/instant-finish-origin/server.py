@@ -693,8 +693,8 @@ class OriginApp:
                 lib_origin.bind_encode_slot(None)
             try:
                 origin = self._origin_for(video_id, source_id, ranges)
-                self._persist_ranges(revision_id, ranges)
                 _write_namespace(self.cache, revision_id, origin.rev)
+                self._persist_ranges(revision_id, ranges)
                 init = origin.ensure_init()
                 seg0 = origin.ensure(0)
                 if slot.cancelled.is_set():
@@ -773,7 +773,7 @@ class OriginApp:
         hold = lib_origin.begin_download_hold(row.video_id, revision_id)
         try:
             ranges = json.loads(ranges_path.read_text())
-            origin = self._origin_for(row.video_id, row.source_id, ranges) if hold is not None else None
+            origin = self._origin_for(row.video_id, row.source_id, ranges, revision_id=revision_id) if hold is not None else None
         except Exception as exc:
             _log_failed(
                 "revision-download",
@@ -843,7 +843,7 @@ class OriginApp:
                         time.sleep(0.05)
                 lib_origin.bind_encode_slot(slot)
                 try:
-                    origin = self._origin_for(video_id, source_id, ranges)
+                    origin = self._origin_for(video_id, source_id, ranges, revision_id=revision_id)
                     if automatic:
                         remux_download(origin, slot, lambda: self._download_current(video_id, revision_id))
                     else:
@@ -940,6 +940,7 @@ class OriginApp:
             ranges,
             expected_sha=snap.get("source_sha256"),
             source_key=snap.get("source_live_key"),
+            revision_id=rev.revision_id,
         )
         if origin.rev != _namespace(self.cache, rev.revision_id):
             raise lib_origin.CacheIntegrityError("intent mismatch")
@@ -989,6 +990,10 @@ class OriginApp:
             return self._text(500, b"unavailable")
         except IndexError:
             return self._text(404, b"not found")
+        except TimeoutError:
+            status, body, content_type, extra = self._text(503, b"encode busy")
+            extra["Retry-After"] = limits.RETRY_AFTER_S
+            return status, body, content_type, extra
         except (lib_origin.MezzanineRequired, lib_origin.CacheIntegrityError, Exception) as exc:
             _log_failed("media", exc, video=video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
@@ -1067,6 +1072,7 @@ class OriginApp:
             ranges,
             expected_sha=snap.get("source_sha256"),
             source_key=snap.get("source_live_key"),
+            revision_id=rev.revision_id,
         )
         if origin.rev != _namespace(self.cache, rev.revision_id):
             raise lib_origin.CacheIntegrityError("intent mismatch")
@@ -1096,6 +1102,7 @@ class OriginApp:
         ranges: list[dict],
         expected_sha: str | None = None,
         source_key: str | None = None,
+        revision_id: str | None = None,
     ) -> lib_origin.Origin:
         # ponytail: capb2 cold max 456ms, warm median 0.11ms; keep authorization, profile identity before optimizing.
         started = time.perf_counter()
@@ -1103,24 +1110,31 @@ class OriginApp:
         source_ready = time.perf_counter()
         if os.environ.get("CAP_WORKER_TIMING") == "1":
             print("origin-source-timing " + json.dumps({"videoId": video_id, "ms": round((source_ready - started) * 1000, 3)}), flush=True)
-        key = f"{source_sha}:{lib_origin.canonical_spec(ranges).hex()}"
+        expected_rev = _namespace(self.cache, revision_id) if revision_id is not None else None
+        base_key = f"{source_sha}:{lib_origin.canonical_spec(ranges).hex()}"
+        versions = (lib_origin.SEGMENT_PLAN_VERSION, 2) if expected_rev is not None else (lib_origin.SEGMENT_PLAN_VERSION,)
         with self._lock:
-            found = self._origins.get(key)
-            if found is not None:
-                origin, _seen = found
-                self._origins[key] = (origin, time.monotonic())
-                return origin
+            for version in versions:
+                key = f"{base_key}:{version}"
+                found = self._origins.get(key)
+                if found is not None and (expected_rev is None or found[0].rev == expected_rev):
+                    origin, _seen = found
+                    self._origins[key] = (origin, time.monotonic())
+                    return origin
         # Cache miss only, outside the lock: may probe/encode a silent track.
         audio = lib_audio.audio_source_for(original, mezz)
         now = time.monotonic()
         with self._lock:
             self._evict_origins(now)
-            found = self._origins.get(key)
-            if found is not None:
-                origin, _seen = found
-                self._origins[key] = (origin, now)
-                return origin
-            origin = lib_origin.Origin(mezz, audio, self.cache, ranges, source_sha)
+            for version in versions:
+                key = f"{base_key}:{version}"
+                found = self._origins.get(key)
+                if found is not None and (expected_rev is None or found[0].rev == expected_rev):
+                    origin, _seen = found
+                    self._origins[key] = (origin, now)
+                    return origin
+            origin = lib_origin.Origin(mezz, audio, self.cache, ranges, source_sha, expected_rev=expected_rev)
+            key = f"{base_key}:{origin.segment_plan_version}"
             self._origins[key] = (origin, now)
             self._evict_origins(now)
             return origin
@@ -1194,6 +1208,7 @@ class OriginApp:
             ranges,
             expected_sha=snap.get("source_sha256"),
             source_key=snap.get("source_live_key"),
+            revision_id=rev.revision_id,
         )
         path = origin.segment_path(index)
         marker = str(path)
@@ -1359,7 +1374,7 @@ class OriginApp:
             return self._text(404, b"not found")
         try:
             ranges = json.loads(ranges_path.read_text())
-            origin = self._origin_for(row.video_id, row.source_id, ranges)
+            origin = self._origin_for(row.video_id, row.source_id, ranges, revision_id=revision_id)
             if origin.rev != _namespace(self.cache, revision_id):
                 _log_failed(
                     "artifact",
@@ -1388,6 +1403,10 @@ class OriginApp:
                 }
             else:
                 return self._text(404, b"not found")
+        except TimeoutError:
+            status, body, content_type, extra = self._text(503, b"encode busy")
+            extra["Retry-After"] = limits.RETRY_AFTER_S
+            return status, body, content_type, extra
         except Exception as exc:
             _log_failed("artifact", exc, video=row.video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
@@ -1475,6 +1494,9 @@ def _namespace_path(cache: Path, revision_id: str) -> Path:
 
 
 def _write_namespace(cache: Path, revision_id: str, namespace: str) -> None:
+    existing = _namespace(cache, revision_id)
+    if existing and existing != namespace:
+        raise lib_origin.CacheIntegrityError("intent mismatch")
     atomic_write(_namespace_path(cache, revision_id), namespace.encode(), sync=False)
 
 

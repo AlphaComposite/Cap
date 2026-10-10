@@ -51,9 +51,9 @@ class SideAdmissionTest(unittest.TestCase):
             internal = f"/internal/revisions/{REV}/artifact/{name}"
             headers = {service_auth.SERVICE_HEADER: service_auth.sign_request(SERVICE, "GET", internal, now=1000)}
             self.assertEqual(self.app.handle("GET", public, {})[:2], (200, data))
-            self.origin_for.assert_called_with(VIDEO, "source01", [], expected_sha=None, source_key=None)
+            self.origin_for.assert_called_with(VIDEO, "source01", [], expected_sha=None, source_key=None, revision_id=REV)
             self.assertEqual(self.app.handle("GET", internal, headers)[:2], (200, data))
-            self.origin_for.assert_called_with(VIDEO, "source01", [])
+            self.origin_for.assert_called_with(VIDEO, "source01", [], revision_id=REV)
             self.assertEqual(self.app.handle("GET", internal, {})[0], 401)
         self.assertEqual(self.app.handle("GET", self.path.split('?')[0], {})[0], 401)
         self.assertEqual(self.app.handle("GET", self.path.replace(VIDEO, "othervideo01"), {})[0], 403)

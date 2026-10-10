@@ -342,6 +342,7 @@ class FakeOrigin {
 			const snap = snapsCoveringRanges(body.keepRanges, 1000);
 			const payload = {
 				attestationVersion: 2,
+				segmentPlanVersion: 3,
 				ready: true,
 				intentId: body.intentId,
 				decoded: true,

@@ -143,6 +143,7 @@ function fixture() {
 			const snap = snapsCoveringRanges(body.keepRanges, 1000);
 			const attestation = {
 				attestationVersion: 2 as const,
+				segmentPlanVersion: 3,
 				ready: true,
 				decoded: true,
 				decodedFrames: 1,
@@ -216,13 +217,22 @@ afterEach(() => {
 
 describe("publication independent transcript read", () => {
 	it.each([
-		[new DOMException("This operation was aborted", "AbortError"), "SUPERSEDED"],
-		[new Error("encoder failed"), "FAILED"],
-	])("retains cancellation separately from genuine prepare failure (%#)", async (error, state) => {
+		[new DOMException("This operation was aborted", "AbortError"), true, "SUPERSEDED"],
+		[new DOMException("This operation was aborted", "AbortError"), false, "FAILED"],
+		[new DOMException("This operation was aborted", "AbortError"), undefined, "FAILED"],
+		[new Error("transport", { cause: new DOMException("aborted", "AbortError") }), false, "FAILED"],
+		[new Error("encoder failed"), true, "FAILED"],
+		[new Error("encoder failed"), false, "FAILED"],
+	])("retains only causally linked cancellation separately from failure (%#)", async (error, aborted, state) => {
 		const { database, rows, origin, input } = fixture();
+		const controller = new AbortController();
+		if (aborted !== undefined) Object.assign(origin, { signal: controller.signal });
 		finishInventoryProbe.getObject = async () => transcript;
 		finishInventoryProbe.listPrefix = async () => [];
-		vi.mocked(origin.prepareRevision).mockRejectedValueOnce(error);
+		vi.mocked(origin.prepareRevision).mockImplementationOnce(async () => {
+			if (aborted) controller.abort();
+			throw error;
+		});
 		await expect(prepareInstantFinishRevision(database, input, {
 			origin, randomRevisionId: () => "revision",
 		})).rejects.toThrow();

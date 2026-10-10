@@ -298,6 +298,81 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
+	it.each(["before first send", "before rearm", "before retry send"])("fences relocation prepare session changes %s", async (when) => {
+		vi.useFakeTimers();
+		try {
+			const { baseline } = seedDraft();
+			localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, "A");
+			let reject!: (error: unknown) => void;
+			harness.post.mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
+			await renderEditor(baseline);
+			if (when === "before first send") localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, "B");
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS); });
+			if (when !== "before first send") {
+				expect(harness.post.mock.calls[0]?.[1].draftSession).toBe("A");
+				if (when === "before rearm") localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, "B");
+				await act(async () => reject(new RevisionRouteError(409, SOURCE_RELOCATION_PENDING_MESSAGE)));
+				localStorage.setItem(`cap:edit-draft-session:${VIDEO_ID}`, "B");
+			}
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS * 3); });
+			expect(harness.post).toHaveBeenCalledTimes(when === "before first send" ? 0 : 1);
+			expect(localStorage.getItem(`cap:edit-draft-session:${VIDEO_ID}`)).toBe("B");
+		} finally { vi.useRealTimers(); }
+	});
+
+	it("bounds relocation prepare retries to 60 seconds from arm time", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+			const { baseline } = seedDraft();
+			harness.post.mockRejectedValue(new RevisionRouteError(409, SOURCE_RELOCATION_PENDING_MESSAGE));
+			const started = Date.now();
+			await renderEditor(baseline);
+			await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+			const count = harness.post.mock.calls.length;
+			expect(count).toBeGreaterThan(1);
+			expect(count).toBeLessThan(60_000 / SETTLE_PREPARE_DEBOUNCE_MS);
+			await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+			expect(harness.post).toHaveBeenCalledTimes(count);
+			expect(Date.now() - started).toBe(120_000);
+		} finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+	});
+
+	it.each(["success", "relocation refusal"])("limits new retry sends without aborting late prepare %s", async (result) => {
+		vi.useFakeTimers();
+		try {
+			vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+			const { baseline } = seedDraft();
+			let finish!: () => void;
+			harness.post.mockImplementation(() => new Promise((resolve, reject) => {
+				finish = () => result === "success"
+					? resolve({ revisionId: "prepared", generation: 4 })
+					: reject(new RevisionRouteError(409, SOURCE_RELOCATION_PENDING_MESSAGE));
+			}));
+			await renderEditor(baseline);
+			await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+			expect(harness.post.mock.calls[0]?.[2].aborted).toBe(false);
+			await act(async () => finish());
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS * 3); });
+			expect(harness.post).toHaveBeenCalledTimes(1);
+		} finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+	});
+
+	it("does not rearm a late relocation refusal after unmount", async () => {
+		vi.useFakeTimers();
+		try {
+			const { baseline } = seedDraft();
+			let reject!: (error: unknown) => void;
+			harness.post.mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
+			await renderEditor(baseline);
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS); });
+			await act(async () => root.unmount());
+			await act(async () => reject(new RevisionRouteError(409, SOURCE_RELOCATION_PENDING_MESSAGE)));
+			await act(async () => { await vi.advanceTimersByTimeAsync(SETTLE_PREPARE_DEBOUNCE_MS * 3); });
+			expect(harness.post).toHaveBeenCalledTimes(1);
+		} finally { vi.useRealTimers(); }
+	});
+
 	it("retries relocation-pending prepare while editing and stops after READY", async () => {
 		vi.useFakeTimers();
 		try {

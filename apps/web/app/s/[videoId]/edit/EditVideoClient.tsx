@@ -1399,6 +1399,14 @@ export function EditVideoClient({
 		settleRequestRef.current = started.requestId;
 		settlePrepareRef.current = started.controller;
 		const requestId = started.requestId;
+		const draftStorage = getTimelineDraftStorage();
+		const draftSession = readOrCreateDraftSession(draftStorage, video.id);
+		const sessionMatches = () =>
+			!draftStorage ||
+			draftStorage.getItem(`cap:edit-draft-session:${video.id}`) === draftSession;
+		// Like Done's wait bound, limit new sends, not a request already in flight.
+		const deadline = performance.now() + 60_000;
+		let active = true;
 		prepareTrackRef.current = {
 			spec,
 			requestId,
@@ -1407,14 +1415,15 @@ export function EditVideoClient({
 			ready: false,
 		};
 		const fire = () => {
-			if (savingRef.current) return;
+			if (
+				!active || savingRef.current || started.controller.signal.aborted ||
+				!sessionMatches() || performance.now() >= deadline
+			) return;
 			if (prepareTrackRef.current?.requestId !== requestId) return;
 			if (prepareTrackRef.current.sent) return;
 			prepareTrackRef.current.sent = true;
 			const current = instantFinishRef.current;
 			if (!current?.enabled) return;
-			const draftStorage = getTimelineDraftStorage();
-			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
 			void postRevisionRoute<{ revisionId: string; generation: number }>(
 				"/api/video/revision/prepare",
 				{
@@ -1428,6 +1437,7 @@ export function EditVideoClient({
 				started.controller.signal,
 			)
 				.then((prepared) => {
+					if (!active || !sessionMatches() || started.controller.signal.aborted) return;
 					if (!acceptSettledPrepare(requestId, settleRequestRef.current)) {
 						return;
 					}
@@ -1451,7 +1461,8 @@ export function EditVideoClient({
 						error.message !== SOURCE_RELOCATION_PENDING_MESSAGE ||
 						!acceptSettledPrepare(requestId, settleRequestRef.current) ||
 						prepareTrackRef.current?.requestId !== requestId ||
-						started.controller.signal.aborted || savingRef.current
+						started.controller.signal.aborted || savingRef.current ||
+						!active || !sessionMatches() || performance.now() >= deadline
 					) return;
 					// Relocation is still progressing; retry the same fenced intent.
 					prepareTrackRef.current.sent = false;
@@ -1469,6 +1480,7 @@ export function EditVideoClient({
 			},
 		};
 		return () => {
+			active = false;
 			once.cancelTimer();
 			if (!joinOnDoneRef.current && once.sentKey() !== key) {
 				started.controller.abort();

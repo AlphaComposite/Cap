@@ -120,11 +120,11 @@ def canonical_spec(ranges: list[dict]) -> bytes:
     return f'{{"keep_ranges":[{",".join(items)}],"mapping":{MAPPING_VERSION}}}'.encode()
 
 
-def revision_content_hash(ranges: list[dict], source_sha: str, encoder_hash: str) -> str:
+def revision_content_hash(ranges: list[dict], source_sha: str, encoder_hash: str, segment_plan_version: int = SEGMENT_PLAN_VERSION) -> str:
     payload = {
         "encoder": encoder_hash,
         "mapping": MAPPING_VERSION,
-        "segment_plan": SEGMENT_PLAN_VERSION,
+        "segment_plan": segment_plan_version,
         "source_sha256": source_sha,
         "spec": canonical_spec(ranges).decode(),
     }
@@ -166,7 +166,7 @@ def encoder_implementation_ids() -> dict:
     return _IMPL_IDS
 
 
-def encoder_identity(profile: Profile) -> dict:
+def encoder_identity(profile: Profile, segment_plan_version: int = SEGMENT_PLAN_VERSION) -> dict:
     from lib_vui import configured_tick_rate
 
     identity = {
@@ -174,7 +174,7 @@ def encoder_identity(profile: Profile) -> dict:
         "encoder_impl": encoder_implementation_ids(),
         "height": profile.height,
         "jit_args": jit_args(profile),
-        "segment_plan": SEGMENT_PLAN_VERSION,
+        "segment_plan": segment_plan_version,
         "timescale": profile.timescale,
         "width": profile.width,
         "x264": JIT_X264,
@@ -185,8 +185,8 @@ def encoder_identity(profile: Profile) -> dict:
     return identity
 
 
-def encoder_config_hash(profile: Profile) -> str:
-    raw = json.dumps(encoder_identity(profile), sort_keys=True, separators=(",", ":")).encode()
+def encoder_config_hash(profile: Profile, segment_plan_version: int = SEGMENT_PLAN_VERSION) -> str:
+    raw = json.dumps(encoder_identity(profile, segment_plan_version), sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -271,9 +271,11 @@ def range_snaps(ticks: list[int], durs: list[int], ranges: list[dict], tb: int) 
     return snaps
 
 
-def _prefix_to_keyframe(frames: tuple[FrameRec, ...], keyframes: list[dict] | None, tb: int) -> tuple[FrameRec, ...]:
+def _prefix_to_keyframe(frames: tuple[FrameRec, ...], keyframes: list[dict] | None, tb: int, segment_plan_version: int) -> tuple[FrameRec, ...]:
     if not frames:
         raise RuntimeError("segment 0 plan is empty")
+    if segment_plan_version == 2 and not keyframes:
+        return frames
     first = frames[0].index
     nxt = next((item["index"] for item in (keyframes or []) if item["index"] > first), None)
     chosen: list[FrameRec] = []
@@ -281,8 +283,7 @@ def _prefix_to_keyframe(frames: tuple[FrameRec, ...], keyframes: list[dict] | No
     for frame in frames:
         if nxt is not None and frame.index >= nxt and chosen:
             break
-        # A short independent startup fragment; never split a VFR frame/hold.
-        if chosen and acc >= tb // 2:
+        if chosen and acc >= (tb if segment_plan_version == 2 else tb // 2):
             break
         chosen.append(frame)
         acc += frame.dur
@@ -332,7 +333,10 @@ def plan_segments(
     durs: list[int],
     tb: int,
     keyframes: list[dict] | None = None,
+    segment_plan_version: int = SEGMENT_PLAN_VERSION,
 ) -> list[Segment]:
+    if segment_plan_version not in {2, 3}:
+        raise CacheIntegrityError("unsupported segment plan")
     grouped = kept_frame_ids(ticks, ranges, tb)
     if not grouped or not grouped[0]:
         raise RuntimeError("keep range 0 contains no frames")
@@ -344,7 +348,7 @@ def plan_segments(
             cursor += durs[frame_index]
     segments: list[Segment] = []
     range0 = tuple(frame for frame in kept if frame.range_index == 0)
-    segments.append(_segment(0, _prefix_to_keyframe(range0, keyframes, tb)))
+    segments.append(_segment(0, _prefix_to_keyframe(range0, keyframes, tb, segment_plan_version)))
     bucket: list[FrameRec] = []
     acc = 0
     consumed = {frame.index for frame in segments[0].frames}
@@ -1024,7 +1028,7 @@ def cached_mezz_index(mezz: Path) -> tuple:
 
 
 class Origin:
-    def __init__(self, mezz: Path, audio_source: Path, cache: Path, ranges: list[dict], source_sha: str):
+    def __init__(self, mezz: Path, audio_source: Path, cache: Path, ranges: list[dict], source_sha: str, *, expected_rev: str | None = None):
         self.mezz = Path(mezz)
         self.audio_source = Path(audio_source)
         if not self.mezz.is_file():
@@ -1044,10 +1048,16 @@ class Origin:
         self.audio_index, _audio_prep = lib_audio.load_audio_index(self.audio_source)
         self.audio_sha256 = self.audio_index.source_sha256
         self.ranges = ranges
-        self.encoder_hash = encoder_config_hash(self.profile)
-        self.rev = revision_content_hash(ranges, self.source_sha256, self.encoder_hash)
+        for version in (SEGMENT_PLAN_VERSION, 2) if expected_rev is not None else (SEGMENT_PLAN_VERSION,):
+            self.segment_plan_version = version
+            self.encoder_hash = encoder_config_hash(self.profile, version)
+            self.rev = revision_content_hash(ranges, self.source_sha256, self.encoder_hash, version)
+            if expected_rev is None or self.rev == expected_rev:
+                break
+        else:
+            raise CacheIntegrityError("intent mismatch")
         self.namespace = f"{self.mezz_sha256}/{self.audio_sha256}/{self.rev}/{self.encoder_hash}"
-        self.segments = plan_segments(ranges, self.ticks, self.durs, self.profile.timescale, self._keyframes)
+        self.segments = plan_segments(ranges, self.ticks, self.durs, self.profile.timescale, self._keyframes, self.segment_plan_version)
         self.timeline = lib_audio.plan_timeline(ranges, self.ticks, self.durs, self.profile.timescale)
         self.audio_grid = lib_audio.assign_grid(self.segments, self.timeline)
         self.playlist = playlist_text(self.segments, self.profile.timescale).encode()
@@ -1082,7 +1092,7 @@ class Origin:
             "namespace": self.namespace,
             "rev": self.rev,
             "seg": seg,
-            "segment_plan": SEGMENT_PLAN_VERSION,
+            "segment_plan": self.segment_plan_version,
             "source": self.mezz_sha256,
         }
 
@@ -1118,7 +1128,7 @@ class Origin:
             "mezz": self.mezz_sha256,
             "namespace": self.namespace,
             "rev": self.rev,
-            "segment_plan": SEGMENT_PLAN_VERSION,
+            "segment_plan": self.segment_plan_version,
             "source": self.source_sha256,
             "source_kind": "mezzanine",
         }
@@ -1271,9 +1281,24 @@ class Origin:
     def ensure(self, index: int) -> bytes:
         if index >= 2 and current_encode_slot() is None:
             # Future-segment work uses the same background admission/yield as exports.
+            import limits
+            if index >= len(self.segments):
+                raise IndexError(index)
+            wall0 = time.perf_counter()
+            deadline = time.monotonic() + limits.FFMPEG_TIMEOUT_S
             self.begin_playback()
             try:
                 while True:
+                    try:
+                        body = self._read_bound(self.segment_path(index), "seg", index)
+                    except CacheIntegrityError:
+                        self._segment_bytes.pop(index, None)
+                    else:
+                        self._segment_bytes[index] = body
+                        self._record(index, (time.perf_counter() - wall0) * 1000.0, hit=True, retry=False)
+                        return body
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("encode busy")
                     slot = begin_download_hold(f"segment:{self.rev}", self.rev)
                     if slot is None:
                         time.sleep(0.05)

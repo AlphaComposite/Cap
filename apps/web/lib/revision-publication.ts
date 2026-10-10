@@ -65,6 +65,7 @@ import {
 } from "@/lib/revision-publication-metadata";
 import {
 	assertFrameSelection,
+	CURRENT_ORIGIN_SEGMENT_PLAN_VERSION,
 	digestMatches,
 	type OriginClient,
 	type RevisionPrepareResult,
@@ -448,6 +449,9 @@ async function reuseVerifiedReady(
 			);
 		}
 		const attested = classified.attestation;
+		// Old namespaces stay immutable. A miss allocates and prepares new bytes.
+		if (attested.segmentPlanVersion !== CURRENT_ORIGIN_SEGMENT_PLAN_VERSION)
+			return null;
 		const snapError = snappedDurationError({
 			keepRanges: spec.keepRanges,
 			timescale: attested.timescale,
@@ -770,7 +774,7 @@ export async function prepareInstantFinishRevision(
 			generation: allocated.generation,
 		};
 	} catch (error) {
-		if (isAbortLike(error)) {
+		if (deps.origin.signal?.aborted && isAbortLike(error)) {
 			// A replaced editor intent is cancellation, not failed publication.
 			await transition(app, allocated.revisionId, "SUPERSEDED", now(), "PREPARING");
 			throw new RevisionPublicationError(499, "Prepare aborted", allocated.generation, allocated.revisionId);
@@ -2589,6 +2593,14 @@ function assertSignedPrepareAttestation(
 		);
 	}
 	const attested = classified.attestation;
+	if (attested.segmentPlanVersion !== CURRENT_ORIGIN_SEGMENT_PLAN_VERSION) {
+		throw new RevisionPublicationError(
+			500,
+			"Origin prepare returned an incompatible segment plan",
+			allocated.generation,
+			allocated.revisionId,
+		);
+	}
 	if (
 		Math.abs(attested.playlistDurationSeconds - attested.durationSeconds) >
 		PLAYLIST_ORIGIN_SLACK_SECONDS
