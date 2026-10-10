@@ -229,6 +229,22 @@ describe("publication independent transcript read", () => {
 		expect(rows.get(editRevision)?.[0]?.state).toBe(state);
 		expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
 	});
+	it("allocates the sealed revision while the independent transcript read is pending", async () => {
+		const { database, rows, origin, input } = fixture();
+		const read = deferred();
+		finishInventoryProbe.listPrefix = async () => [];
+		finishInventoryProbe.getObject = async () => { await read.promise; return transcript; };
+		const pending = publishInstantFinishRevision(database, input, {
+			origin, randomRevisionId: () => "revision",
+		});
+		try {
+			await vi.waitFor(() => expect(rows.get(editRevision)?.[0]?.state).toBe("PREPARING"));
+			expect(origin.prepareRevision).not.toHaveBeenCalled();
+			expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
+		} finally { read.resolve(); await pending; }
+		expect(origin.prepareRevision).toHaveBeenCalledOnce();
+		expect(rows.get(editRevision)?.[0]?.state).toBe("CURRENT");
+	});
 	it.each([publishInstantFinishRevision])(
 		"overlaps the read with canonicalization, but prepares only the sealed spec (%#)",
 		async (publish) => {

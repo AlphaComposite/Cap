@@ -860,11 +860,10 @@ export async function publishInstantFinishRevision(
 			}
 		}
 	}
-	// Stored words use the source clock; derive captions only after frame selection.
-	const [sealed, transcript] = await Promise.all([
-		canonicalizeKeepRanges(app, input, authored, deps.origin, now()),
-		loadStoredEditTranscript(app, input.videoId, authored),
-	]);
+	// Stored words use the source clock; only captions need to await this read.
+	const transcript = loadStoredEditTranscript(app, input.videoId, authored);
+	void transcript.catch(() => {}); // Observe early rejection; await below still fails closed.
+	const sealed = await canonicalizeKeepRanges(app, input, authored, deps.origin, now());
 	const spec = sealed.spec;
 	timing("canonicalized");
 	const reused = await reuseVerifiedReady(
@@ -944,7 +943,7 @@ export async function publishInstantFinishRevision(
 			spec,
 			allocated,
 			deps.origin,
-			transcript,
+			await transcript,
 		);
 		await storeReadyAttestation(app, allocated.revisionId, prepared, now());
 		const ready = await transition(
