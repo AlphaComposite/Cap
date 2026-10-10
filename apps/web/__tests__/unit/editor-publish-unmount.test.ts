@@ -296,6 +296,36 @@ afterEach(async () => {
 });
 
 describe("editor publish unmount", () => {
+	it("immediate Done publishes without starting a competing prepare", async () => {
+		vi.useFakeTimers();
+		try {
+			const { baseline } = seedDraft();
+			const done = await renderEditor(baseline);
+			await act(async () => done.click());
+			expect(harness.post.mock.calls.map(([path]) => path)).toEqual([
+				"/api/video/revision/publish",
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("retains settle prepare while editing and joins its matching request", async () => {
+		vi.useFakeTimers();
+		try {
+			const { baseline } = seedDraft();
+			const done = await renderEditor(baseline);
+			await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+			const prepares = harness.post.mock.calls.filter(([path]) => path.endsWith("/prepare"));
+			expect(prepares).toHaveLength(1);
+			await act(async () => done.click());
+			expect(harness.post.mock.calls.filter(([path]) => path.endsWith("/prepare"))).toHaveLength(1);
+			expect(prepares[0]?.[2].aborted).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it.each(["same session", "same session within tolerance", "other session"])(
 		"refreshes the worker baseline after privacy refusals: %s",
 		async (session) => {

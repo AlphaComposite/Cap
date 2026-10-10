@@ -829,7 +829,6 @@ export function EditVideoClient({
 	const settlePrepareRef = useRef<AbortController | null>(null);
 	const settleRequestRef = useRef(0);
 	const joinOnDoneRef = useRef(false);
-	const flushPrepareRef = useRef<(() => void) | null>(null);
 	const prepareOnceRef = useRef(createPrepareOnce());
 	const prepareTrackRef = useRef<{
 		spec: VideoEditSpec;
@@ -1448,9 +1447,6 @@ export function EditVideoClient({
 				.catch(() => undefined);
 		};
 		once.arm(key, SETTLE_PREPARE_DEBOUNCE_MS, fire);
-		flushPrepareRef.current = () => {
-			once.flush(key, fire);
-		};
 		settleTimerRef.current = {
 			clear: () => {
 				once.cancelTimer();
@@ -1461,7 +1457,6 @@ export function EditVideoClient({
 		};
 		return () => {
 			once.cancelTimer();
-			flushPrepareRef.current = null;
 			if (!joinOnDoneRef.current && once.sentKey() !== key) {
 				started.controller.abort();
 			}
@@ -1477,72 +1472,8 @@ export function EditVideoClient({
 		};
 	}, [editSpec, initialEditSpec, instantFinish?.enabled, isSaving, video.id]);
 
-	const prepareOnPointerDown = useCallback(() => {
-		if (!instantFinishRef.current?.enabled || savingRef.current) return;
-		const key = prepareSpecKey(normalizeVideoEditSpec(editSpec));
-		const once = prepareOnceRef.current;
-		once.cancelTimer();
-		if (once.sentKey() === key) return;
-		const flush = flushPrepareRef.current;
-		if (flush) {
-			flush();
-			return;
-		}
-		once.flush(key, () => {
-			const started = nextSettlePrepare(
-				settlePrepareRef.current,
-				settleRequestRef.current,
-			);
-			settleRequestRef.current = started.requestId;
-			settlePrepareRef.current = started.controller;
-			prepareTrackRef.current = {
-				spec: editSpec,
-				requestId: started.requestId,
-				controller: started.controller,
-				sent: true,
-				ready: false,
-			};
-			const current = instantFinishRef.current;
-			if (!current?.enabled) return;
-			const draftStorage = getTimelineDraftStorage();
-			const draftSession = readOrCreateDraftSession(draftStorage, video.id);
-			void postRevisionRoute<{ revisionId: string; generation: number }>(
-				"/api/video/revision/prepare",
-				{
-					videoId: video.id,
-					editSpec,
-					expectedEditSpec: initialEditSpec,
-					baseGeneration: current.generation ?? 0,
-					draftVersion: (current.draftVersion ?? 0) + 1,
-					draftSession,
-				},
-				started.controller.signal,
-			)
-				.then((prepared) => {
-					if (
-						!acceptSettledPrepare(started.requestId, settleRequestRef.current)
-					) {
-						return;
-					}
-					if (savingRef.current) return;
-					if (prepareTrackRef.current?.requestId === started.requestId) {
-						prepareTrackRef.current.ready = true;
-					}
-					setInstantFinish((existing) =>
-						existing
-							? { ...existing, generation: prepared.generation }
-							: existing,
-					);
-				})
-				.catch(() => undefined);
-		});
-	}, [editSpec, initialEditSpec, video.id]);
-
 	const handleDone = useCallback(async () => {
-		const key = prepareSpecKey(normalizeVideoEditSpec(editSpec));
-		if (prepareOnceRef.current.sentKey() !== key) {
-			flushPrepareRef.current?.();
-		}
+		// Publish prepares if needed; join only work already started while editing.
 		prepareOnceRef.current.cancelTimer();
 		const track = prepareTrackRef.current;
 		const join = shouldJoinInflightPrepare({
@@ -2525,7 +2456,6 @@ export function EditVideoClient({
 								keepRanges.length === 0 ||
 								doneRoute(instantFinish) === "wait"
 							}
-							onPointerDown={prepareOnPointerDown}
 							onClick={handleDone}
 							className="ml-1"
 						>

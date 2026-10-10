@@ -128,7 +128,11 @@ export function drizzleRelocationJournal(app: Database): RelocationJournal {
 	};
 }
 
+let objectStore: ObjectStore | undefined;
+
 export function runtimeObjectStore(): ObjectStore {
+	// Reuse the SDK keep-alive connections, never inventory or privacy results.
+	if (objectStore) return objectStore;
 	const env = serverEnv();
 	const client = new S3Client({
 		region: env.CAP_AWS_REGION,
@@ -139,7 +143,7 @@ export function runtimeObjectStore(): ObjectStore {
 			secretAccessKey: env.CAP_AWS_SECRET_KEY ?? "",
 		},
 	});
-	return createS3Store(client, env.CAP_AWS_BUCKET);
+	return (objectStore = createS3Store(client, env.CAP_AWS_BUCKET));
 }
 
 export async function relocateFlaggedSource(input: {
