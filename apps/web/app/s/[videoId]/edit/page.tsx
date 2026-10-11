@@ -43,53 +43,30 @@ function isMp4BackedVideo(source: typeof videos.$inferSelect.source) {
 export default async function EditVideoPage(props: {
 	params: Promise<{ videoId: string }>;
 }) {
-	const timingStart = performance.now();
-	const time = async <T,>(
-		phase: string,
-		work: () => PromiseLike<T>,
-	): Promise<T> => {
-		const start = performance.now();
-		try {
-			return await work();
-		} finally {
-			if (process.env.CAP_WORKER_TIMING === "1")
-				console.info(
-					"[cap-edit-open]",
-					JSON.stringify({
-						videoId: params.videoId,
-						phase,
-						ms: performance.now() - start,
-						elapsedMs: performance.now() - timingStart,
-					}),
-				);
-		}
-	};
 	const params = await props.params;
 	const videoId = Video.VideoId.make(params.videoId);
-	const user = await time("getCurrentUser", () => getCurrentUser());
+	const user = await getCurrentUser();
 
 	if (!user) notFound();
 
-	const [video] = await time("video", () =>
-		db()
-			.select({
-				id: videos.id,
-				name: videos.name,
-				ownerId: videos.ownerId,
-				duration: videos.duration,
-				width: videos.width,
-				height: videos.height,
-				source: videos.source,
-				metadata: videos.metadata,
-				isScreenshot: videos.isScreenshot,
-				transcriptionStatus: videos.transcriptionStatus,
-				uploadPhase: videoUploads.phase,
-				rawFileKey: videoUploads.rawFileKey,
-			})
-			.from(videos)
-			.leftJoin(videoUploads, eq(videos.id, videoUploads.videoId))
-			.where(eq(videos.id, videoId)),
-	);
+	const [video] = await db()
+		.select({
+			id: videos.id,
+			name: videos.name,
+			ownerId: videos.ownerId,
+			duration: videos.duration,
+			width: videos.width,
+			height: videos.height,
+			source: videos.source,
+			metadata: videos.metadata,
+			isScreenshot: videos.isScreenshot,
+			transcriptionStatus: videos.transcriptionStatus,
+			uploadPhase: videoUploads.phase,
+			rawFileKey: videoUploads.rawFileKey,
+		})
+		.from(videos)
+		.leftJoin(videoUploads, eq(videos.id, videoUploads.videoId))
+		.where(eq(videos.id, videoId));
 
 	if (
 		!video ||
@@ -131,55 +108,44 @@ export default async function EditVideoPage(props: {
 	if (!video.duration || video.duration <= 0) {
 		return <EditReadinessGate videoId={videoId} />;
 	}
-	const readiness = await time("getEditReadiness", () =>
-		getEditReadiness(videoId, false, false),
-	);
+	const readiness = await getEditReadiness(videoId, false, false);
 	if (readiness.status !== "ready" || !readiness.readiness.manualEditing) {
 		return <EditReadinessGate videoId={videoId} />;
 	}
 
 	const [[registeredSource], [existingEdit], [publishedIntent]] =
 		await Promise.all([
-			time("registeredSource", () =>
-				db()
-					.select({ sha256: sourceObject.sha256 })
-					.from(sourceObject)
-					.where(eq(sourceObject.videoId, videoId)),
-			),
-			time("existingEdit", () =>
-				db()
-					.select({ editSpec: videoEdits.editSpec })
-					.from(videoEdits)
-					.where(eq(videoEdits.videoId, videoId)),
-			),
+			db()
+				.select({ sha256: sourceObject.sha256 })
+				.from(sourceObject)
+				.where(eq(sourceObject.videoId, videoId)),
+			db()
+				.select({ editSpec: videoEdits.editSpec })
+				.from(videoEdits)
+				.where(eq(videoEdits.videoId, videoId)),
 			flagged
-				? time("publishedIntent", () =>
-						db()
-							.select({
-								canonicalSpec: editIntent.canonicalSpec,
-								metadataSnapshot: editRevision.metadataSnapshot,
-								revisionId: editRevision.revisionId,
-							})
-							.from(editIntent)
-							.innerJoin(
-								videoPublication,
-								and(
-									eq(videoPublication.videoId, editIntent.videoId),
-									eq(videoPublication.currentGeneration, editIntent.generation),
-								),
-							)
-							.innerJoin(
-								editRevision,
-								and(
-									eq(
-										editRevision.revisionId,
-										videoPublication.currentRevisionId,
-									),
-									eq(editRevision.generation, editIntent.generation),
-								),
-							)
-							.where(eq(editIntent.videoId, videoId)),
-					)
+				? db()
+						.select({
+							canonicalSpec: editIntent.canonicalSpec,
+							metadataSnapshot: editRevision.metadataSnapshot,
+							revisionId: editRevision.revisionId,
+						})
+						.from(editIntent)
+						.innerJoin(
+							videoPublication,
+							and(
+								eq(videoPublication.videoId, editIntent.videoId),
+								eq(videoPublication.currentGeneration, editIntent.generation),
+							),
+						)
+						.innerJoin(
+							editRevision,
+							and(
+								eq(editRevision.revisionId, videoPublication.currentRevisionId),
+								eq(editRevision.generation, editIntent.generation),
+							),
+						)
+						.where(eq(editIntent.videoId, videoId))
 				: Promise.resolve([]),
 		]);
 	const initialEditSpec = selectEditorBaselineSpec({
@@ -192,11 +158,7 @@ export default async function EditVideoPage(props: {
 	});
 	let opened: Awaited<ReturnType<typeof openInstantFinishEditor>> | null = null;
 	try {
-		opened = flagged
-			? await time("openInstantFinishEditor", () =>
-					openInstantFinishEditor(videoId),
-				)
-			: null;
+		opened = flagged ? await openInstantFinishEditor(videoId) : null;
 	} catch (error) {
 		if (
 			error instanceof RevisionPublicationError &&
@@ -209,9 +171,7 @@ export default async function EditVideoPage(props: {
 	}
 	const originalDownload =
 		!flagged && existingEdit
-			? await time("getVideoDownloadInfo", () =>
-					getVideoDownloadInfo(videoId, "original"),
-				)
+			? await getVideoDownloadInfo(videoId, "original")
 			: null;
 	if (!flagged && existingEdit && originalDownload?.success !== true) {
 		throw new Error(
@@ -235,15 +195,6 @@ export default async function EditVideoPage(props: {
 		baseline: initialEditSpec,
 	});
 
-	if (process.env.CAP_WORKER_TIMING === "1")
-		console.info(
-			"[cap-edit-open]",
-			JSON.stringify({
-				videoId,
-				phase: "total",
-				ms: performance.now() - timingStart,
-			}),
-		);
 	return (
 		<EditVideoClient
 			chapters={
