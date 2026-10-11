@@ -152,9 +152,51 @@ describe("direct editor admission before mutations", () => {
 		expect((await page()).type).toBe(EditReadinessGate);
 		expect(mocks.open).not.toHaveBeenCalled();
 	});
+	it("starts independent source and baseline reads together, only after admission", async () => {
+		mocks.flag.mockReturnValue(true);
+		mocks.open.mockResolvedValue({ playbackSrc: "/owner-source" });
+		const started: unknown[] = [];
+		const release: (() => void)[] = [];
+		mocks.db.mockImplementation(() => {
+			let table: unknown;
+			const chain = {
+				select: () => chain,
+				from: (value: unknown) => {
+					table = value;
+					return chain;
+				},
+				leftJoin: () => chain,
+				innerJoin: () => chain,
+				where: () => {
+					if (table === schema.videos) return Promise.resolve([video]);
+					expect(mocks.readiness).toHaveBeenCalled();
+					started.push(table);
+					return new Promise<unknown[]>((resolve) =>
+						release.push(() => resolve([])),
+					);
+				},
+			};
+			return chain;
+		});
+		const pending = page();
+		void pending.catch(() => {});
+		try {
+			await vi.waitFor(() =>
+				expect(started).toEqual([
+					schema.sourceObject,
+					schema.videoEdits,
+					schema.editIntent,
+				]),
+			);
+			expect(mocks.open).not.toHaveBeenCalled();
+		} finally {
+			release.forEach((resolve) => resolve());
+		}
+		expect((await pending).type).toBe(EditVideoClient);
+	});
 	it("lets transcript-only pending enter the manual editor", async () => {
 		expect((await page()).type).toBe(EditVideoClient);
-		expect(mocks.readiness).toHaveBeenCalledWith("video", true, false);
+		expect(mocks.readiness).toHaveBeenCalledWith("video", false, false);
 	});
 	it("waits when fresh admission rejects an advisory ready hint", async () => {
 		mocks.flag.mockReturnValue(true);
@@ -165,7 +207,7 @@ describe("direct editor admission before mutations", () => {
 			}),
 		);
 		expect((await page()).type).toBe(EditReadinessGate);
-		expect(mocks.readiness).toHaveBeenCalledWith("video", true, false);
+		expect(mocks.readiness).toHaveBeenCalledWith("video", false, false);
 		expect(mocks.open).not.toHaveBeenCalled();
 	});
 	it("renders preparation on a source-not-ready race instead of throwing", async () => {

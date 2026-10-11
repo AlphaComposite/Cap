@@ -196,6 +196,7 @@ describe("pending editor join", () => {
 	});
 
 	it.each([
+		{ pending: false, actionRefresh: false },
 		{ pending: false, actionRefresh: true },
 		{ pending: true, actionRefresh: false },
 	])(
@@ -285,9 +286,13 @@ describe("pending editor join", () => {
 		expect(recovered.poll).toBe(false);
 	});
 
-	it.each([false, true])(
-		"re-prepares an expired PURGED source with actionRefresh=%s while the caption outbox remains open",
-		async (actionRefresh) => {
+	it.each([
+		{ pending: false, actionRefresh: false },
+		{ pending: true, actionRefresh: false },
+		{ pending: true, actionRefresh: true },
+	])(
+		"re-prepares an expired PURGED source with pending=$pending, actionRefresh=$actionRefresh",
+		async ({ pending, actionRefresh }) => {
 			const source = {
 				videoId,
 				liveKey: journalKey,
@@ -300,7 +305,7 @@ describe("pending editor join", () => {
 				indexId: "bound-index",
 				warmExpiresAt: new Date(Date.now() - 60_000),
 			};
-			const harness = editorDb({ source, pending: true });
+			const harness = editorDb({ source, pending });
 			const { openInstantFinishEditor, readEditorPreparation } = await import(
 				"@/lib/revision-publication-read"
 			);

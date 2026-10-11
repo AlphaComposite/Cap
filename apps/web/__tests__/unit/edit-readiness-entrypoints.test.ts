@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
-import { createElement, type ReactNode } from "react";
+import { act, createElement, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveEditReadiness } from "../../lib/video-edit-readiness";
 
-const mocks = vi.hoisted(() => ({ readiness: vi.fn(), owner: true }));
+const mocks = vi.hoisted(() => ({
+	readiness: vi.fn(),
+	owner: true,
+	push: vi.fn(),
+}));
 vi.mock("../../hooks/use-edit-readiness", () => ({
 	useEditReadiness: mocks.readiness,
 }));
@@ -17,21 +22,30 @@ vi.mock("@cap/ui", async () => {
 	const { createElement } = await import("react");
 	const wrapper = ({ children }: { children?: ReactNode }) =>
 		createElement("div", null, children);
-	return Object.fromEntries(
-		[
-			"Button",
-			"DropdownMenu",
-			"DropdownMenuContent",
-			"DropdownMenuItem",
-			"DropdownMenuSeparator",
-			"DropdownMenuTrigger",
-			"Logo",
-		].map((name) => [name, wrapper]),
-	);
+	return {
+		...Object.fromEntries(
+			[
+				"Button",
+				"DropdownMenu",
+				"DropdownMenuContent",
+				"DropdownMenuItem",
+				"DropdownMenuSeparator",
+				"DropdownMenuTrigger",
+				"Logo",
+			].map((name) => [name, wrapper]),
+		),
+		DropdownMenuItem: ({
+			children,
+			onClick,
+		}: {
+			children?: ReactNode;
+			onClick?: () => void;
+		}) => createElement("button", { onClick }, children),
+	};
 });
 vi.mock("next/dynamic", () => ({ default: () => () => null }));
 vi.mock("next/navigation", () => ({
-	useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+	useRouter: () => ({ push: mocks.push, refresh: vi.fn() }),
 }));
 vi.mock("next/image", () => ({ default: () => null }));
 vi.mock("next/link", async () => {
@@ -164,6 +178,41 @@ const card = () =>
 const header = () =>
 	renderToStaticMarkup(createElement(ShareHeader, { data } as never));
 describe("owner entrypoint presentation", () => {
+	it("shows the same opening state for dashboard menu navigation", async () => {
+		(
+			globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+		).IS_REACT_ACT_ENVIRONMENT = true;
+		let resolve!: () => void;
+		mocks.push.mockReturnValueOnce(
+			new Promise<void>((done) => {
+				resolve = done;
+			}),
+		);
+		const container = document.createElement("div");
+		document.body.append(container);
+		const root = createRoot(container);
+		try {
+			await act(async () =>
+				root.render(
+					createElement(CapCard, { cap: data, userId: "owner" } as never),
+				),
+			);
+			const edit = [...container.querySelectorAll("button")].find(
+				(e) => e.textContent === "Edit timeline",
+			);
+			expect(edit).toBeDefined();
+			await act(async () => edit!.click());
+			expect(document.querySelector('[role="status"]')?.textContent).toContain(
+				"Opening editor…",
+			);
+			expect(mocks.push).toHaveBeenCalledWith("/s/video/edit");
+			await act(async () => resolve());
+			expect(document.body.textContent).not.toContain("Opening editor…");
+		} finally {
+			await act(async () => root.unmount());
+			container.remove();
+		}
+	});
 	it("renders separate video/transcript labels on the dashboard card", () => {
 		expect(card()).toContain("Video processed · Transcribing");
 		expect(card()).toContain("Edit timeline");

@@ -283,15 +283,6 @@ export function selectEditorPlayback(input: {
 	};
 }
 
-async function requestIsActionRefresh(): Promise<boolean> {
-	try {
-		const { headers } = await import("next/headers");
-		return Boolean((await headers()).get("next-action"));
-	} catch {
-		return false;
-	}
-}
-
 export async function openInstantFinishEditor(
 	videoId: string,
 	database: unknown = db(),
@@ -317,8 +308,6 @@ export async function openInstantFinishEditor(
 		app,
 	);
 	const now = options?.now ?? new Date();
-	const actionRefresh =
-		options?.actionRefresh ?? (await requestIsActionRefresh());
 	const [existingBeforePrepare] = await app
 		.select()
 		.from(sourceObject)
@@ -387,10 +376,9 @@ export async function openInstantFinishEditor(
 					sourceKey,
 					database: app,
 				});
-	const warm =
-		(actionRefresh || (pending != null && !pending.exhausted)) && alreadyPurged
-			? warmSourceFromRow(existingBeforePrepare ?? null, now)
-			: null;
+	const warm = alreadyPurged
+		? warmSourceFromRow(existingBeforePrepare ?? null, now)
+		: null;
 	const preparedSource =
 		warm ??
 		(await (options?.prepare ?? prepareSourceOnEditorOpen)({

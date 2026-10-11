@@ -199,6 +199,23 @@ const editButton = () =>
 	);
 
 describe("ProcessingStatusPanel", () => {
+	it("shows Opening editor while navigation is pending and clears it on completion", async () => {
+		harness.readiness = readiness({ editorOpenable: true });
+		let resolve!: () => void;
+		harness.push.mockReturnValueOnce(
+			new Promise<void>((done) => {
+				resolve = done;
+			}),
+		);
+		await renderHeader();
+		await click(editButton() ?? null);
+		expect(document.querySelector('[role="status"]')?.textContent).toContain(
+			"Opening editor…",
+		);
+		expect(harness.push).toHaveBeenCalledWith("/s/video-id/edit");
+		await act(async () => resolve());
+		expect(document.body.textContent).not.toContain("Opening editor…");
+	});
 	it("shows transient unavailability as Checking without an alert or retry", async () => {
 		await renderPanel(
 			readiness({
