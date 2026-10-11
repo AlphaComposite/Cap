@@ -114,6 +114,12 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+	HTMLDialogElement.prototype.showModal = function () {
+		this.setAttribute("open", "");
+	};
+	HTMLDialogElement.prototype.close = function () {
+		this.removeAttribute("open");
+	};
 	vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 	vi.stubGlobal(
 		"ResizeObserver",

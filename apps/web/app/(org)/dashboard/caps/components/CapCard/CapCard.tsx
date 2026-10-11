@@ -36,15 +36,8 @@ import { Effect, Option } from "effect";
 import { FolderInput } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-	type PropsWithChildren,
-	useEffect,
-	useRef,
-	useState,
-	useTransition,
-} from "react";
-import { createPortal } from "react-dom";
-import EditLoading from "@/app/s/[videoId]/edit/loading";
+import { type PropsWithChildren, useEffect, useRef, useState } from "react";
+import { useOpenEditor } from "../../../../../../hooks/use-open-editor";
 import { toast } from "sonner";
 import { ConfirmationDialog } from "@/app/(org)/dashboard/_components/ConfirmationDialog";
 import { useDashboardContext } from "@/app/(org)/dashboard/Contexts";
@@ -196,7 +189,7 @@ export const CapCard = ({
 	const [confirmOpen, setConfirmOpen] = useState(false);
 
 	const router = useRouter();
-	const [openingEditor, startEditTransition] = useTransition();
+	const { openEditor, openingOverlay } = useOpenEditor(cap.id);
 	const rpc = useRpcClient();
 
 	const downloadMutation = useEffectMutation({
@@ -434,12 +427,12 @@ export const CapCard = ({
 			setEditUpgradeModalOpen(true);
 			return;
 		}
-		startEditTransition(() => router.push(`/s/${cap.id}/edit`));
+		openEditor();
 	};
 
 	return (
 		<>
-			{openingEditor && createPortal(<EditLoading />, document.body)}
+			{openingOverlay}
 			<UpgradeModal
 				open={editUpgradeModalOpen}
 				onOpenChange={setEditUpgradeModalOpen}

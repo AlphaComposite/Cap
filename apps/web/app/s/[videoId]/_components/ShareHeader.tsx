@@ -40,15 +40,8 @@ import {
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import {
-	Suspense,
-	use,
-	useEffect,
-	useRef,
-	useState,
-	useTransition,
-} from "react";
-import { createPortal } from "react-dom";
+import { Suspense, use, useEffect, useRef, useState } from "react";
+import { useOpenEditor } from "../../../../hooks/use-open-editor";
 import { toast } from "sonner";
 import {
 	hideShareableLinkCapLogo,
@@ -66,7 +59,6 @@ import {
 	videoPreviewImageUrl,
 } from "@/lib/video-share-clipboard";
 import { usePublicEnv } from "@/utils/public-env";
-import EditLoading from "../edit/loading";
 import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
 import type { SharePageBranding, VideoData } from "../types";
 import { ProcessingStatusPanel } from "./ProcessingStatusPanel";
@@ -189,7 +181,7 @@ export const ShareHeader = ({
 }) => {
 	const user = useCurrentUser();
 	const { push, refresh } = useRouter();
-	const [openingEditor, startEditTransition] = useTransition();
+	const { openEditor, openingOverlay } = useOpenEditor(data.id);
 	const queryClient = useQueryClient();
 	const { data: videoStatus } = useQuery<VideoStatusResult>({
 		queryKey: ["videoStatus", data.id],
@@ -587,7 +579,7 @@ export const ShareHeader = ({
 			return;
 		}
 
-		startEditTransition(() => push(`/s/${data.id}/edit`));
+		openEditor();
 	};
 
 	const handleHideBranding = async () => {
@@ -742,7 +734,7 @@ export const ShareHeader = ({
 
 	return (
 		<>
-			{openingEditor && createPortal(<EditLoading />, document.body)}
+			{openingOverlay}
 			{userIsOwnerAndNotPro && (
 				<div className="flex sticky flex-col sm:flex-row inset-x-0 top-0 z-10 gap-4 justify-center items-center px-3 py-2 mx-auto w-[calc(100%-20px)] max-w-fit rounded-b-xl border bg-gray-4 border-gray-6">
 					<p className="text-center text-gray-12">

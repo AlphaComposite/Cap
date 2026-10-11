@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 	readiness: vi.fn(),
 	owner: true,
 	push: vi.fn(),
+	replace: vi.fn(),
 }));
 vi.mock("../../hooks/use-edit-readiness", () => ({
 	useEditReadiness: mocks.readiness,
@@ -34,6 +35,13 @@ vi.mock("@cap/ui", async () => {
 				"Logo",
 			].map((name) => [name, wrapper]),
 		),
+		Button: ({
+			children,
+			onClick,
+		}: {
+			children?: ReactNode;
+			onClick?: () => void;
+		}) => createElement("button", { onClick }, children),
 		DropdownMenuItem: ({
 			children,
 			onClick,
@@ -45,7 +53,11 @@ vi.mock("@cap/ui", async () => {
 });
 vi.mock("next/dynamic", () => ({ default: () => () => null }));
 vi.mock("next/navigation", () => ({
-	useRouter: () => ({ push: mocks.push, refresh: vi.fn() }),
+	useRouter: () => ({
+		push: mocks.push,
+		replace: mocks.replace,
+		refresh: vi.fn(),
+	}),
 }));
 vi.mock("next/image", () => ({ default: () => null }));
 vi.mock("next/link", async () => {
@@ -165,6 +177,14 @@ const state = (status: string | null = "PROCESSING", admitted = true) => ({
 	checkAgain: vi.fn(),
 });
 beforeEach(() => {
+	mocks.push.mockReset();
+	mocks.replace.mockReset();
+	HTMLDialogElement.prototype.showModal = function () {
+		this.setAttribute("open", "");
+	};
+	HTMLDialogElement.prototype.close = function () {
+		this.removeAttribute("open");
+	};
 	mocks.owner = true;
 	mocks.readiness.mockReturnValue(state());
 });
@@ -177,6 +197,157 @@ const card = () =>
 	);
 const header = () =>
 	renderToStaticMarkup(createElement(ShareHeader, { data } as never));
+describe.each(["share", "dashboard"])(
+	"Round 2 pending navigation: %s",
+	(entry) => {
+		const mount = async () => {
+			(
+				globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+			).IS_REACT_ACT_ENVIRONMENT = true;
+			const container = document.createElement("div");
+			document.body.append(container);
+			const navigationErrors = vi.fn();
+			const root = createRoot(container, { onUncaughtError: navigationErrors });
+			await act(async () =>
+				root.render(
+					entry === "share"
+						? createElement(ShareHeader, { data } as never)
+						: createElement(CapCard, { cap: data, userId: "owner" } as never),
+				),
+			);
+			const edit = [...container.querySelectorAll("button")].find(
+				(e) =>
+					e.textContent?.trim() ===
+					(entry === "share" ? "Edit video" : "Edit timeline"),
+			)!;
+			return {
+				edit,
+				navigationErrors,
+				close: async () => {
+					await act(async () => root.unmount());
+					container.remove();
+					vi.useRealTimers();
+				},
+			};
+		};
+		const pending = () => {
+			let resolve!: () => void;
+			mocks.push.mockReturnValueOnce(
+				new Promise<void>((done) => {
+					resolve = done;
+				}),
+			);
+			return resolve;
+		};
+		it("bounds a stalled navigation and offers hard Retry and Cancel", async () => {
+			vi.useFakeTimers();
+			const resolve = pending(),
+				view = await mount();
+			try {
+				await act(async () => view.edit.click());
+				expect(document.activeElement?.getAttribute("role")).toBe("status");
+				expect(document.querySelector("dialog[open]")).not.toBeNull();
+				await act(async () => vi.advanceTimersByTime(9999));
+				expect(document.body.textContent).not.toContain("Still opening…");
+				await act(async () => vi.advanceTimersByTime(1));
+				expect(document.body.textContent).toContain("Still opening…");
+				expect(document.querySelector("dialog a")?.getAttribute("href")).toBe(
+					"/s/video/edit",
+				);
+				expect(document.querySelector("dialog button")?.textContent).toBe(
+					"Cancel",
+				);
+			} finally {
+				await act(async () => resolve());
+				await view.close();
+			}
+		});
+		it("Cancel dismisses and supersedes the pending push even before its response", async () => {
+			const resolve = pending(),
+				view = await mount();
+			try {
+				await act(async () => view.edit.click());
+				const cancel =
+					document.querySelector<HTMLButtonElement>("dialog button");
+				expect(cancel).not.toBeNull();
+				await act(async () => cancel!.click());
+				expect(document.querySelector("[data-edit-opening]")).toBeNull();
+				expect(mocks.replace).toHaveBeenCalledWith(window.location.href);
+				await act(async () => resolve());
+				expect(document.querySelector("[data-edit-opening]")).toBeNull();
+			} finally {
+				await act(async () => resolve());
+				await view.close();
+			}
+		});
+		it("Back clears pending feedback without replacing the back destination", async () => {
+			const resolve = pending(),
+				view = await mount();
+			try {
+				await act(async () => view.edit.click());
+				await act(async () =>
+					window.dispatchEvent(new PopStateEvent("popstate")),
+				);
+				expect(document.querySelector("[data-edit-opening]")).toBeNull();
+				expect(mocks.replace).not.toHaveBeenCalled();
+			} finally {
+				await act(async () => resolve());
+				await view.close();
+			}
+		});
+		it.each(["throw", "reject"])(
+			"clears feedback on navigation %s",
+			async (failure) => {
+				let reject!: (error: Error) => void;
+				if (failure === "throw")
+					mocks.push.mockImplementationOnce(() => {
+						throw Error("failed");
+					});
+				else
+					mocks.push.mockReturnValueOnce(
+						new Promise<void>((_, fail) => {
+							reject = fail;
+						}),
+					);
+				const view = await mount();
+				try {
+					await act(async () => view.edit.click());
+					if (failure === "reject")
+						await act(async () => reject(Error("failed")));
+					expect(view.navigationErrors).not.toHaveBeenCalled();
+					expect(view.edit.isConnected).toBe(true);
+					expect(document.querySelector("[data-edit-opening]")).toBeNull();
+				} finally {
+					await view.close();
+				}
+			},
+		);
+		it.each(["double click", "Enter twice"])(
+			"guards %s before the pending render",
+			async (activation) => {
+				const resolve = pending(),
+					view = await mount();
+				try {
+					await act(async () => {
+						for (let i = 0; i < 2; i++) {
+							if (activation === "Enter twice")
+								view.edit.dispatchEvent(
+									new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+								);
+							// jsdom has no native keyboard activation; exercise its resulting click.
+							view.edit.click();
+						}
+					});
+					expect(mocks.push).toHaveBeenCalledTimes(1);
+				} finally {
+					await act(async () => resolve());
+					await view.close();
+				}
+			},
+		);
+	},
+);
+
 describe("owner entrypoint presentation", () => {
 	it("shows the same opening state for dashboard menu navigation", async () => {
 		(
