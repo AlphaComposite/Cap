@@ -582,6 +582,8 @@ def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: in
             raise RuntimeError(f"sample count {count} exceeds remaining durations")
         tfhd = _tfhd_default_duration(tfhd, max(durs))
         header_len = 16 if int.from_bytes(mdat[:4], "big") == 1 else 8
+        if uses_default_size and header_len != 8:
+            raise RuntimeError("unsupported extended-size mdat for default-size trun")
         if sum(trun_info["sizes"]) != len(mdat) - header_len:
             raise RuntimeError("trun sizes do not match mdat")
         mfhd[12:16] = seq.to_bytes(4, "big")

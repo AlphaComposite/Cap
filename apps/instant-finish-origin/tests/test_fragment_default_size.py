@@ -48,19 +48,40 @@ def fragment(default: int | None = 4, extra_flags=0, explicit=False, truncated=F
 
 
 class DefaultSampleSizeTest(unittest.TestCase):
+    def assert_default_payload(self, media, payload):
+        moof, mdat = list(lib_origin._iter_boxes(media, 0, len(media)))
+        moof_at, moof_size, moof_header, moof_name = moof
+        mdat_at, mdat_size, mdat_header, mdat_name = mdat
+        self.assertEqual((moof_name, mdat_name), (b'moof', b'mdat'))
+        runs = []
+        for off, size, header, name in lib_origin._iter_boxes(media, moof_at + moof_header, moof_at + moof_size):
+            if name == b'traf':
+                runs.extend(box for box in lib_origin._iter_boxes(media, off + header, off + size) if box[3] == b'trun')
+        self.assertEqual(len(runs), 1)
+        run_at = runs[0][0]
+        self.assertTrue(int.from_bytes(media[run_at + 9:run_at + 12], 'big') & 1)
+        data_offset = int.from_bytes(media[run_at + 16:run_at + 20], 'big', signed=True)
+        self.assertEqual(moof_at + data_offset, mdat_at + mdat_header)
+        self.assertEqual(media[moof_at + data_offset:mdat_at + mdat_size], payload)
+
     def test_default_size_with_optional_tfhd_fields(self):
         for flags in (0, 2, 8, 10):
             with self.subTest(flags=flags):
                 _init, _avcc, media = lib_origin.rewrite_fragment(fragment(extra_flags=flags), [30046], 17, 3)
-                self.assertTrue(media.endswith(b'abcd'))
+                self.assert_default_payload(media, b'abcd')
                 off = media.index(b'trun') - 4
                 self.assertEqual(lib_origin._parse_trun(media, off, int.from_bytes(media[off:off + 4], 'big'))['sizes'], [4])
 
-    def test_multiple_samples_and_extended_mdat(self):
-        for extended in (False, True):
-            with self.subTest(extended=extended):
-                data = fragment(count=2, payload=b'abcdabcd', extended_mdat=extended, gap=box(b'free', b'padding'))
-                self.assertTrue(lib_origin.rewrite_fragment(data, [512, 512], 0, 1)[2].endswith(b'abcdabcd'))
+    def test_multiple_samples_with_padding(self):
+        data = fragment(count=2, payload=b'abcdabcd', gap=box(b'free', b'padding'))
+        media = lib_origin.rewrite_fragment(data, [512, 512], 0, 1)[2]
+        self.assert_default_payload(media, b'abcdabcd')
+
+    def test_extended_mdat_default_size_rejected(self):
+        for gap in (b'', box(b'free', b'padding')):
+            with self.subTest(gap=gap), self.assertRaises(RuntimeError, msg='accepted'):
+                data = fragment(count=2, payload=b'abcdabcd', extended_mdat=True, gap=gap)
+                lib_origin.rewrite_fragment(data, [512, 512], 0, 1)
 
     def test_explicit_sizes_override_default(self):
         _init, _avcc, media = lib_origin.rewrite_fragment(fragment(default=99, explicit=True), [30046], 0, 1)
