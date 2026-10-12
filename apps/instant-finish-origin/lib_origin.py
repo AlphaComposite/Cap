@@ -458,7 +458,7 @@ def avcc_bytes(buf: bytes) -> bytes:
     return bytes(buf[off:off + size])
 
 
-def _parse_trun(buf: bytes, off: int, size: int) -> dict:
+def _parse_trun(buf: bytes, off: int, size: int, tfhd: bytes = b"") -> dict:
     payload = buf[off + 8:off + size]
     flags = int.from_bytes(payload[1:4], "big")
     count = int.from_bytes(payload[4:8], "big")
@@ -469,14 +469,21 @@ def _parse_trun(buf: bytes, off: int, size: int) -> dict:
     if flags & 0x4:
         first_flags = int.from_bytes(payload[cursor:cursor + 4], "big")
         cursor += 4
+    default_size = 0
     if not flags & 0x200:
-        raise RuntimeError(f"trun lacks per-sample sizes flags={flags:#x}")
+        defaults = int.from_bytes(tfhd[9:12], "big")
+        at = 16 + (8 if defaults & 1 else 0) + (4 if defaults & 2 else 0) + (4 if defaults & 8 else 0)
+        if defaults & 0x10 and at + 4 <= len(tfhd):
+            default_size = int.from_bytes(tfhd[at:at + 4], "big")
+        if not default_size:
+            raise RuntimeError(f"trun lacks per-sample sizes flags={flags:#x}")
     sizes = []
     for _ in range(count):
         if flags & 0x100:
             cursor += 4
-        sizes.append(int.from_bytes(payload[cursor:cursor + 4], "big"))
-        cursor += 4
+        sizes.append(int.from_bytes(payload[cursor:cursor + 4], "big") if flags & 0x200 else default_size)
+        if flags & 0x200:
+            cursor += 4
         if flags & 0x400:
             cursor += 4
         if flags & 0x800:
@@ -545,7 +552,7 @@ def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: in
                     if not flags & 0x20000:
                         raise RuntimeError(f"tfhd missing default-base-is-moof flags={flags:#x}")
                 if tname == b"trun":
-                    trun_info = _parse_trun(moof, toff, tsize)
+                    trun_info = _parse_trun(moof, toff, tsize, tfhd or b"")
         if mfhd is None or tfhd is None or trun_info is None:
             raise RuntimeError("incomplete moof")
         if not _is_sync(trun_info["first_flags"]):
