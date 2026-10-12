@@ -3,18 +3,19 @@
 import { db } from "@cap/database";
 import { getCurrentUser } from "@cap/database/auth/session";
 import { videoEdits, videos, videoUploads } from "@cap/database/schema";
-import { Storage } from "@cap/web-backend";
+import { provideOptionalAuth, Storage, VideosPolicy } from "@cap/web-backend";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	ownerOriginalPath,
+	readArtifactState,
+	readPublication,
 	revisionArtifactUrl,
 } from "@/lib/revision-media-grant";
 import { runPromise } from "@/lib/server";
-import { canUserDownloadVideo } from "@/lib/video-download-permissions";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import {
 	DOWNLOAD_PREPARING_MESSAGE,
@@ -46,16 +47,17 @@ function downloadPreparing(): Extract<VideoDownloadInfo, { pending: true }> {
 	};
 }
 
-async function currentEditedDownload(video: {
-	id: Video.VideoId;
-	ownerId: string;
-	name: string;
-}) {
+async function currentEditedDownload(
+	video: { id: Video.VideoId; ownerId: string; name: string },
+	revisionOnly = false,
+) {
 	if (!isInstantFinishEnabledForOwner(video.ownerId)) return null;
-	const eligible = await loadEligibleLegacy({
-		videoId: video.id,
-		ownerId: video.ownerId,
-	});
+	const eligible =
+		!revisionOnly &&
+		(await loadEligibleLegacy({
+			videoId: video.id,
+			ownerId: video.ownerId,
+		}));
 	const downloadUrl = eligible
 		? null
 		: await revisionArtifactUrl({
@@ -71,7 +73,22 @@ async function currentEditedDownload(video: {
 		downloadUrl,
 	});
 	if (outcome.status === "legacy") return null;
-	if (outcome.status === "preparing") return downloadPreparing();
+	if (outcome.status === "preparing") {
+		const publication = await readPublication(video.id);
+		if (
+			publication &&
+			publication !== "missing_table" &&
+			publication.currentRevisionId &&
+			(await readArtifactState(publication.currentRevisionId, "download")) ===
+				"FAILED"
+		) {
+			return {
+				success: false as const,
+				error: "Download isn't available for this video right now.",
+			};
+		}
+		return downloadPreparing();
+	}
 	return {
 		success: true as const,
 		downloadUrl: outcome.downloadUrl,
@@ -134,7 +151,7 @@ export async function getVideoDownloadInfo(
 	variant: VideoDownloadVariant = "current",
 ): Promise<VideoDownloadInfo> {
 	const user = await getCurrentUser();
-	if (!user || !videoId) {
+	if (!videoId || (variant !== "current" && variant !== "original")) {
 		throw new Error("Missing required data for downloading video");
 	}
 
@@ -145,14 +162,19 @@ export async function getVideoDownloadInfo(
 
 	if (!video) throw new Error("Video not found");
 
+	const isOwner = user?.id === video.ownerId;
 	const allowed =
-		variant === "original"
-			? user.id === video.ownerId
-			: await canUserDownloadVideo({
-					userId: user.id,
-					ownerId: video.ownerId,
-					videoId,
-				});
+		isOwner ||
+		(variant === "current" &&
+			(await Effect.gen(function* () {
+				const policy = yield* VideosPolicy;
+				yield* policy.canViewLoaded(video, Option.fromNullable(video.password));
+				return true;
+			}).pipe(
+				provideOptionalAuth,
+				Effect.catchAll(() => Effect.succeed(false)),
+				runPromise,
+			)));
 
 	if (!allowed) {
 		throw new Error("You don't have permission to download this video");
@@ -166,8 +188,16 @@ export async function getVideoDownloadInfo(
 				filename: `${video.name} (original).mp4`,
 			};
 		}
-		const edited = await currentEditedDownload(video);
+		const edited = await currentEditedDownload(video, !isOwner);
 		if (edited) return edited;
+	}
+
+	// Share viewers never fall through to legacy/source objects, even on identity edits.
+	if (!isOwner) {
+		return {
+			success: false,
+			error: "Download isn't available for this video right now.",
+		};
 	}
 
 	if (variant === "current") {

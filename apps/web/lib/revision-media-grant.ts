@@ -96,11 +96,11 @@ export async function readPublication(
 	}
 }
 
-export async function readArtifactReady(
+export async function readArtifactState(
 	revisionId: string,
 	artifact: string,
 	executor: SqlExecutor = db(),
-): Promise<boolean | "missing_table"> {
+): Promise<string | null> {
 	try {
 		const result = await executor.execute(sql`
 			SELECT state
@@ -114,11 +114,20 @@ export async function readArtifactReady(
 		const row = (Array.isArray(rows[0]) ? rows[0][0] : rows[0]) as
 			| { state?: string }
 			| undefined;
-		return row?.state === "ready" || row?.state === "READY";
+		return row?.state?.toUpperCase() ?? null;
 	} catch (error) {
 		if (isMissingTable(error)) return "missing_table";
 		throw error;
 	}
+}
+
+export async function readArtifactReady(
+	revisionId: string,
+	artifact: string,
+	executor: SqlExecutor = db(),
+): Promise<boolean | "missing_table"> {
+	const state = await readArtifactState(revisionId, artifact, executor);
+	return state === "missing_table" ? state : state === "READY";
 }
 
 function rowsOf(result: unknown): Array<Record<string, unknown>> {

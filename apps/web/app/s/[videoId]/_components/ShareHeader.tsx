@@ -143,6 +143,7 @@ export const ShareHeader = ({
 	branding,
 	canManageSharePageBranding = false,
 	canDownload = false,
+	canDownloadAsMember = false,
 	hasEdits = false,
 	views,
 }: {
@@ -171,6 +172,7 @@ export const ShareHeader = ({
 	branding?: SharePageBranding | null;
 	canManageSharePageBranding?: boolean;
 	canDownload?: boolean;
+	canDownloadAsMember?: boolean;
 	hasEdits?: boolean;
 	/**
 	 * Shown to every viewer, not just the owner. The sidebar's analytics row is
@@ -280,6 +282,24 @@ export const ShareHeader = ({
 
 	const { webUrl } = usePublicEnv();
 	const { download, isDownloading } = useVideoDownload(data.id);
+	// Share viewers (signed out or not a member) get one plain button for the
+	// current edited file; the server never hands them the original.
+	const viewerDownloadButton = (
+		<Button
+			variant="gray"
+			size="xs"
+			className="h-8 gap-1.5 rounded-full px-2.5 text-xs"
+			disabled={isDownloading}
+			aria-label="Download video"
+			onClick={() => download("current")}
+		>
+			<Download className="size-3.5 text-gray-12" aria-hidden />
+			<span className="hidden min-[360px]:inline">
+				<span className="sm:hidden">Download</span>
+				<span className="hidden sm:inline">Download video</span>
+			</span>
+		</Button>
+	);
 
 	const resolvedTitle = videoStatus?.name ?? data.name;
 	const effectivePasswordProtected =
@@ -1020,6 +1040,11 @@ export const ShareHeader = ({
 								{(user || data.public) && renderShareButton()}
 							</div>
 						</div>
+						{user === null && canDownload && (
+							<div className="flex items-center ml-auto">
+								{viewerDownloadButton}
+							</div>
+						)}
 						{user !== null && (
 							// `ml-auto` rather than relying on the parent's justify-between:
 							// when this wraps onto its own line on a phone, a lone flex item
@@ -1219,6 +1244,10 @@ export const ShareHeader = ({
 										    and they never see "Manage Cap" — so the action has to
 										    stand on its own for them. */}
 										{canDownload &&
+											!canDownloadAsMember &&
+											viewerDownloadButton}
+										{canDownload &&
+											canDownloadAsMember &&
 											(hasEdits ? (
 												<VideoDownloadMenu
 													videoId={data.id}

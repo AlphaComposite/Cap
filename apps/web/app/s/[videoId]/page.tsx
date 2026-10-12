@@ -947,8 +947,9 @@ async function AuthorizedContent({
 						canManageSharePageBranding={canManageSharePageBranding}
 						canDownload={shareCanDownload({
 							playback: revisionLoaded.playback,
-							permitted: canDownloadVideo,
+							permitted: isVideoDownloadReady && !video.isScreenshot,
 						})}
+						canDownloadAsMember={canDownloadVideo}
 						hasEdits={videoHasEdits}
 						// Caught separately from the copy the sidebar consumes: the
 						// header renders for everyone, and a failed count is worth
