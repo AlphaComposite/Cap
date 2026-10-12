@@ -145,6 +145,7 @@ afterEach(async () => {
 	await act(async () => root.unmount());
 	container.remove();
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
 const renderPanel = async (
@@ -205,6 +206,66 @@ const editButton = () =>
 	);
 
 describe("ProcessingStatusPanel", () => {
+	it.each([false, true])(
+		"removes the completed panel after 2.5 seconds (transition=%s)",
+		async (transition) => {
+			vi.useFakeTimers();
+			if (transition) await renderPanel(readiness());
+			const complete = readiness({ editorOpenable: true, allDone: true });
+			await renderPanel(complete);
+			await act(async () => vi.advanceTimersByTime(500));
+			expect(container.querySelector("h2")?.textContent).toBe("Ready to edit");
+			await renderPanel({ ...complete }); // Poll/readback must not restart the timer.
+			await act(async () => vi.advanceTimersByTime(1999));
+			expect(container.querySelector("output")).not.toBeNull();
+			await act(async () => vi.advanceTimersByTime(1));
+			expect(container.childElementCount).toBe(0); // No layout placeholder.
+			if (transition)
+				expect(harness.toast).toHaveBeenCalledExactlyOnceWith("Ready to edit");
+			else expect(harness.toast).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps processing and failed steps visible after four seconds, even when editor-openable", async () => {
+		vi.useFakeTimers();
+		for (const state of ["running", "failed"] as const) {
+			await renderPanel(
+				readiness({
+					editorOpenable: true,
+					rows: [
+						{ id: "ai", label: "Summary and chapters", state, retry: "ai" },
+					],
+				}),
+			);
+			await act(async () => vi.advanceTimersByTime(4000));
+			expect(container.querySelector("output")).not.toBeNull();
+			expect(container.querySelector('[aria-live="polite"]')).not.toBeNull();
+			if (state === "failed")
+				expect(
+					container.querySelector("button")?.getAttribute("aria-label"),
+				).toBe("Retry Summary and chapters");
+		}
+	});
+
+	it("cancels the hide when work resumes and resets for another video", async () => {
+		vi.useFakeTimers();
+		const complete = readiness({ editorOpenable: true, allDone: true });
+		await renderPanel(complete);
+		await act(async () => vi.advanceTimersByTime(2000));
+		await renderPanel(readiness());
+		await act(async () => vi.advanceTimersByTime(4000));
+		expect(container.querySelector("output")).not.toBeNull();
+		await renderPanel(complete);
+		await act(async () => vi.advanceTimersByTime(2500));
+		expect(container.querySelector("output")).toBeNull();
+		await renderPanel(complete, "another-video");
+		expect(container.querySelector("output")).not.toBeNull();
+		await act(async () => vi.advanceTimersByTime(2500));
+		expect(container.querySelector("output")).toBeNull();
+		await renderPanel(readiness(), "another-video");
+		expect(container.querySelector("output")).not.toBeNull();
+	});
+
 	it("shows Opening editor while navigation is pending and clears it on completion", async () => {
 		harness.readiness = readiness({ editorOpenable: true });
 		let resolve!: () => void;

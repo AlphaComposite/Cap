@@ -93,6 +93,16 @@ export function ProcessingStatusPanel({
 		};
 	}
 	const editorOpenable = readiness?.editorOpenable;
+	const complete = !!editorOpenable && !!readiness?.allDone;
+	const [hiddenReadyVideo, setHiddenReadyVideo] =
+		useState<Video.VideoId | null>(null);
+
+	useEffect(() => {
+		setHiddenReadyVideo(null);
+		if (!complete) return;
+		const timer = setTimeout(() => setHiddenReadyVideo(videoId), 2500);
+		return () => clearTimeout(timer);
+	}, [videoId, complete]);
 
 	useEffect(() => {
 		if (observed.current.videoId !== videoId) {
@@ -151,6 +161,8 @@ export function ProcessingStatusPanel({
 			setRetrying(null);
 		}
 	};
+
+	if (complete && hiddenReadyVideo === videoId) return null;
 
 	return (
 		<output
