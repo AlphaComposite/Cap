@@ -458,7 +458,7 @@ def avcc_bytes(buf: bytes) -> bytes:
     return bytes(buf[off:off + size])
 
 
-def _parse_trun(buf: bytes, off: int, size: int) -> dict:
+def _parse_trun(buf: bytes, off: int, size: int, tfhd: bytes = b"") -> dict:
     payload = buf[off + 8:off + size]
     flags = int.from_bytes(payload[1:4], "big")
     count = int.from_bytes(payload[4:8], "big")
@@ -469,19 +469,31 @@ def _parse_trun(buf: bytes, off: int, size: int) -> dict:
     if flags & 0x4:
         first_flags = int.from_bytes(payload[cursor:cursor + 4], "big")
         cursor += 4
+    default_size = 0
     if not flags & 0x200:
-        raise RuntimeError(f"trun lacks per-sample sizes flags={flags:#x}")
+        defaults = int.from_bytes(tfhd[9:12], "big")
+        at = 16 + (8 if defaults & 1 else 0) + (4 if defaults & 2 else 0) + (4 if defaults & 8 else 0)
+        if defaults & 0x10 and at + 4 <= len(tfhd):
+            default_size = int.from_bytes(tfhd[at:at + 4], "big")
+        if not default_size:
+            raise RuntimeError(f"trun lacks per-sample sizes flags={flags:#x}")
+        required = cursor + count * 4 * sum(bool(flags & field) for field in (0x100, 0x400, 0x800))
+        if count == 0 or len(payload) < required:
+            raise RuntimeError("truncated or empty default-size trun")
     sizes = []
     for _ in range(count):
         if flags & 0x100:
             cursor += 4
-        sizes.append(int.from_bytes(payload[cursor:cursor + 4], "big"))
-        cursor += 4
+        sizes.append(int.from_bytes(payload[cursor:cursor + 4], "big") if flags & 0x200 else default_size)
+        if flags & 0x200:
+            cursor += 4
         if flags & 0x400:
             cursor += 4
         if flags & 0x800:
             cursor += 4
-    return {"count": count, "sizes": sizes, "first_flags": first_flags}
+    return {"count": count, "sizes": sizes, "first_flags": first_flags,
+            "default_size": default_size,
+            "data_offset": int.from_bytes(payload[8:12], "big", signed=True) if flags & 1 else None}
 
 
 def _is_sync(flags: int) -> bool:
@@ -516,13 +528,15 @@ def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: in
             init += data[off:off + size]
         elif name == b"moof":
             mdat = None
+            payload_offset = 0
             for nxt_off, nxt_size, _nxt_header, nxt_name in top[index + 1:]:
                 if nxt_name == b"mdat":
                     mdat = data[nxt_off:nxt_off + nxt_size]
+                    payload_offset = nxt_off + _nxt_header - off
                     break
             if mdat is None:
                 raise RuntimeError("moof without mdat")
-            moofs.append((data[off:off + size], mdat))
+            moofs.append((data[off:off + size], mdat, payload_offset))
     if not init or not moofs:
         raise RuntimeError("fragmented file missing init or moof")
     avcc = avcc_bytes(bytes(init))
@@ -530,24 +544,36 @@ def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: in
     base = tfdt0
     pieces = bytearray()
     seq = sequence
-    for moof, mdat in moofs:
+    for moof, mdat, payload_offset in moofs:
         mfhd = tfhd = None
         trun_info = None
+        traf_count = trun_count = tfhd_count = 0
+        uses_default_size = False
         for off, size, header, name in _iter_boxes(moof, 8, len(moof)):
             if name == b"mfhd":
                 mfhd = bytearray(moof[off:off + size])
             if name != b"traf":
                 continue
+            traf_count += 1
             for toff, tsize, _theader, tname in _iter_boxes(moof, off + header, off + size):
                 if tname == b"tfhd":
+                    tfhd_count += 1
                     tfhd = moof[toff:toff + tsize]
                     flags = int.from_bytes(tfhd[9:12], "big")
                     if not flags & 0x20000:
                         raise RuntimeError(f"tfhd missing default-base-is-moof flags={flags:#x}")
                 if tname == b"trun":
-                    trun_info = _parse_trun(moof, toff, tsize)
+                    trun_count += 1
+                    trun_info = _parse_trun(moof, toff, tsize, tfhd or b"")
+                    uses_default_size |= bool(trun_info["default_size"])
         if mfhd is None or tfhd is None or trun_info is None:
             raise RuntimeError("incomplete moof")
+        if uses_default_size:
+            # Only the encoder's single-run, moof-relative default-size shape is supported.
+            if (traf_count, trun_count, tfhd_count) != (1, 1, 1) or int.from_bytes(tfhd[9:12], "big") & 1:
+                raise RuntimeError("unsupported default-size fragment layout")
+            if trun_info["data_offset"] != payload_offset:
+                raise RuntimeError("default-size trun data offset does not match mdat")
         if not _is_sync(trun_info["first_flags"]):
             raise RuntimeError(f"fragment does not start on a sync sample flags={trun_info['first_flags']:#x}")
         count = trun_info["count"]
@@ -556,6 +582,8 @@ def rewrite_fragment(data: bytes, durations: list[int], tfdt0: int, sequence: in
             raise RuntimeError(f"sample count {count} exceeds remaining durations")
         tfhd = _tfhd_default_duration(tfhd, max(durs))
         header_len = 16 if int.from_bytes(mdat[:4], "big") == 1 else 8
+        if uses_default_size and header_len != 8:
+            raise RuntimeError("unsupported extended-size mdat for default-size trun")
         if sum(trun_info["sizes"]) != len(mdat) - header_len:
             raise RuntimeError("trun sizes do not match mdat")
         mfhd[12:16] = seq.to_bytes(4, "big")
