@@ -41,6 +41,8 @@ type DownloadPayload = {
 	videoId: string;
 	attempts?: number;
 	polls?: number;
+	/** A non-busy failure happened this round, so it spends a failed cycle. */
+	hardFailure?: boolean;
 	notBeforeMs?: number;
 	leaseUntilMs?: number;
 	leaseToken?: string;
@@ -309,6 +311,10 @@ async function finishDownload(
 		});
 		status = 500;
 	}
+	// Any 503 (encode busy or connection overload) means the origin was busy.
+	const hardFailure =
+		claimed.payload.hardFailure === true ||
+		![200, 202, 409, 503].includes(status);
 	const plan = planDownloadAttempt({
 		current: true,
 		originStatus: status,
@@ -339,7 +345,7 @@ async function finishDownload(
 			.update(revisionArtifactStatus)
 			.set({
 				state: "FAILED",
-				...(plan.busy
+				...(plan.busy && !hardFailure
 					? {}
 					: {
 							attempts: await downloadFailedCycle(
@@ -363,7 +369,7 @@ async function finishDownload(
 		database,
 		claimed.id,
 		claimed.leaseToken,
-		claimed.payload,
+		{ ...claimed.payload, hardFailure },
 		plan,
 	);
 }

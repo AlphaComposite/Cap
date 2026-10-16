@@ -466,9 +466,10 @@ describe("revision download exhaustion", () => {
 	});
 
 	it.each([
-		[503, true],
-		[500, false],
-	])("origin %i at exhaustion keeps the failed cycle count: %s", async (status, kept) => {
+		[503, false, true],
+		[500, false, false],
+		[503, true, false],
+	])("origin %i at exhaustion (earlier real failure: %s) keeps the failed cycle count: %s", async (status, hardFailure, kept) => {
 		const artifact: Artifact = {
 			revisionId: "rev-busy",
 			videoId: "vid-busy",
@@ -489,6 +490,7 @@ describe("revision download exhaustion", () => {
 					videoId: artifact.videoId,
 					polls: 1,
 					attempts: DOWNLOAD_MAX_FAILURES,
+					hardFailure,
 				},
 			},
 		];
