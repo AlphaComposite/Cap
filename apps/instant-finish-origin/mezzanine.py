@@ -54,18 +54,19 @@ def copy_command(source: Path, dest: Path, timescale: int) -> list[str]:
 
 
 def copy_eligible(probed: Probe) -> bool:
-    """True when the source already meets A1 (H.264, no B-frames, IDR at 0 and at least every 2s), so re-encoding buys nothing."""
+    """True when the source already meets A1 (H.264, no B-frames, IDR at 0 and at least every 2.1s), so re-encoding buys nothing."""
     if probed.codec != "h264" or probed.has_b_frames != 0 or probed.timescale <= 0 or not probed.packets:
         return False
     ordered = sorted(probed.packets, key=lambda row: row.pts)
     keys = [row.pts for row in ordered if row.key]
     if not keys or keys[0] != ordered[0].pts:
         return False
-    # ponytail: keyframe gaps up to 2 s are copied; dropped frames in long recordings stretch the
-    # media server's forced 1 s IDRs to ~1.14 s. Segments are planned at 2 s and edits seek from the
-    # previous keyframe, so a wider gap only costs a little extra decode per cut. Tighten if cut
+    # ponytail: keyframe gaps up to 2.1 s are copied. Dropped frames in long recordings stretch the
+    # media server's forced 1 s IDRs; a single 2.018-2.08 s gap in a 30 min meeting
+    # (rhw3pwsc6z4dpre) used to force a 6 min re-encode for nothing. Edits seek from the previous
+    # keyframe, so a slightly wider gap only costs a little extra decode per cut. Tighten if cut
     # latency on long GOPs is measured to regress.
-    limit = probed.timescale * 2
+    limit = probed.timescale * 21 // 10
     return all(b - a <= limit for a, b in zip(keys, keys[1:] + [ordered[-1].pts]))
 
 

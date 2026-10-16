@@ -57,6 +57,23 @@ class MezzCopy(unittest.TestCase):
         _, calls = self._build(path)
         self.assertTrue(calls and all("libx264" not in c for c in calls), calls)
 
+    def _gaps(self, gaps_s: list[float]) -> bool:
+        pts = [0]
+        for g in gaps_s:
+            pts.append(pts[-1] + round(g * 16000))
+        from index import PacketRow, Probe
+        packets = tuple(PacketRow(p, 1, True) for p in pts)
+        probe = Probe(width=2, height=2, timescale=16000, codec="h264", has_b_frames=0,
+                      packets=packets, audio_rate=48000, audio_channels=1)
+        return m.copy_eligible(probe)
+
+    def test_keyframe_gap_limit_is_2_1_seconds(self) -> None:
+        # rhw3pwsc6z4dpre: one 2.018 s gap among ~1750 forced a 6 min re-encode.
+        self.assertTrue(self._gaps([1.0, 2.018, 1.0]))
+        self.assertTrue(self._gaps([1.0, 2.1, 1.0]))
+        self.assertFalse(self._gaps([1.0, 2.11, 1.0]))
+        self.assertFalse(self._gaps([1.0, 3.083, 1.0]))
+
     def test_non_h264_source_is_reencoded(self) -> None:
         path = self.tmp / "mpeg4.mp4"
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
