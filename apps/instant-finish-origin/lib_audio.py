@@ -38,8 +38,9 @@ AUDIO_BITRATE = "160k"
 AUDIO_TRACK_ID = 2
 ROOT = Path(__file__).resolve().parent
 MAX_ADJUST = 2
-# ponytail: 0.5s ceiling on audio-shorter-than-video padding; larger gaps still fail loudly.
-TAIL_SILENCE_MAX = 24000
+# ponytail: 5 s ceiling on audio-shorter-than-video tail padding (a2yvpj0ndr5f0tb: audio ends
+# 3.35 s early, export failed at 0.5 s). Larger gaps still fail loudly as a broken index.
+TAIL_SILENCE_MAX = 5 * 48000
 # ffmpeg native AAC emits one priming frame, then one frame per 1024 input samples.
 PRIMING_FRAMES = 1
 # Init elst skips this many media samples so the leading overlap frame is not presented.
