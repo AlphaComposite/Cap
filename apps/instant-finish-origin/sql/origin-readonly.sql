@@ -10,6 +10,24 @@ SELECT id,
        bucket
 FROM videos;
 
+-- Admission facts for live, leased source-prepare jobs only. No payloads,
+-- lease tokens, or other job kinds reach the origin credential.
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW origin_active_prepare AS
+SELECT o.videoId AS video_id,
+       JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.ownerId')) AS owner_id,
+       JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.sourceObjectKey')) AS source_key
+FROM outbox o
+WHERE o.job = 'source-prepare'
+  AND JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.videoId')) = o.videoId
+  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.finished')), 'false') = 'false'
+  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.exhausted')), 'false') = 'false'
+  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.peaksOnly')), 'false') = 'false'
+  AND JSON_TYPE(JSON_EXTRACT(o.payload, '$.leaseToken')) = 'STRING'
+  AND LENGTH(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseToken'))) > 0
+  AND JSON_TYPE(JSON_EXTRACT(o.payload, '$.leaseUntilMs')) IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE')
+  AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseUntilMs')) AS DECIMAL(20,3))
+      > UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000;
+
 CREATE USER IF NOT EXISTS 'cap_origin_ro'@'%' IDENTIFIED WITH mysql_native_password BY 'replace-me';
 ALTER USER 'cap_origin_ro'@'%' IDENTIFIED WITH mysql_native_password BY 'replace-me';
 GRANT SELECT ON origin_video TO 'cap_origin_ro'@'%';
@@ -21,6 +39,5 @@ GRANT SELECT (videoId, liveKey, sha256, relocationState)
   ON source_object TO 'cap_origin_ro'@'%';
 GRANT SELECT (id, videoId, oldKey, newKey, sha256, state)
   ON source_relocation TO 'cap_origin_ro'@'%';
-GRANT SELECT (videoId, job, payload)
-  ON revision_outbox TO 'cap_origin_ro'@'%';
+GRANT SELECT ON origin_active_prepare TO 'cap_origin_ro'@'%';
 FLUSH PRIVILEGES;

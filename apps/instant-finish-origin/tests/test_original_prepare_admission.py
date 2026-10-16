@@ -209,11 +209,10 @@ class OriginalPrepareAdmissionTests(unittest.TestCase):
             self.assertTrue(store.active_original_prepare(VIDEO, KEY))
             sql, args = one.call_args.args
         self.assertEqual(args, (VIDEO, KEY, KEY, KEY))
-        for fragment in ("origin_video v", "revision_outbox j", "BINARY j.videoId=BINARY v.id",
-                         "BINARY v.id=BINARY %s", "BINARY j.job='source-prepare'",
-                         "CONCAT(v.owner_id,'/',v.id,'/result.mp4')", "$.videoId", "$.ownerId",
-                         "$.sourceObjectKey", "$.finished", "$.exhausted", "$.peaksOnly",
-                         "$.leaseToken", "$.leaseUntilMs", "CURRENT_TIMESTAMP(3)",
+        # Live-MySQL proof of the view + grant: scratch cap-encode-early/mysql-proof.
+        for fragment in ("origin_video v", "origin_active_prepare j", "BINARY j.video_id=BINARY v.id",
+                         "BINARY v.id=BINARY %s", "BINARY j.owner_id=BINARY v.owner_id",
+                         "CONCAT(v.owner_id,'/',v.id,'/result.mp4')", "BINARY j.source_key=BINARY %s",
                          "s.videoId IS NULL", "BINARY s.liveKey=BINARY %s", "s.relocationState='LIVE'",
                          "NOT EXISTS", "r.videoId=v.id", "('COPIED','POINTER','DELETED','PURGED')"):
             self.assertIn(fragment, sql)
