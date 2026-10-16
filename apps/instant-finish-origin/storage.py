@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -177,6 +179,20 @@ class PresignedObjectStore(ObjectStore):
             raise StorageError("valid storage origin and fetch deadline required") from None
         self.endpoint = endpoint.rstrip("/") + self.URL_PATH
         self.service_secret = service_secret
+        self._prepare = threading.local()
+
+    @contextmanager
+    def prepare_original(self, video_id: str, key: str, admit):
+        if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", video_id)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}/" + re.escape(video_id) + r"/result\.mp4", key)
+                or not admit()):
+            raise StorageError("refusing original prepare key")
+        previous = getattr(self._prepare, "scope", None)
+        self._prepare.scope = (video_id, key, admit)
+        try:
+            yield
+        finally:
+            self._prepare.scope = previous
 
     def _fetch(self, request, timeout, dest=None):
         # A kill-and-wait subprocess bounds DNS, TLS, headers and trickling reads,
@@ -195,9 +211,17 @@ class PresignedObjectStore(ObjectStore):
                 print("origin-storage-timing " + json.dumps({"method": request.get_method(), "ms": round((time.perf_counter() - started) * 1000, 3)}), flush=True)
 
     def _url(self, key: str, field: str) -> str:
-        assert_original_key(key)
+        scope = getattr(self._prepare, "scope", None)
+        if scope is not None and key == scope[1]:
+            if not scope[2]():
+                raise StorageError("original prepare no longer active")
+        else:
+            assert_original_key(key)
         try:
-            body = json.dumps({"key": key}, separators=(",", ":")).encode()
+            payload = {"key": key}
+            if scope is not None and key == scope[1]:
+                payload["prepareVideoId"] = scope[0]
+            body = json.dumps(payload, separators=(",", ":")).encode()
             token = sign_request(self.service_secret, "POST", self.URL_PATH, body, audience="web-object-url")
             request = urllib.request.Request(self.endpoint, data=body, headers={
                 "Content-Type": "application/json", SERVICE_HEADER: token,

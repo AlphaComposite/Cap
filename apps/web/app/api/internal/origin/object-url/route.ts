@@ -71,15 +71,21 @@ export async function POST(request: Request) {
 	}
 	seenNonces.set(nonce, exp + REVISION_MEDIA_GRANT_SKEW_SECONDS);
 	let key: unknown;
+	let prepareVideoId: unknown;
 	try {
-		key = JSON.parse(body.toString("utf8"))?.key;
+		({ key, prepareVideoId } = JSON.parse(body.toString("utf8")));
 	} catch {
 		return Response.json({ error: "Invalid body" }, { status: 400, headers });
 	}
 	try {
 		if (
 			typeof key !== "string" ||
-			!(await recordedOriginReadKeys(db())).includes(key)
+			!(
+				await recordedOriginReadKeys(
+					db(),
+					typeof prepareVideoId === "string" ? prepareVideoId : undefined,
+				)
+			).includes(key)
 		) {
 			const videoId = typeof key === "string" ? key.split("/")[2] : undefined;
 			console.warn("origin object URL denied", {

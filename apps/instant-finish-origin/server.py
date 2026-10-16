@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -24,7 +25,7 @@ import limits
 import service_auth
 from mezzanine import MezzanineError, _A1_SLOT, build_mezzanine, load_source_bind
 from publication import PublicationStore
-from storage import ObjectIdentity, ObjectStore, ShaIdentityCache, StorageError, atomic_write, private
+from storage import ObjectIdentity, ObjectStore, PresignedObjectStore, ShaIdentityCache, StorageError, atomic_write, private
 
 MEDIA_RE = re.compile(
     r"^/media/(?P<video>[A-Za-z0-9_-]{8,64})/r/(?P<rev>[A-Za-z0-9_-]{8,128})/"
@@ -479,9 +480,9 @@ class OriginApp:
             not source_id
             or len(source_id) > 4096
             or not _sha64(expected)
-            or not self._admit_prepare_key(video_id, key)
+            or not self._admit_prepare_key(video_id, key, original_prepare=False)
         ):
-            if not self._admit_prepare_key(video_id, key):
+            if not self._admit_prepare_key(video_id, key, original_prepare=False):
                 return self._json(409, {"error": "source_key_mismatch"})
             return self._text(400, b"bad request")
         row = self.store.source(video_id)
@@ -564,9 +565,22 @@ class OriginApp:
         # Overlapping editor opens share one build temp. Publishing a mezz before its
         # bind exists made the next open treat a corrupt file as ready and return 409.
         with self._source_prepare_lock(cache_id):
-            return self._prepare_source_locked(video_id, cache_id, source_id, key)
+            if not self._admit_prepare_key(video_id, key):
+                return self._json(409, {"error": "source_key_mismatch"})
+            scope = nullcontext()
+            if key.endswith("/result.mp4") and isinstance(self.objects, PresignedObjectStore):
+                scope = self.objects.prepare_original(
+                    video_id, key, lambda: self._admit_prepare_key(video_id, key)
+                )
+            try:
+                with scope:
+                    return self._prepare_source_locked(video_id, cache_id, source_id, key)
+            except StorageError:
+                return self._json(409, {"error": "source_key_mismatch"})
 
-    def _admit_prepare_key(self, video_id: str, key: str) -> bool:
+    def _admit_prepare_key(self, video_id: str, key: str, *, original_prepare: bool = True) -> bool:
+        if key.lower().endswith("result.mp4"):
+            return bool(original_prepare and self.store.active_original_prepare(video_id, key))
         row = self.store.source(video_id)
         if row is None or not row.live_key:
             return False
@@ -608,7 +622,11 @@ class OriginApp:
         self, video_id: str, cache_id: str, source_id: str, key: str
     ) -> tuple[int, bytes, str, dict[str, str]]:
         try:
-            original = self._materialize_original(cache_id, key)
+            # Capture identity before GET: copy may journal COPIED as GET finishes.
+            # No original HEAD is allowed after that gate closes.
+            identity = self.objects.head(key) if key.endswith("/result.mp4") else None
+            original = (self._materialize_original(cache_id, key, identity=identity) if identity is not None
+                        else self._materialize_original(cache_id, key))
             rejected = _reject_bad_media(original)
             if rejected:
                 return self._text(400, b"bad media")
@@ -618,7 +636,7 @@ class OriginApp:
             if bind is None:
                 _log_failed("source-prepare", reason="MezzanineUnbound", video=video_id)
                 return self._text(500, b"unavailable")
-            self._remember_sha(key, bind["source_sha256"])
+            self._remember_sha(key, bind["source_sha256"], identity=identity)
             audio = lib_audio.audio_source_for(original, mezz)
             lib_audio.build_audio_index(audio)
             lib_audio.prepare_presentation(audio)
@@ -1235,7 +1253,7 @@ class OriginApp:
             "Referrer-Policy": REFERRER,
         }
 
-    def _materialize_original(self, source_id: str, key: str) -> Path:
+    def _materialize_original(self, source_id: str, key: str, *, identity: ObjectIdentity | None = None) -> Path:
         root = self.cache / "sources" / _safe(source_id)
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         dest = root / "original.mp4"
@@ -1247,7 +1265,7 @@ class OriginApp:
             self.download_builds += 1
         private(dest)
         try:
-            head = self.objects.head(key)
+            head = identity if identity is not None else self.objects.head(key)
         except Exception:
             dest.unlink(missing_ok=True)
             raise
@@ -1442,9 +1460,9 @@ class OriginApp:
         if len(self.timings) > limits.TIMINGS_MAX:
             self.timings = [item for item in self.timings if item[0] >= cutoff][-limits.TIMINGS_MAX:]
 
-    def _remember_sha(self, key: str, sha256: str) -> None:
+    def _remember_sha(self, key: str, sha256: str, *, identity: ObjectIdentity | None = None) -> None:
         try:
-            ident = self.objects.head(key)
+            ident = identity if identity is not None else self.objects.head(key)
         except StorageError:
             return
         self._sha_cache.put(ident, sha256)

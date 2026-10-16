@@ -4,6 +4,7 @@
 
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW origin_video AS
 SELECT id,
+       ownerId AS owner_id,
        `public` AS is_public,
        (password IS NOT NULL) AS has_password,
        bucket
@@ -20,4 +21,6 @@ GRANT SELECT (videoId, liveKey, sha256, relocationState)
   ON source_object TO 'cap_origin_ro'@'%';
 GRANT SELECT (id, videoId, oldKey, newKey, sha256, state)
   ON source_relocation TO 'cap_origin_ro'@'%';
+GRANT SELECT (videoId, job, payload)
+  ON revision_outbox TO 'cap_origin_ro'@'%';
 FLUSH PRIVILEGES;

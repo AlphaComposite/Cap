@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -14,6 +15,7 @@ class VideoRow:
     public: bool
     has_password: bool
     bucket: str | None
+    owner_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,9 @@ class PublicationStore:
     def staged_source(self, video_id: str, key: str) -> StagedRelocation | None:
         return None
 
+    def active_original_prepare(self, video_id: str, key: str) -> bool:
+        return False
+
     def authorize(self, video_id: str, revision_id: str) -> AuthorizeSnapshot | None:
         raise NotImplementedError
 
@@ -117,6 +122,7 @@ class MemoryPublication(PublicationStore):
         self.revs: dict[str, RevisionRow] = {}
         self.sources: dict[str, SourceRow] = {}
         self.relocations: list[dict[str, str]] = []
+        self.outbox: list[dict] = []
 
     def video(self, video_id: str) -> VideoRow | None:
         return self.videos.get(video_id)
@@ -129,6 +135,29 @@ class MemoryPublication(PublicationStore):
 
     def source(self, video_id: str) -> SourceRow | None:
         return self.sources.get(video_id)
+
+    def active_original_prepare(self, video_id: str, key: str) -> bool:
+        video = self.video(video_id)
+        if video is None or not video.owner_id or key != f"{video.owner_id}/{video_id}/result.mp4":
+            return False
+        source = self.source(video_id)
+        if source is not None and (source.live_key != key or source.relocation_state != "LIVE"):
+            return False
+        if any(row.get("videoId") == video_id and row.get("state") in {"COPIED", "POINTER", "DELETED", "PURGED"}
+               for row in self.relocations):
+            return False
+        for row in self.outbox:
+            payload = row.get("payload") or {}
+            lease = payload.get("leaseUntilMs")
+            if (row.get("videoId") == video_id and row.get("job") == "source-prepare"
+                    and payload.get("videoId") == video_id and payload.get("ownerId") == video.owner_id
+                    and payload.get("sourceObjectKey") == key
+                    and not any(payload.get(flag) for flag in ("finished", "exhausted", "peaksOnly"))
+                    and isinstance(payload.get("leaseToken"), str) and payload["leaseToken"]
+                    and isinstance(lease, (int, float)) and not isinstance(lease, bool)
+                    and lease > time.time() * 1000):
+                return True
+        return False
 
     def staged_source(self, video_id: str, key: str) -> StagedRelocation | None:
         for row in self.relocations:
@@ -309,6 +338,30 @@ class MySQLPublication(PublicationStore):
         if row is None:
             return None
         return SourceRow(row["videoId"], row["liveKey"], row["sha256"], row["relocationState"])
+
+    def active_original_prepare(self, video_id: str, key: str) -> bool:
+        return self._one(
+            "SELECT v.id FROM origin_video v "
+            "JOIN revision_outbox j ON BINARY j.videoId=BINARY v.id "
+            "LEFT JOIN source_object s ON s.videoId=v.id "
+            "WHERE BINARY v.id=BINARY %s AND BINARY %s=BINARY CONCAT(v.owner_id,'/',v.id,'/result.mp4') "
+            "AND BINARY j.job='source-prepare' "
+            "AND BINARY JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.videoId'))=BINARY v.id "
+            "AND BINARY JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.ownerId'))=BINARY v.owner_id "
+            "AND BINARY JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.sourceObjectKey'))=BINARY %s "
+            "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.finished')),'false')='false' "
+            "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.exhausted')),'false')='false' "
+            "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.peaksOnly')),'false')='false' "
+            "AND JSON_TYPE(JSON_EXTRACT(j.payload,'$.leaseToken'))='STRING' "
+            "AND LENGTH(JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.leaseToken')))>0 "
+            "AND JSON_TYPE(JSON_EXTRACT(j.payload,'$.leaseUntilMs')) IN ('INTEGER','DOUBLE') "
+            "AND CAST(JSON_UNQUOTE(JSON_EXTRACT(j.payload,'$.leaseUntilMs')) AS DECIMAL(20,3)) "
+            "> UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))*1000 "
+            "AND (s.videoId IS NULL OR (BINARY s.liveKey=BINARY %s AND BINARY s.relocationState='LIVE')) "
+            "AND NOT EXISTS (SELECT 1 FROM source_relocation r WHERE r.videoId=v.id "
+            "AND r.state IN ('COPIED','POINTER','DELETED','PURGED')) LIMIT 1",
+            (video_id, key, key, key),
+        ) is not None
 
     def staged_source(self, video_id: str, key: str) -> StagedRelocation | None:
         row = self._one(

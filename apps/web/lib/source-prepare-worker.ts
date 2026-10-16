@@ -265,6 +265,14 @@ async function loadPrepareSnapshot(
 		publicResultEligible: !relocated,
 		sourceIndexed: indexed,
 		sourceWarm: Boolean(warm),
+		prepareOriginal:
+			process.env.ORIGIN_READ_MODE === "presign" &&
+			(!source ||
+				(source.relocationState === "LIVE" &&
+					source.liveKey === payload.sourceObjectKey)) &&
+			!stages.some((row) =>
+				["COPIED", "POINTER", "DELETED", "PURGED"].includes(row.state),
+			),
 		sourceSha256: source?.sha256,
 		peaksPresent,
 		bindMatches: stage ? boundToStage : indexed && Boolean(source?.sha256),
@@ -434,6 +442,8 @@ async function writeMissingPeaks(
 function prepareEffects(app: App, origin: unknown) {
 	let prepared: Awaited<ReturnType<typeof prepareSourceOnEditorOpen>> | null =
 		null;
+	let pending: Awaited<ReturnType<typeof prepareSourceOnEditorOpen>> | null =
+		null;
 	return {
 		copyStable: async (input: {
 			videoId: string;
@@ -524,6 +534,25 @@ function prepareEffects(app: App, origin: unknown) {
 			return { sha256: sourceSha, skipped: copied };
 		},
 		prepare: async (input: { videoId: string; sourceKey: string }) => {
+			const result = await prepareSourceOnEditorOpen(input);
+			if (
+				result.sourceKey !== input.sourceKey ||
+				!/^[a-f0-9]{64}$/.test(result.sha256)
+			)
+				throw new Error("native prepared source key or sha did not match");
+			pending = result;
+			return { encoded: true, sha256: result.sha256 };
+		},
+		commitPrepared: async (input: {
+			videoId: string;
+			sourceKey: string;
+			sha256: string;
+		}) => {
+			const result = pending;
+			if (!result || result.sha256 !== input.sha256)
+				throw new Error(
+					"native prepared identity did not match the verified copy",
+				);
 			const [registered] = await app
 				.select()
 				.from(sourceObject)
@@ -532,10 +561,8 @@ function prepareEffects(app: App, origin: unknown) {
 				throw new Error(
 					"source prepare requires a registered immutable identity",
 				);
-			const result = await prepareSourceOnEditorOpen(input);
 			const expires = new Date(result.warmExpiresAt);
 			if (
-				result.sourceKey !== input.sourceKey ||
 				result.sha256 !== registered.sha256 ||
 				(registered.a1Digest && result.a1Digest !== registered.a1Digest) ||
 				(registered.indexId && result.indexId !== registered.indexId) ||
@@ -564,8 +591,8 @@ function prepareEffects(app: App, origin: unknown) {
 						eq(sourceObject.sha256, result.sha256),
 					),
 				);
-			prepared = result;
-			return { encoded: true, sha256: result.sha256 };
+			prepared = { ...result, sourceKey: input.sourceKey };
+			pending = null;
 		},
 		publishIdentity: async (input: {
 			videoId: string;

@@ -363,6 +363,7 @@ export type PrepareSnapshot = {
 	publicResultEligible: boolean;
 	sourceIndexed: boolean;
 	sourceWarm?: boolean;
+	prepareOriginal?: boolean;
 	sourceSha256?: string;
 	peaksPresent?: boolean;
 	bindMatches: boolean;
@@ -384,6 +385,11 @@ export type PrepareEffects = {
 		videoId: string;
 		sourceKey: string;
 	}) => Promise<{ encoded: boolean; sha256: string }>;
+	commitPrepared?: (input: {
+		videoId: string;
+		sourceKey: string;
+		sha256: string;
+	}) => Promise<void>;
 	publishIdentity: (input: {
 		videoId: string;
 		sourceKey: string;
@@ -552,27 +558,74 @@ export async function advanceSourcePrepare(
 	const sourceKey = snapshot.relocated
 		? (snapshot.registeredPrivateKey ?? snapshot.stableKey)
 		: snapshot.stableKey;
-	if (!snapshot.relocated && snapshot.journalState !== "PURGED") {
-		await effects.copyStable({
-			videoId: snapshot.videoId,
-			from: snapshot.sourceObjectKey,
-			to: sourceKey,
-		});
-	}
-	if (
+	const needsPrepare =
 		!snapshot.sourceIndexed ||
 		!snapshot.bindMatches ||
-		snapshot.sourceWarm === false
+		snapshot.sourceWarm === false;
+	const needsCopy = !snapshot.relocated && snapshot.journalState !== "PURGED";
+	let sourceSha = snapshot.sourceSha256 ?? "";
+	if (
+		needsCopy &&
+		needsPrepare &&
+		snapshot.prepareOriginal &&
+		(!snapshot.journalState || snapshot.journalState === "INTENT") &&
+		snapshot.sourceObjectKey ===
+			`${snapshot.ownerId}/${snapshot.videoId}/result.mp4`
 	) {
 		calls.prepare += 1;
-		await effects.prepare({ videoId: snapshot.videoId, sourceKey });
+		// Join even on failure: no late prepare may write identity after a failed copy.
+		const [copy, prepared] = await Promise.allSettled([
+			effects.copyStable({
+				videoId: snapshot.videoId,
+				from: snapshot.sourceObjectKey,
+				to: sourceKey,
+			}),
+			effects.prepare({
+				videoId: snapshot.videoId,
+				sourceKey: snapshot.sourceObjectKey,
+			}),
+		]);
+		if (copy.status === "rejected") throw copy.reason;
+		if (prepared.status === "rejected") throw prepared.reason;
+		sourceSha = copy.value.sha256;
+		if (!sourceSha || prepared.value.sha256 !== sourceSha)
+			throw new Error("prepared source sha does not match verified copy");
+		await effects.commitPrepared?.({
+			videoId: snapshot.videoId,
+			sourceKey,
+			sha256: sourceSha,
+		});
+	} else {
+		if (needsCopy) {
+			const copy = await effects.copyStable({
+				videoId: snapshot.videoId,
+				from: snapshot.sourceObjectKey,
+				to: sourceKey,
+			});
+			sourceSha = copy.sha256;
+		}
+		if (needsPrepare) {
+			calls.prepare += 1;
+			const prepared = await effects.prepare({
+				videoId: snapshot.videoId,
+				sourceKey,
+			});
+			if (sourceSha && prepared.sha256 !== sourceSha)
+				throw new Error("prepared source sha does not match verified copy");
+			sourceSha = prepared.sha256;
+			await effects.commitPrepared?.({
+				videoId: snapshot.videoId,
+				sourceKey,
+				sha256: sourceSha,
+			});
+		}
 	}
 	if (!snapshot.currentRevisionId || !snapshot.currentReadable) {
 		calls.publish += 1;
 		await effects.publishIdentity({
 			videoId: snapshot.videoId,
 			sourceKey,
-			sha256: snapshot.sourceSha256 ?? "",
+			sha256: sourceSha,
 		});
 	}
 	const deferPublicDeletion =

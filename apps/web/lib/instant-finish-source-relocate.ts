@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
 import { db } from "@cap/database";
 import {
+	revisionOutbox,
 	sourceObject,
 	sourceRelocation,
 	videoEdits,
@@ -384,7 +385,10 @@ export function resolveRecordedOriginKeys(
 	return [...keys].sort();
 }
 
-export async function recordedOriginReadKeys(app: Database) {
+export async function recordedOriginReadKeys(
+	app: Database,
+	prepareVideoId?: string,
+) {
 	const sources = await app
 		.select({
 			videoId: sourceObject.videoId,
@@ -402,7 +406,58 @@ export async function recordedOriginReadKeys(app: Database) {
 			state: sourceRelocation.state,
 		})
 		.from(sourceRelocation);
-	return resolveRecordedOriginKeys(sources, stages);
+	const keys = resolveRecordedOriginKeys(sources, stages);
+	// Only the reverse-direction, signed prepare request opts in. Direct-S3 callers do not.
+	if (!prepareVideoId || !/^[A-Za-z0-9_-]{1,128}$/.test(prepareVideoId))
+		return keys;
+	const source = sources.find((row) => row.videoId === prepareVideoId);
+	if (
+		(source && source.relocationState !== "LIVE") ||
+		stages.some(
+			(row) =>
+				row.videoId === prepareVideoId &&
+				["COPIED", "POINTER", "DELETED", "PURGED"].includes(row.state),
+		)
+	)
+		return keys;
+	const [video] = await app
+		.select({ ownerId: videos.ownerId })
+		.from(videos)
+		.where(eq(videos.id, prepareVideoId as never));
+	if (!video || !/^[A-Za-z0-9_-]{1,128}$/.test(video.ownerId)) return keys;
+	const original = `${video.ownerId}/${prepareVideoId}/result.mp4`;
+	if (source && source.liveKey !== original) return keys;
+	const jobs = await app
+		.select()
+		.from(revisionOutbox)
+		.where(
+			and(
+				eq(revisionOutbox.videoId, prepareVideoId as never),
+				eq(revisionOutbox.job, "source-prepare"),
+			),
+		);
+	if (
+		jobs.some((row) => {
+			const payload = row.payload as Record<string, unknown> | null;
+			return (
+				row.videoId === prepareVideoId &&
+				row.job === "source-prepare" &&
+				payload &&
+				payload.videoId === prepareVideoId &&
+				payload.ownerId === video.ownerId &&
+				payload.sourceObjectKey === original &&
+				!payload.finished &&
+				!payload.exhausted &&
+				!payload.peaksOnly &&
+				typeof payload.leaseToken === "string" &&
+				payload.leaseToken.length > 0 &&
+				typeof payload.leaseUntilMs === "number" &&
+				payload.leaseUntilMs > Date.now()
+			);
+		})
+	)
+		keys.push(original);
+	return keys;
 }
 
 export async function refreshOriginReadPolicy(app: Database, liveKey: string) {
