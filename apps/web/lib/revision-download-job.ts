@@ -312,6 +312,8 @@ async function finishDownload(
 		status = 500;
 	}
 	// Any 503 (encode busy or connection overload) means the origin was busy.
+	// ponytail: an export that only ever sees 503s retries every 30 min forever;
+	// add a busy-round cap if that is ever seen in practice.
 	const hardFailure =
 		claimed.payload.hardFailure === true ||
 		![200, 202, 409, 503].includes(status);
