@@ -871,7 +871,10 @@ class OriginApp:
                     if not slot.finished:
                         slot.finish()
         except Exception as exc:
-            job.failed = True
+            # Origin busy is not an export failure: leave the job unfailed so
+            # the next poll restarts it (202) instead of spending a retry.
+            if not (isinstance(exc, TimeoutError) and str(exc) == "encode busy"):
+                job.failed = True
             _log_failed(
                 "revision-download",
                 exc,

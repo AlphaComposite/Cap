@@ -418,7 +418,7 @@ export const CapCard = ({
 		isOwner &&
 		!sharedCapCard &&
 		cap.isScreenshot !== true &&
-		editReadiness.readiness?.playbackAdmission === true &&
+		editReadiness.readiness?.editorOpenable === true &&
 		(cap.source?.type === "desktopMP4" || cap.source?.type === "webMP4") &&
 		Boolean(cap.duration && cap.duration > 0);
 	const handleEditVideo = () => {

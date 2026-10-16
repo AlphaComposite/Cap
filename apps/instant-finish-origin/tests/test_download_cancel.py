@@ -32,6 +32,22 @@ class DownloadCancelTests(unittest.TestCase):
             finally:
                 lib_origin.reset_revision_encodes()
 
+    def test_busy_origin_does_not_fail_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = server.OriginApp(MemoryPublication(), LocalObjectStore(root), root / "cache", b"g" * 32, b"s" * 32)
+            try:
+                with patch("server._lower_child_priority"), patch.object(app, "_origin_for", return_value=object()), patch("server.remux_download", side_effect=TimeoutError("encode busy")):
+                    busy = server.DownloadJob()
+                    app._run_download("revisionbusy", "video0001", "source001", [], busy)
+                    self.assertFalse(busy.failed, "busy origin counted as a failed export")
+                with patch("server._lower_child_priority"), patch.object(app, "_origin_for", return_value=object()), patch("server.remux_download", side_effect=RuntimeError("boom")):
+                    broken = server.DownloadJob()
+                    app._run_download("revisionbusy", "video0001", "source001", [], broken)
+                    self.assertTrue(broken.failed)
+            finally:
+                lib_origin.reset_revision_encodes()
+
     def test_export_lowers_priority_before_source_work(self):
         import threading
         from types import SimpleNamespace

@@ -161,8 +161,13 @@ const data = {
 	totalReactions: 0,
 	public: true,
 };
-const state = (status: string | null = "PROCESSING", admitted = true) => ({
+const state = (
+	status: string | null = "PROCESSING",
+	admitted = true,
+	editorOpenable = true,
+) => ({
 	readiness: deriveEditReadiness({
+		editorOpenable,
 		videoId: "video",
 		identity: "current",
 		eligible: true,
@@ -412,5 +417,12 @@ describe("owner entrypoint presentation", () => {
 		expect(card()).not.toContain("Edit timeline");
 		expect(header()).not.toContain("Edit timeline");
 		expect(header()).not.toContain("Edit video");
+	});
+	it("hides dashboard Edit while the share-page Edit is disabled", () => {
+		mocks.readiness.mockReturnValue(state("COMPLETE", true, false));
+		expect(card()).not.toContain("Edit video");
+		expect(card()).not.toContain("Edit timeline");
+		mocks.readiness.mockReturnValue(state("COMPLETE"));
+		expect(card()).toContain("Edit video");
 	});
 });
