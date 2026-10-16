@@ -17,11 +17,12 @@ SELECT o.videoId AS video_id,
        JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.ownerId')) AS owner_id,
        JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.sourceObjectKey')) AS source_key
 FROM outbox o
-WHERE o.job = 'source-prepare'
-  AND JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.videoId')) = o.videoId
+WHERE BINARY o.job = BINARY 'source-prepare'
+  AND BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.videoId')) = BINARY o.videoId
   AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.finished')), 'false') = 'false'
   AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.exhausted')), 'false') = 'false'
   AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.peaksOnly')), 'false') = 'false'
+  -- UNSIGNED INTEGER: MySQL types large positive JSON numbers that way; still a number compared to now.
   AND JSON_TYPE(JSON_EXTRACT(o.payload, '$.leaseToken')) = 'STRING'
   AND LENGTH(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseToken'))) > 0
   AND JSON_TYPE(JSON_EXTRACT(o.payload, '$.leaseUntilMs')) IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE')
