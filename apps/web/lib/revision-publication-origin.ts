@@ -171,7 +171,7 @@ export type OriginClient = {
 		videoId: string;
 		revisionId: string;
 		automatic?: boolean;
-	}): Promise<{ status: number }>;
+	}): Promise<{ status: number; busy?: boolean }>;
 	writeCaptions?(input: {
 		videoId: string;
 		revisionId: string;
@@ -311,7 +311,12 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 			const path = `/internal/revisions/${input.revisionId}/download`;
 			const encoded = JSON.stringify({ videoId: input.videoId, automatic: input.automatic === true });
 			const response = await signedFetch(path, "POST", encoded);
-			return { status: response.status };
+			// Only the job's own encode-slot timeout is "busy"; admission
+			// overload 503s ("overloaded") count as real failures.
+			const busy =
+				response.status === 503 &&
+				(await response.text()).trim() === "encode busy";
+			return { status: response.status, busy };
 		},
 		async writeCaptions(input) {
 			const path = `/internal/revisions/${input.revisionId}/captions`;

@@ -33,7 +33,7 @@ export type DownloadPlan =
 			polls: number;
 	  }
 	| { action: "yield" }
-	| { action: "exhausted"; failures: number; busy: boolean };
+	| { action: "exhausted"; failures: number };
 
 type DownloadPayload = {
 	job: "download";
@@ -41,7 +41,8 @@ type DownloadPayload = {
 	videoId: string;
 	attempts?: number;
 	polls?: number;
-	/** A non-busy failure happened this round, so it spends a failed cycle. */
+	/** A non-busy failure happened this round, so it spends a failed cycle;
+	 * a round of only encode-busy failures waits out the cooldown instead. */
 	hardFailure?: boolean;
 	notBeforeMs?: number;
 	leaseUntilMs?: number;
@@ -69,9 +70,7 @@ export function planDownloadAttempt(input: {
 	}
 	const failures = input.failures + 1;
 	if (failures > DOWNLOAD_MAX_FAILURES) {
-		// ponytail: only the last failure decides; a busy origin (503) never
-		// spends a terminal cycle, it just waits out the cooldown again.
-		return { action: "exhausted", failures, busy: input.originStatus === 503 };
+		return { action: "exhausted", failures };
 	}
 	const delay =
 		DOWNLOAD_BACKOFF_MS[
@@ -291,6 +290,7 @@ async function finishDownload(
 	const polls =
 		typeof claimed.payload.polls === "number" ? claimed.payload.polls : 0;
 	let status = 500;
+	let busy = false;
 	try {
 		if (!origin.requestDownload) {
 			const unavailable = new Error("download origin unavailable");
@@ -303,6 +303,7 @@ async function finishDownload(
 			automatic: true,
 		});
 		status = response.status;
+		busy = response.busy === true;
 	} catch (error) {
 		alertRevisionDownloadFailure({
 			videoId: claimed.payload.videoId,
@@ -311,12 +312,11 @@ async function finishDownload(
 		});
 		status = 500;
 	}
-	// Any 503 (encode busy or connection overload) means the origin was busy.
-	// ponytail: an export that only ever sees 503s retries every 30 min forever;
-	// add a busy-round cap if that is ever seen in practice.
+	// Encode-busy is raised only by the origin's slot wait, never by a broken
+	// export, so an all-busy round cannot hide a real failure.
 	const hardFailure =
 		claimed.payload.hardFailure === true ||
-		![200, 202, 409, 503].includes(status);
+		(![200, 202, 409].includes(status) && !busy);
 	const plan = planDownloadAttempt({
 		current: true,
 		originStatus: status,
@@ -347,7 +347,7 @@ async function finishDownload(
 			.update(revisionArtifactStatus)
 			.set({
 				state: "FAILED",
-				...(plan.busy && !hardFailure
+				...(!hardFailure
 					? {}
 					: {
 							attempts: await downloadFailedCycle(

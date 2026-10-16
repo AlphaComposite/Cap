@@ -469,7 +469,8 @@ describe("revision download exhaustion", () => {
 		[503, false, true],
 		[500, false, false],
 		[503, true, false],
-	])("origin %i at exhaustion (earlier real failure: %s) keeps the failed cycle count: %s", async (status, hardFailure, kept) => {
+		[503, false, false, false],
+	])("origin %i at exhaustion (earlier real failure: %s) keeps the failed cycle count: %s", async (status, hardFailure, kept, busy = true) => {
 		const artifact: Artifact = {
 			revisionId: "rev-busy",
 			videoId: "vid-busy",
@@ -500,7 +501,7 @@ describe("revision download exhaustion", () => {
 				prepareRevision: vi.fn(),
 				selectFrames: vi.fn(),
 				fetchArtifact: vi.fn(),
-				requestDownload: async () => ({ status, body: "" }),
+				requestDownload: async () => ({ status, busy: busy && status === 503 }),
 			},
 			now: new Date(5_000),
 			limit: 1,

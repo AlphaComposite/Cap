@@ -30,4 +30,13 @@ describe("download admission intent", () => {
    }
   } finally { vi.unstubAllEnvs(); }
  });
+ it("treats only the export's own encode-busy 503 as busy", async () => {
+  vi.stubEnv("CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL", "http://origin.test");
+  try {
+   for (const [status, body, busy] of [[503, "encode busy", true], [503, "overloaded\n", false], [500, "unavailable", false]] as const) {
+    fetch.mockResolvedValueOnce({ status, text: async () => body } as never);
+    expect(await httpOriginClient().requestDownload!({ videoId: "video", revisionId: "revision", automatic: true })).toEqual({ status, busy });
+   }
+  } finally { vi.unstubAllEnvs(); }
+ });
 });
