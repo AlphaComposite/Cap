@@ -448,25 +448,17 @@ function prepareEffects(app: App, origin: unknown) {
 			const t0 = performance.now();
 			const mark = (step: string) => {
 				if (process.env.CAP_WORKER_TIMING === "1")
-					console.log(`copy-stable-timing ${JSON.stringify({ videoId: input.videoId, step, ms: Math.round(performance.now() - t0) })}`);
+					console.log(
+						`copy-stable-timing ${JSON.stringify({ videoId: input.videoId, step, ms: Math.round(performance.now() - t0) })}`,
+					);
 			};
-			const sourceSha = await store.sha256(input.from);
-			mark("sha-source");
-			if (!sourceSha || !/^[a-f0-9]{64}$/.test(sourceSha))
-				throw new Error("source object missing before copy");
 			if (!input.to.startsWith(`private/source/${input.videoId}/`))
 				throw new Error("staged source belongs to another video");
-			const copied = await store.sha256(input.to);
-			if (copied && copied !== sourceSha)
-				throw new Error("staged source identity changed");
-			if (!copied) await store.copy(input.from, input.to);
-			mark("copy");
-			if (
-				(await store.sha256(input.to)) !== sourceSha ||
-				(await store.sha256(input.from)) !== sourceSha
-			) {
-				throw new Error("stable copy sha mismatch");
-			}
+			const { sourceSha, copied } = await stageVerifiedCopy(
+				store,
+				input.from,
+				input.to,
+			);
 			mark("verify");
 			await app.transaction(async (tx) => {
 				const [video] = await tx
@@ -529,7 +521,7 @@ function prepareEffects(app: App, origin: unknown) {
 			if (!(await reconcileOriginReadPolicy(app)))
 				throw new Error("staged source policy is not ready");
 			mark("policy");
-			return { sha256: sourceSha, skipped: Boolean(copied) };
+			return { sha256: sourceSha, skipped: copied };
 		},
 		prepare: async (input: { videoId: string; sourceKey: string }) => {
 			const [registered] = await app
@@ -723,4 +715,40 @@ function prepareEffects(app: App, origin: unknown) {
 			await enqueuePeaksOnly(app as never, input);
 		},
 	};
+}
+
+type HashCopyStore = {
+	sha256(key: string): Promise<string | null>;
+	copy(from: string, to: string): Promise<void>;
+	exists(key: string): Promise<boolean>;
+};
+
+/**
+ * Copy `from` to `to` (unless already staged) and prove both hold the same
+ * bytes. Each object is hashed once, after the copy, in parallel. The old
+ * order (hash source, copy, re-hash copy, re-hash source) pulled a large
+ * recording through the worker three times back to back.
+ */
+export async function stageVerifiedCopy(
+	store: HashCopyStore,
+	from: string,
+	to: string,
+): Promise<{ sourceSha: string; copied: boolean }> {
+	const staged = await store.exists(to);
+	if (!staged) {
+		if (!(await store.exists(from)))
+			throw new Error("source object missing before copy");
+		await store.copy(from, to);
+	}
+	const [sourceSha, stagedSha] = await Promise.all([
+		store.sha256(from),
+		store.sha256(to),
+	]);
+	if (!sourceSha || !/^[a-f0-9]{64}$/.test(sourceSha))
+		throw new Error("source object missing before copy");
+	if (stagedSha !== sourceSha)
+		throw new Error(
+			staged ? "staged source identity changed" : "stable copy sha mismatch",
+		);
+	return { sourceSha, copied: staged };
 }
