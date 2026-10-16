@@ -153,6 +153,7 @@ class DownloadJob:
     def __init__(self) -> None:
         self.thread: threading.Thread | None = None
         self.failed = False
+        self.busy = False
         self.reported = False
 
 
@@ -800,6 +801,8 @@ class OriginApp:
             if job is not None and job.failed and not job.reported:
                 job.reported = True
                 self._downloads.pop(revision_id, None)
+                if job.busy:
+                    return self._text(503, b"encode busy")
                 return self._text(500, b"unavailable")
             job = DownloadJob()
             thread = threading.Thread(
@@ -871,10 +874,10 @@ class OriginApp:
                     if not slot.finished:
                         slot.finish()
         except Exception as exc:
-            # Origin busy is not an export failure: leave the job unfailed so
-            # the next poll restarts it (202) instead of spending a retry.
-            if not (isinstance(exc, TimeoutError) and str(exc) == "encode busy"):
-                job.failed = True
+            job.failed = True
+            # Reported as 503 so the web job keeps its backoff but does not
+            # spend a terminal failed cycle on a busy origin.
+            job.busy = isinstance(exc, TimeoutError) and str(exc) == "encode busy"
             _log_failed(
                 "revision-download",
                 exc,

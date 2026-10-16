@@ -465,6 +465,49 @@ describe("revision download exhaustion", () => {
 		);
 	});
 
+	it.each([
+		[503, true],
+		[500, false],
+	])("origin %i at exhaustion keeps the failed cycle count: %s", async (status, kept) => {
+		const artifact: Artifact = {
+			revisionId: "rev-busy",
+			videoId: "vid-busy",
+			state: "PENDING",
+			attempts: MAX_FAILED_CYCLES - 1,
+			heartbeatAt: null,
+			current: true,
+		};
+		const jobs: Job[] = [
+			{
+				id: 4,
+				revisionId: artifact.revisionId,
+				videoId: artifact.videoId,
+				createdAt: new Date(0),
+				payload: {
+					job: "download",
+					revisionId: artifact.revisionId,
+					videoId: artifact.videoId,
+					polls: 1,
+					attempts: DOWNLOAD_MAX_FAILURES,
+				},
+			},
+		];
+		const database = workerDb([artifact], jobs, []);
+		await sweepRevisionDownloads(database, {
+			origin: {
+				prepareRevision: vi.fn(),
+				selectFrames: vi.fn(),
+				fetchArtifact: vi.fn(),
+				requestDownload: async () => ({ status, body: "" }),
+			},
+			now: new Date(5_000),
+			limit: 1,
+		});
+		expect(artifact.state).toBe("FAILED");
+		// busy (503) must not spend a cycle; real errors (500) must
+		expect(artifact.attempts === MAX_FAILED_CYCLES - 1).toBe(kept);
+		expect(artifact.heartbeatAt).toEqual(new Date(5_000));
+	});
 	it("re-enqueues a cooled FAILED current download at most three cycles", async () => {
 		const now = new Date(10_000_000);
 		const cooled = new Date(now.getTime() - COOLDOWN_MS - 1);

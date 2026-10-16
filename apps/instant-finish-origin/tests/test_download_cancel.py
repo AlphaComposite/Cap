@@ -40,11 +40,13 @@ class DownloadCancelTests(unittest.TestCase):
                 with patch("server._lower_child_priority"), patch.object(app, "_origin_for", return_value=object()), patch("server.remux_download", side_effect=TimeoutError("encode busy")):
                     busy = server.DownloadJob()
                     app._run_download("revisionbusy", "video0001", "source001", [], busy)
-                    self.assertFalse(busy.failed, "busy origin counted as a failed export")
+                    self.assertTrue(busy.failed)
+                    self.assertTrue(busy.busy, "busy origin reported as a real failure")
                 with patch("server._lower_child_priority"), patch.object(app, "_origin_for", return_value=object()), patch("server.remux_download", side_effect=RuntimeError("boom")):
                     broken = server.DownloadJob()
                     app._run_download("revisionbusy", "video0001", "source001", [], broken)
                     self.assertTrue(broken.failed)
+                    self.assertFalse(broken.busy)
             finally:
                 lib_origin.reset_revision_encodes()
 

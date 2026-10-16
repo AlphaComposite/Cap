@@ -33,7 +33,7 @@ export type DownloadPlan =
 			polls: number;
 	  }
 	| { action: "yield" }
-	| { action: "exhausted"; failures: number };
+	| { action: "exhausted"; failures: number; busy: boolean };
 
 type DownloadPayload = {
 	job: "download";
@@ -67,7 +67,9 @@ export function planDownloadAttempt(input: {
 	}
 	const failures = input.failures + 1;
 	if (failures > DOWNLOAD_MAX_FAILURES) {
-		return { action: "exhausted", failures };
+		// ponytail: only the last failure decides; a busy origin (503) never
+		// spends a terminal cycle, it just waits out the cooldown again.
+		return { action: "exhausted", failures, busy: input.originStatus === 503 };
 	}
 	const delay =
 		DOWNLOAD_BACKOFF_MS[
@@ -337,10 +339,14 @@ async function finishDownload(
 			.update(revisionArtifactStatus)
 			.set({
 				state: "FAILED",
-				attempts: await downloadFailedCycle(
-					database,
-					claimed.payload.revisionId,
-				),
+				...(plan.busy
+					? {}
+					: {
+							attempts: await downloadFailedCycle(
+								database,
+								claimed.payload.revisionId,
+							),
+						}),
 				heartbeatAt: stamp,
 				leaseUntil: null,
 			})
