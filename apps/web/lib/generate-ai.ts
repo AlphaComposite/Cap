@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db } from "@cap/database";
-import { videos } from "@cap/database/schema";
+import { editRevision, videos } from "@cap/database/schema";
 import type { VideoMetadata } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
 import { and, eq, sql } from "drizzle-orm";
@@ -12,6 +12,49 @@ import {
 	isKnownLegacyAutomaticChapterState,
 } from "@/lib/automatic-chapter-backfill";
 import { generateAiWorkflow } from "@/workflows/generate-ai";
+import { shouldRegenerateRevisionChapters } from "@/lib/revision-chapter-source";
+
+export async function startRevisionChapterGeneration(
+	videoId: string,
+	revisionId: string,
+	input: Omit<
+		Parameters<typeof shouldRegenerateRevisionChapters>[0],
+		"outputDuration"
+	>,
+) {
+	if (!isAiConfigured() || input.chaptersManuallyEdited === true) return;
+	try {
+		const [revision] = await db()
+			.select({ snapshot: editRevision.metadataSnapshot })
+			.from(editRevision)
+			.where(
+				and(
+					eq(editRevision.videoId, videoId as Video.VideoId),
+					eq(editRevision.revisionId, revisionId),
+					eq(editRevision.state, "CURRENT"),
+				),
+			);
+		if (
+			!revision?.snapshot ||
+			!shouldRegenerateRevisionChapters({
+				...input,
+				outputDuration: revision.snapshot.durationSeconds,
+			})
+		)
+			return;
+		const { regenerateRevisionChaptersWorkflow } = await import(
+			"@/workflows/regenerate-revision-chapters"
+		);
+		await start(regenerateRevisionChaptersWorkflow, [{ videoId, revisionId }]);
+	} catch (error) {
+		// Publication already succeeded; keep its projected chapters on queue failure.
+		console.error("Failed to queue revision chapters", {
+			videoId,
+			revisionId,
+			error,
+		});
+	}
+}
 
 type GenerateAiResult = {
 	success: boolean;

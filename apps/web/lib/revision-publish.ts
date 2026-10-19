@@ -223,6 +223,11 @@ export async function publishOwnerRevision(
 		{ origin: httpOriginClient() },
 	);
 	timing("flipped");
+	const { startRevisionChapterGeneration } = await import("@/lib/generate-ai");
+	await startRevisionChapterGeneration(input.videoId, published.revisionId, {
+		sourceDuration: input.editSpec.sourceDuration,
+		chaptersManuallyEdited: video.metadata?.chaptersManuallyEdited,
+	});
 	revalidatePath(`/s/${input.videoId}`);
 	const playback = await loadPublishPlayback(
 		{

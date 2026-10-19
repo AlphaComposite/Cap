@@ -252,6 +252,29 @@ export function projectSourceChapters(
 	return projectWithSource(sourceChapters, spec).map((entry) => entry.chapter);
 }
 
+export const CHAPTER_REGENERATION_DURATION_RATIO = 0.2;
+export const CHAPTER_REGENERATION_DURATION_SECONDS = 60;
+
+export function shouldRegenerateRevisionChapters(input: {
+	sourceDuration: number;
+	outputDuration: number;
+	chaptersManuallyEdited?: boolean;
+}): boolean {
+	if (input.chaptersManuallyEdited === true) return false;
+	if (
+		!Number.isFinite(input.sourceDuration) ||
+		input.sourceDuration <= 0 ||
+		!Number.isFinite(input.outputDuration) ||
+		input.outputDuration <= 0
+	)
+		return false;
+	const difference = Math.abs(input.sourceDuration - input.outputDuration);
+	return (
+		difference >= CHAPTER_REGENERATION_DURATION_SECONDS ||
+		difference >= input.sourceDuration * CHAPTER_REGENERATION_DURATION_RATIO
+	);
+}
+
 export function outputChaptersToSource(
 	chapters: readonly VideoChapter[],
 	spec: VideoEditSpec,

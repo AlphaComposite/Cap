@@ -938,10 +938,39 @@ function extractJsonObject(content: string): string {
 	throw new Error("AI response contained an incomplete JSON object");
 }
 
+export async function generateChaptersForTranscript(
+	vtt: string,
+	videoDuration: number,
+	language: AiGenerationLanguage,
+): Promise<{ title: string; start: number }[]> {
+	const segments = parseVttWithTimestamps(vtt).filter(
+		(segment) => segment.start < videoDuration && segment.text.trim(),
+	);
+	if (segments.length === 0) throw new Error("No edited transcript cues");
+	const chunks = chunkTranscriptWithTimestamps(segments);
+	const instruction = getAiLanguageInstruction(language);
+	const result =
+		chunks.length === 1
+			? await generateSingleChunk(segments, videoDuration, instruction, true)
+			: await generateMultipleChunks(
+					chunks,
+					videoDuration,
+					instruction,
+					segments,
+					true,
+				);
+	return validateGeneratedChapters(
+		result.chapters ?? [],
+		videoDuration,
+		segments,
+	);
+}
+
 async function generateSingleChunk(
 	segments: VttSegment[],
 	videoDuration: number,
 	languageInstruction: string,
+	chaptersOnly = false,
 ): Promise<AiResult> {
 	const transcriptWithTimestamps = segments
 		.map(
@@ -974,12 +1003,13 @@ Return ONLY valid JSON without any markdown formatting or code blocks.
 Transcript:
 ${transcriptWithTimestamps}`;
 
-	const parsed = await callAiApi(prompt, parseAiResponse);
+	const parsed: AiResult = chaptersOnly
+		? {}
+		: await callAiApi(prompt, parseAiResponse);
 	let chapters = parsed.chapters ?? [];
-	const minimumChapterCount = getRequiredChapterSynthesisCount(
-		videoDuration,
-		chapters,
-		segments,
+	const minimumChapterCount = Math.max(
+		chaptersOnly ? 1 : 0,
+		getRequiredChapterSynthesisCount(videoDuration, chapters, segments),
 	);
 
 	if (minimumChapterCount > 0) {
@@ -988,7 +1018,7 @@ ${transcriptWithTimestamps}`;
 
 Allowed chapter cue starts (seconds): ${chapterCueStarts.join(", ")}
 
-The first analysis did not meet evidence-backed coverage. Return at least ${minimumChapterCount} distinct, useful chapters that cover supported topic or phase changes across the full recording. Use only the allowed cue starts and do not invent topics, create equal time slices, or treat a title or cue position alone as a topic.
+${chaptersOnly ? "" : "The first analysis did not meet evidence-backed coverage. "}Return at least ${minimumChapterCount} distinct, useful chapters that cover supported topic or phase changes across the full recording. Use only the allowed cue starts and do not invent topics, create equal time slices, or treat a title or cue position alone as a topic.
 
 Provide JSON in this format:
 {
@@ -996,7 +1026,7 @@ Provide JSON in this format:
 }
 
 - ${contentGuidelines.chapters}
-- The duration range is conditional guidance, not a topic quota. Return fewer chapters when the transcript supports fewer meaningful transitions; never split a coherent topic to meet the range.
+${chaptersOnly ? `- ${languageInstruction}\n` : ""}- The duration range is conditional guidance, not a topic quota. Return fewer chapters when the transcript supports fewer meaningful transitions; never split a coherent topic to meet the range.
 - Return ONLY valid JSON without markdown.
 Transcript:
 ${transcriptWithTimestamps}`;
@@ -1022,6 +1052,7 @@ async function generateMultipleChunks(
 	videoDuration: number,
 	languageInstruction: string,
 	transcriptSegments: VttSegment[],
+	chaptersOnly = false,
 ): Promise<AiResult> {
 	const chunkSummaries: {
 		summary: string;
@@ -1111,10 +1142,13 @@ ${chunk.text}`;
 			return `Section ${i + 1} (${timeRange}):\n${c.summary}${keyPointsList}`;
 		})
 		.join("\n\n");
-	const minimumChapterCount = getRequiredChapterSynthesisCount(
-		videoDuration,
-		chapterCandidates,
-		transcriptSegments,
+	const minimumChapterCount = Math.max(
+		chaptersOnly ? 1 : 0,
+		getRequiredChapterSynthesisCount(
+			videoDuration,
+			chapterCandidates,
+			transcriptSegments,
+		),
 	);
 
 	if (minimumChapterCount > 0) {
@@ -1142,7 +1176,7 @@ Provide JSON in this format:
 }
 
 - ${contentGuidelines.chapters}
-- The duration range is conditional guidance, not a topic quota. Return fewer chapters when the analyses support fewer meaningful transitions; never split a coherent topic to meet the range.
+${chaptersOnly ? `- ${languageInstruction}\n` : ""}- The duration range is conditional guidance, not a topic quota. Return fewer chapters when the analyses support fewer meaningful transitions; never split a coherent topic to meet the range.
 - Include an opening chapter near 0 seconds.
 - All chapter starts must be between 0 and ${videoDuration} seconds.
 - Return ONLY valid JSON without markdown formatting or code blocks.`;
@@ -1163,6 +1197,8 @@ Provide JSON in this format:
 			return chapters;
 		});
 	}
+
+	if (chaptersOnly) return { chapters: allChapters };
 
 	const finalPrompt = `You are Cap AI, creating a concise title from timestamped section analyses.
 
