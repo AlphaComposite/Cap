@@ -583,7 +583,7 @@ describe("published edit chapter regeneration", () => {
 			payload.videoId,
 			spec,
 		);
-		expect(mocks.ai.mock.calls[0]![0].prompt).toContain("[1:40]");
+		expect(mocks.ai.mock.calls[0]![0].prompt).toContain("[100] Airtable migration");
 		expect(mocks.ai.mock.calls[0]![0].prompt).not.toContain("[6:40]");
 	});
 
@@ -620,5 +620,16 @@ describe("published edit chapter regeneration", () => {
 		]);
 		expect(mocks.ai).toHaveBeenCalledOnce();
 		expect(mocks.ai.mock.calls[0]![0].prompt).toContain("326.6-second video");
+	});
+
+	it("labels single-section cues in absolute seconds, the unit chapter starts use", async () => {
+		mocks.ai.mockResolvedValue({
+			text: '{"chapters":[{"title":"Website","start":0},{"title":"Apple","start":200}]}',
+		});
+		await generation.generateChaptersForTranscript(vtt, 326.6, "auto");
+		const prompt = mocks.ai.mock.calls[0]![0].prompt as string;
+		// m:ss labels ("[3:20]") made the model return wrong starts in seconds.
+		expect(prompt).toContain("[200] Finally the Apple enrollment");
+		expect(prompt).not.toContain("[3:20]");
 	});
 });

@@ -988,10 +988,9 @@ async function generateSingleChunk(
 	chaptersOnly = false,
 ): Promise<AiResult> {
 	const transcriptWithTimestamps = segments
-		.map(
-			(s) =>
-				`[${Math.floor(s.start / 60)}:${String(s.start % 60).padStart(2, "0")}] ${s.text}`,
-		)
+		// Absolute seconds, the unit chapter starts are requested in (same as
+		// the multi-section path); m:ss labels made the model mis-convert times.
+		.map((s) => `[${formatAbsoluteCueStart(s.start)}] ${s.text}`)
 		.join("\n");
 	const contentGuidelines = getAiContentGuidelines(videoDuration);
 
