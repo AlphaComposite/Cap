@@ -1370,7 +1370,6 @@ class OriginApp:
             cache=self.cache,
             secret=self.service_secret,
             revision_id=revision_id,
-            thumbnail_at_seconds=body.get("thumbnailAtSeconds"),
         )
         return vtt, chapters_doc
 
@@ -1827,7 +1826,6 @@ def schedule_thumbnail(
     cache: Path | None = None,
     secret: bytes | None = None,
     revision_id: str | None = None,
-    thumbnail_at_seconds: float | None = None,
 ) -> None:
     def run() -> None:
         # Reuse this deferred worker: prepare startup continuity before its thumbnail.
@@ -1842,14 +1840,14 @@ def schedule_thumbnail(
             try:
                 if cache is not None and secret is not None and revision_id:
                     dest = _side_dir(cache, revision_id) / "thumbnail.jpg"
-                    _thumbnail(origin, dest, duration_seconds, thumbnail_at_seconds)
+                    _thumbnail(origin, dest, duration_seconds)
                     data = dest.read_bytes()
                     if not _jpeg_has_frame(data):
                         raise RuntimeError("thumbnail is not a verified jpeg")
                     write_signed_side(secret, cache, revision_id, "thumbnail.jpg", data)
                     return
                 dest = origin.cache / "thumbnail.jpg"
-                _thumbnail(origin, dest, duration_seconds, thumbnail_at_seconds)
+                _thumbnail(origin, dest, duration_seconds)
                 return
             except Exception:
                 continue
@@ -1864,20 +1862,30 @@ def drain_thumbnails() -> None:
         thread.join(timeout=30)
 
 
-def _thumbnail(origin: lib_origin.Origin, dest: Path, duration_seconds: float, thumbnail_at_seconds: float | None = None) -> None:
-    init = origin.ensure_init()
-    index, seek = 0, []
-    if isinstance(thumbnail_at_seconds, (int, float)) and not isinstance(thumbnail_at_seconds, bool):
-        tb = origin.profile.timescale
+THUMBNAIL_MIN_KEEP_SECONDS = 1.0
+
+
+def _thumbnail_frame(origin: lib_origin.Origin) -> tuple[int, float]:
+    """(segment index, seek seconds within it) of the first kept frame of the
+    first keep range lasting >= THUMBNAIL_MIN_KEEP_SECONDS; (0, 0) otherwise.
+    A sub-second sliver of the uncut start must not become the share image."""
+    tb = origin.profile.timescale
+    for range_index, item in enumerate(origin.ranges):
+        if float(item["end"]) - float(item["start"]) < THUMBNAIL_MIN_KEEP_SECONDS:
+            continue
         for segment in origin.segments:
-            start = segment.out_pts / tb
-            if start <= thumbnail_at_seconds < (segment.out_pts + segment.duration_ticks) / tb:
-                index = segment.index
-                # The last frame holds through the segment end; seeking past its PTS emits nothing.
-                offset = min(thumbnail_at_seconds - start, (segment.frames[-1].out_pts - segment.out_pts) / tb)
-                seek = ["-ss", str(offset)]
-                break
+            for frame in segment.frames:
+                if frame.range_index == range_index:
+                    return segment.index, (frame.out_pts - segment.out_pts) / tb
+        break
+    return 0, 0.0
+
+
+def _thumbnail(origin: lib_origin.Origin, dest: Path, duration_seconds: float) -> None:
+    init = origin.ensure_init()
+    index, offset = _thumbnail_frame(origin)
     blob = init + _without_styp(origin.ensure(index))
+    seek = ["-ss", f"{offset:.6f}"] if offset > 0 else []
     tmp = dest.with_suffix(".in.mp4")
     atomic_write(tmp, blob, sync=False)
     result = limits.run_cmd(

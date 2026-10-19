@@ -5,35 +5,10 @@ import {
 	neutralPreviewJpeg,
 	selectPreviewThumbnail,
 	thumbnailSha256,
-	thumbnailAtSeconds,
 } from "@/lib/revision-thumbnail";
 
 const marker = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const jpeg = neutralPreviewJpeg();
-
-describe("edited thumbnail output time", () => {
-	it("skips the tytbje source slivers to the first range lasting at least one second", () => {
-		expect(thumbnailAtSeconds([
-			{ start: 0, end: 0.15 },
-			{ start: 285.67, end: 285.74 },
-			{ start: 312.983, end: 313.053 },
-			{ start: 533.476, end: 535.639 },
-		])).toBeCloseTo(0.29, 8);
-	});
-
-	it("keeps an uncut video at output zero", () => {
-		expect(thumbnailAtSeconds([{ start: 0, end: 600 }])).toBe(0);
-	});
-
-	it("falls back to zero when every range is shorter than one second", () => {
-		expect(thumbnailAtSeconds([{ start: 5, end: 5.5 }, { start: 8, end: 8.9 }])).toBe(0);
-		expect(thumbnailAtSeconds([])).toBe(0);
-	});
-
-	it("includes the one-second boundary and returns output, not source time", () => {
-		expect(thumbnailAtSeconds([{ start: 5, end: 5.5 }, { start: 8, end: 9 }])).toBe(0.5);
-	});
-});
 
 describe("revision thumbnail status", () => {
 	it("keeps a failed thumbnail pending and serves a placeholder, not the marker", () => {

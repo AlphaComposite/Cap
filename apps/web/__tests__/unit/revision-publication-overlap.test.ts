@@ -216,23 +216,6 @@ afterEach(() => {
 });
 
 describe("publication independent transcript read", () => {
-	it("sends the edited thumbnail output time in the origin prepare body", async () => {
-		const { database, origin, input } = fixture();
-		input.editSpec.keepRanges = input.editSpec.manualKeepRanges = [
-			{ start: 0, end: 0.15 },
-			{ start: 2, end: 2.22 },
-			{ start: 5, end: 8 },
-		];
-		vi.mocked(origin.selectFrames).mockImplementationOnce(async (body) => ({
-			...body, keepIndexes: [0, 1, 2], keepRanges: body.keepRanges,
-		}));
-		finishInventoryProbe.getObject = async () => transcript;
-		finishInventoryProbe.listPrefix = async () => [];
-		await prepareInstantFinishRevision(database, input, { origin, randomRevisionId: () => "revision" });
-		const body = vi.mocked(origin.prepareRevision).mock.calls[0]![0];
-		expect(body.thumbnailAtSeconds).toBeCloseTo(0.37, 8);
-		expect(body.thumbnailPolicy).toBe("source-zero");
-	});
 	it.each([
 		[new DOMException("This operation was aborted", "AbortError"), true, "SUPERSEDED"],
 		[new DOMException("This operation was aborted", "AbortError"), false, "FAILED"],

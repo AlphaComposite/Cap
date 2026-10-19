@@ -1,19 +1,5 @@
 import { createHash } from "node:crypto";
 
-export const MIN_THUMBNAIL_KEEP_SECONDS = 1.0;
-
-export function thumbnailAtSeconds(
-	keepRanges: readonly { start: number; end: number }[],
-): number {
-	let outputStart = 0;
-	for (const range of keepRanges) {
-		const duration = range.end - range.start;
-		if (duration >= MIN_THUMBNAIL_KEEP_SECONDS) return outputStart;
-		outputStart += duration;
-	}
-	return 0;
-}
-
 const NEUTRAL_PREVIEW_JPEG = Buffer.from(
 	"ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffda00080001000100003f00fbffd9",
 	"hex",
