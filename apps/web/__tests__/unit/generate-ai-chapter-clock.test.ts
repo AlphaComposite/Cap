@@ -4,12 +4,17 @@ import {
 	videoPublication,
 	videos,
 } from "@cap/database/schema";
+import { defaultAutoCuts } from "@cap/web-backend/src/identity-edit-spec";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { Effect, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectSourceChapters } from "@/lib/revision-chapter-source";
 import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
-import { generateAiWorkflow } from "@/workflows/generate-ai";
+import {
+	aiChapterSaveProbe,
+	generateAiWorkflow,
+} from "@/workflows/generate-ai";
+import { regenerateRevisionChapters } from "@/workflows/regenerate-revision-chapters";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 
@@ -51,6 +56,10 @@ vi.mock("@/lib/sync-video-storage-names", () => ({
 	enqueueVideoStorageNameSync: vi.fn(),
 }));
 
+vi.mock("@/lib/revision-publication", () => ({
+	loadStoredEditTranscript: vi.fn(),
+}));
+
 vi.mock("@cap/env", () => ({
 	serverEnv: () => ({}),
 }));
@@ -65,6 +74,7 @@ type Metadata = {
 	chapters?: Chapter[];
 	sourceChapters?: Chapter[];
 	chaptersRevisionId?: string;
+	chaptersRegeneratedRevisionId?: string;
 	chaptersManuallyEdited?: boolean;
 	titleManuallyEdited?: boolean;
 	aiGenerationStatus?: string;
@@ -90,7 +100,12 @@ type RevisionRow = {
 	revisionId: string;
 	videoId: string;
 	intentId: string;
-	metadataSnapshot: { durationSeconds: number; chapters: Chapter[] };
+	state?: string;
+	metadataSnapshot: {
+		durationSeconds: number;
+		chapters: Chapter[];
+		captionsVtt?: string;
+	};
 };
 type IntentRow = {
 	videoId: string;
@@ -384,6 +399,9 @@ const databaseOperations = {
 							(row) => row.intentId === revision.intentId,
 						);
 						if (!intent) return [];
+						if (fields && "revision" in fields) {
+							return [{ revision, spec: intent.canonicalSpec }];
+						}
 						return [
 							{
 								revisionId: revision.revisionId,
@@ -590,6 +608,7 @@ describe("AI generation save chapter clock", () => {
 	});
 
 	afterEach(() => {
+		delete aiChapterSaveProbe.afterEarlyRead;
 		if (previousOwners === undefined) {
 			delete process.env.CAP_INSTANT_FINISH_OWNERS;
 		} else {
@@ -631,6 +650,114 @@ describe("AI generation save chapter clock", () => {
 			),
 		).toBe(false);
 	});
+
+	it.each([
+		{ marker: REVISION_ID, flagOff: false },
+		{ marker: "older-revision", flagOff: false },
+		{ marker: REVISION_ID, flagOff: true },
+	])(
+		"keeps regeneration authoritative only for CURRENT (marker: $marker, flagOff: $flagOff) after full generation's early read",
+		async ({ marker, flagOff }) => {
+			if (flagOff) process.env.CAP_INSTANT_FINISH_OWNERS = "";
+			const regenerated = [{ title: "Regenerated edited chapter", start: 0 }];
+			const source = [{ title: "Regenerated canonical chapter", start: 12 }];
+			aiChapterSaveProbe.afterEarlyRead = async () => {
+				const video = state.videos[0]!;
+				// The regeneration writer commits this state before saveResults locks it.
+				video.metadata = {
+					...video.metadata,
+					chapters: regenerated,
+					sourceChapters: source,
+					chaptersRevisionId: marker,
+					chaptersRegeneratedRevisionId: marker,
+					aiChapterBackfillGenerationId: "generation-1",
+				};
+			};
+
+			const result = await generateAiWorkflow({
+				videoId: "video-1",
+				userId: "owner-1",
+				generationId: "generation-1",
+			});
+
+			expect(result.message).toBe("AI generation completed successfully");
+			expect(state.videos[0]?.metadata).toMatchObject({
+				chapters:
+					marker === REVISION_ID
+						? regenerated
+						: projectSourceChapters(
+								GENERATED,
+								parseRenderedCanonicalSpec(EDITED_SPEC),
+							),
+				sourceChapters: marker === REVISION_ID ? source : GENERATED,
+				chaptersRevisionId: REVISION_ID,
+				aiTitle: "Generated title",
+				aiGenerationStatus: "COMPLETE",
+				summary: "Saved summary",
+			});
+			expect(
+				state.videos[0]?.metadata.aiChapterBackfillGenerationId,
+			).toBeUndefined();
+			expect(state.locks).toEqual(["videos", "videoPublication"]);
+		},
+	);
+
+	it.each(["regeneration first", "full generation first"])(
+		"keeps regenerated chapters when %s commits",
+		async (order) => {
+			state.intents[0]!.canonicalSpec = {
+				...EDITED_SPEC,
+				version: 2,
+				manualKeepRanges: EDITED_SPEC.keepRanges,
+				autoCuts: defaultAutoCuts(),
+			};
+			state.revisions[0]!.state = "CURRENT";
+			state.revisions[0]!.metadataSnapshot.captionsVtt = TRANSCRIPT;
+			const regenerated = [
+				{ title: "Edited opening", start: 0 },
+				{ title: "Edited ending", start: 40 },
+			];
+			const regenerate = async () => {
+				generateTextMock.mockResolvedValue({
+					text: JSON.stringify({ chapters: regenerated }),
+				});
+				expect(
+					await regenerateRevisionChapters({
+						videoId: "video-1",
+						revisionId: REVISION_ID,
+					}),
+				).toBe(true);
+			};
+			if (order === "regeneration first")
+				aiChapterSaveProbe.afterEarlyRead = regenerate;
+			await generateAiWorkflow({
+				videoId: "video-1",
+				userId: "owner-1",
+				generationId: "generation-1",
+			});
+			if (order === "full generation first") await regenerate();
+			expect(state.videos[0]?.metadata).toMatchObject({
+				chapters: regenerated,
+				chaptersRevisionId: REVISION_ID,
+				chaptersRegeneratedRevisionId: REVISION_ID,
+				aiTitle: "Generated title",
+				aiGenerationStatus: "COMPLETE",
+				summary: "Saved summary",
+			});
+			expect(
+				projectSourceChapters(
+					state.videos[0]!.metadata.sourceChapters!,
+					parseRenderedCanonicalSpec(EDITED_SPEC),
+				),
+			).toEqual(regenerated);
+			expect(state.locks).toEqual([
+				"videos",
+				"videoPublication",
+				"videos",
+				"videoPublication",
+			]);
+		},
+	);
 
 	it("clears a stale revision tag when flag-off generation writes a different chapter clock", async () => {
 		process.env.CAP_INSTANT_FINISH_OWNERS = "";

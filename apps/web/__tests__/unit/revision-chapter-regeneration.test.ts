@@ -1,15 +1,16 @@
 import { editRevision, videoPublication, videos } from "@cap/database/schema";
 import type { VideoEditSpecV2 } from "@cap/database/types";
+import { defaultAutoCuts } from "@cap/web-backend/src/identity-edit-spec";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultAutoCuts } from "@cap/web-backend/src/identity-edit-spec";
 import * as chapterSource from "@/lib/revision-chapter-source";
-import * as workflow from "@/workflows/regenerate-revision-chapters";
-import * as generation from "@/workflows/generate-ai";
 import { getEditSpecOutputDuration } from "@/lib/video-edits";
+import * as generation from "@/workflows/generate-ai";
+import * as workflow from "@/workflows/regenerate-revision-chapters";
 
 const mocks = vi.hoisted(() => ({
 	db: vi.fn(),
+	configured: vi.fn(() => true),
 	ai: vi.fn(),
 	sleep: vi.fn(),
 	load: vi.fn(),
@@ -26,7 +27,7 @@ vi.mock("workflow", () => ({
 	sleep: mocks.sleep,
 	FatalError: class extends Error {},
 }));
-vi.mock("@/lib/ai/provider", () => ({ isAiConfigured: () => true }));
+vi.mock("@/lib/ai/provider", () => ({ isAiConfigured: mocks.configured }));
 vi.mock("@/lib/ai/run", () => ({
 	runWithAiProviders: async (
 		_: unknown,
@@ -75,6 +76,7 @@ let chapters: Chapter[];
 let sourceChapters: Chapter[];
 let writes: Array<{ table: unknown; query: string; params: unknown[] }>;
 let locks: unknown[];
+let markerWrites: Array<{ query: string; params: unknown[]; guard: string }>;
 let saved: {
 	chapters?: Chapter[];
 	sourceChapters?: Chapter[];
@@ -162,10 +164,18 @@ const tx = {
 	select: () => select(true),
 	update: (table: unknown) => ({
 		set: (value: { metadata?: never; metadataSnapshot?: never }) => ({
-			where: async () => {
+			where: async (condition: never) => {
 				const query = dialect.sqlToQuery(
 					value.metadata ?? value.metadataSnapshot!,
 				);
+				if (!query.sql.includes("'$.chapters'")) {
+					markerWrites.push({
+						query: query.sql,
+						params: query.params,
+						guard: dialect.sqlToQuery(condition).sql,
+					});
+					return [{ affectedRows: 1 }];
+				}
 				writes.push({ table, query: query.sql, params: query.params });
 				if (table === videos) {
 					const arrays = query.params.filter(
@@ -191,11 +201,14 @@ beforeEach(() => {
 	manual = false;
 	locks = [];
 	writes = [];
+	markerWrites = [];
+	mocks.configured.mockReturnValue(true);
 	saved = {};
 	chapters = [{ title: "Old projected chapter", start: 0 }];
 	sourceChapters = [];
 	vtt = `WEBVTT\n\n${cue(0, "We review website changes and the launch plan.")}\n${cue(100, "Next we decide the Airtable migration and Android release.")}\n${cue(200, "Finally the Apple enrollment needs a DUNS number.")}`;
 	mocks.db.mockReturnValue({
+		update: tx.update,
 		select: () => select(),
 		transaction: async (run: (value: typeof tx) => unknown) => run(tx),
 	});
@@ -212,6 +225,100 @@ beforeEach(() => {
 });
 
 describe("published edit chapter regeneration", () => {
+	it("stores the exact source projection for A@0/B@6/C@20 on an 80-second cut", async () => {
+		spec = makeSpec(100, [{ start: 0, end: 80 }]);
+		vtt = `WEBVTT\n\n${cue(0, "Opening discussion.")}\n${cue(6, "Second topic.")}\n${cue(20, "Last topic.")}`;
+		mocks.ai.mockResolvedValue({
+			text: JSON.stringify({
+				chapters: [
+					{ title: "A", start: 0 },
+					{ title: "B", start: 6 },
+					{ title: "C", start: 20 },
+				],
+			}),
+		});
+		expect(await workflow.regenerateRevisionChapters(payload)).toBe(true);
+		expect(saved.chapters).toEqual(
+			chapterSource.projectSourceChapters(saved.sourceChapters!, spec),
+		);
+		expect(saved.chapters).toEqual([
+			{ title: "B", start: 0 },
+			{ title: "C", start: 20 },
+		]);
+		expect(writes.find((w) => w.table === editRevision)?.params).toContain(
+			JSON.stringify(saved.chapters),
+		);
+		expect(writes.find((w) => w.table === videos)?.query).toContain(
+			"$.chaptersRegeneratedRevisionId",
+		);
+	});
+
+	it("keeps projected old chapters if generated source projects to empty", async () => {
+		spec = makeSpec(100, [{ start: 0, end: 5 }]);
+		vtt = `WEBVTT\n\n${cue(0, "Opening discussion.")}`;
+		mocks.ai.mockResolvedValue({
+			text: '{"chapters":[{"title":"A","start":0}]}',
+		});
+		const projection = vi
+			.spyOn(chapterSource, "projectSourceChapters")
+			.mockReturnValueOnce([]);
+		expect(await workflow.regenerateRevisionChapters(payload)).toBe(false);
+		projection.mockRestore();
+		expect(writes).toEqual([]);
+	});
+
+	it.each(["written", "stale", "manual", "failure", "unconfigured"])(
+		"clears only its own pending marker on terminal path: %s",
+		async (path) => {
+			if (path === "stale") currentRevisionId = "newer";
+			if (path === "manual") manual = true;
+			if (path === "failure")
+				mocks.ai.mockRejectedValue(new Error("AI unavailable"));
+			if (path === "unconfigured") mocks.configured.mockReturnValue(false);
+			await workflow.regenerateRevisionChapters(payload);
+			const clear = markerWrites.find((w) => w.query.includes("JSON_REMOVE"));
+			expect(clear?.query).toContain("$.chaptersRegenerationRevisionId");
+			expect(clear?.query).toContain("$.chaptersRegenerationQueuedAt");
+			expect(clear?.guard).toContain("$.chaptersRegenerationRevisionId");
+		},
+	);
+
+	it("catches configuration failures and marks pending before queue start", async () => {
+		const { startRevisionChapterGeneration } = await import(
+			"@/lib/generate-ai"
+		);
+		mocks.configured.mockImplementationOnce(() => {
+			throw new Error("configuration failed");
+		});
+		await expect(
+			startRevisionChapterGeneration(payload.videoId, payload.revisionId, {
+				sourceDuration: 600,
+			}),
+		).resolves.toBeUndefined();
+		await startRevisionChapterGeneration(payload.videoId, payload.revisionId, {
+			sourceDuration: 600,
+		});
+		expect(mocks.start).toHaveBeenCalledOnce();
+		expect(markerWrites.at(-1)?.query).toContain(
+			"$.chaptersRegenerationQueuedAt",
+		);
+		expect(markerWrites.at(-1)?.guard).toContain("currentRevisionId");
+	});
+
+	it("clears a pending marker when queueing rejects", async () => {
+		const { startRevisionChapterGeneration } = await import(
+			"@/lib/generate-ai"
+		);
+		mocks.start.mockRejectedValueOnce(new Error("queue failed"));
+		await startRevisionChapterGeneration(payload.videoId, payload.revisionId, {
+			sourceDuration: 600,
+		});
+		expect(markerWrites.at(-1)?.query).toContain("JSON_REMOVE");
+		expect(markerWrites.at(-1)?.guard).toContain(
+			"$.chaptersRegenerationRevisionId",
+		);
+	});
+
 	it("queues the chapter workflow only after the real owner Done entrypoint publishes CURRENT", async () => {
 		const { publishOwnerRevision } = await import("@/lib/revision-publish");
 		const order: string[] = [];
@@ -228,6 +335,7 @@ describe("published edit chapter regeneration", () => {
 			order.push("queued");
 		});
 		mocks.db.mockReturnValue({
+			update: tx.update,
 			select: () => ({
 				from: (table: unknown) => ({
 					where: async () =>
@@ -257,7 +365,7 @@ describe("published edit chapter regeneration", () => {
 			},
 			new Headers(),
 		);
-		expect(order).toEqual(["CURRENT", "queued"]);
+		await vi.waitFor(() => expect(order).toEqual(["CURRENT", "queued"]));
 		expect(mocks.start).toHaveBeenCalledWith(
 			workflow.regenerateRevisionChaptersWorkflow,
 			[payload],

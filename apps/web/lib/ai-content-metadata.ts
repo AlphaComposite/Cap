@@ -1,6 +1,25 @@
+import { db } from "@cap/database";
 import { videos } from "@cap/database/schema";
-import { type SQL, sql } from "drizzle-orm";
+import type { Video } from "@cap/web-domain";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { GeneratedChapter } from "@/lib/ai-chapter-state";
+
+export async function clearRevisionChapterRegeneration(
+	videoId: string,
+	revisionId: string,
+) {
+	await db()
+		.update(videos)
+		.set({
+			metadata: sql`JSON_REMOVE(${videos.metadata}, '$.chaptersRegenerationRevisionId', '$.chaptersRegenerationQueuedAt')`,
+		})
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.chaptersRegenerationRevisionId')) = ${revisionId}`,
+			),
+		);
+}
 
 export function setGeneratedAiContent(
 	metadata: SQL,

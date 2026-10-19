@@ -1,6 +1,8 @@
 export type VideoStatusPollingData = {
 	transcriptionStatus?: string | null;
 	aiGenerationStatus?: string | null;
+	chaptersRegenerationRevisionId?: string | null;
+	chaptersRegenerationQueuedAt?: number | null;
 };
 
 export type VideoStatusPollingAvailability = {
@@ -11,7 +13,17 @@ export type VideoStatusPollingAvailability = {
 export function shouldContinueVideoStatusPolling(
 	data: VideoStatusPollingData,
 	availability: VideoStatusPollingAvailability,
+	playbackRevisionId?: string | null,
 ): boolean {
+	if (
+		playbackRevisionId &&
+		data.chaptersRegenerationRevisionId === playbackRevisionId &&
+		typeof data.chaptersRegenerationQueuedAt === "number"
+	) {
+		const age = Date.now() - data.chaptersRegenerationQueuedAt;
+		if (age >= 0 && age < 3 * 60_000) return true;
+	}
+
 	if (!data.transcriptionStatus) {
 		return availability.transcriptionGeneration;
 	}

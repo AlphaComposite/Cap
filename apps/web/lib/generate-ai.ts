@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { db } from "@cap/database";
-import { editRevision, videos } from "@cap/database/schema";
+import { editRevision, videoPublication, videos } from "@cap/database/schema";
 import type { VideoMetadata } from "@cap/database/types";
 import type { Video } from "@cap/web-domain";
 import { and, eq, sql } from "drizzle-orm";
 import { start } from "workflow/api";
 import { isAiConfigured } from "@/lib/ai/provider";
 import { hasValidChapterState } from "@/lib/ai-chapter-state";
+import { clearRevisionChapterRegeneration } from "@/lib/ai-content-metadata";
 import {
 	type AutomaticChapterBackfillObservedState,
 	isKnownLegacyAutomaticChapterState,
 } from "@/lib/automatic-chapter-backfill";
-import { generateAiWorkflow } from "@/workflows/generate-ai";
 import { shouldRegenerateRevisionChapters } from "@/lib/revision-chapter-source";
+import { generateAiWorkflow } from "@/workflows/generate-ai";
 
 export async function startRevisionChapterGeneration(
 	videoId: string,
@@ -22,8 +23,9 @@ export async function startRevisionChapterGeneration(
 		"outputDuration"
 	>,
 ) {
-	if (!isAiConfigured() || input.chaptersManuallyEdited === true) return;
+	let markedPending = false;
 	try {
+		if (!isAiConfigured() || input.chaptersManuallyEdited === true) return;
 		const [revision] = await db()
 			.select({ snapshot: editRevision.metadataSnapshot })
 			.from(editRevision)
@@ -42,17 +44,38 @@ export async function startRevisionChapterGeneration(
 			})
 		)
 			return;
+		const pending = await db()
+			.update(videos)
+			.set({
+				metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chaptersRegenerationRevisionId', ${revisionId}, '$.chaptersRegenerationQueuedAt', ${Date.now()})`,
+			})
+			.where(
+				and(
+					eq(videos.id, videoId as Video.VideoId),
+					sql`COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.chaptersManuallyEdited')), 'false') <> 'true'`,
+					sql`EXISTS (SELECT 1 FROM ${videoPublication} WHERE ${videoPublication.videoId} = ${videos.id} AND ${videoPublication.currentRevisionId} = ${revisionId})`,
+				),
+			);
+		if (getAffectedRows(pending) === 0) return;
+		markedPending = true;
 		const { regenerateRevisionChaptersWorkflow } = await import(
 			"@/workflows/regenerate-revision-chapters"
 		);
 		await start(regenerateRevisionChaptersWorkflow, [{ videoId, revisionId }]);
 	} catch (error) {
 		// Publication already succeeded; keep its projected chapters on queue failure.
-		console.error("Failed to queue revision chapters", {
+		console.warn("Failed to queue revision chapters", {
 			videoId,
 			revisionId,
 			error,
 		});
+		if (markedPending) {
+			try {
+				await clearRevisionChapterRegeneration(videoId, revisionId);
+			} catch (clearError) {
+				console.warn("Failed to clear pending revision chapters", clearError);
+			}
+		}
 	}
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { shouldContinueVideoStatusPolling } from "@/lib/video-status-polling";
 
 const available = {
@@ -15,6 +15,71 @@ const completeStatus = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("shouldContinueVideoStatusPolling", () => {
+	it("keeps polling a matching pending chapter regeneration after full AI completed", () => {
+		const now = 1_800_000_000_000;
+		vi.spyOn(Date, "now").mockReturnValue(now);
+		expect(
+			shouldContinueVideoStatusPolling(
+				completeStatus({
+					aiGenerationStatus: "COMPLETE",
+					chaptersRegenerationRevisionId: "rev-1",
+					chaptersRegenerationQueuedAt: now - 179_999,
+				}),
+				available,
+				"rev-1",
+			),
+		).toBe(true);
+	});
+
+	it.each([
+		{ label: "cleared", revisionId: null, queuedAt: null, playback: "rev-1" },
+		{
+			label: "other revision",
+			revisionId: "rev-2",
+			queuedAt: 1_800_000_000_000,
+			playback: "rev-1",
+		},
+		{
+			label: "legacy playback",
+			revisionId: "rev-1",
+			queuedAt: 1_800_000_000_000,
+			playback: null,
+		},
+		{
+			label: "expired",
+			revisionId: "rev-1",
+			queuedAt: 1_800_000_000_000 - 180_000,
+			playback: "rev-1",
+		},
+		{
+			label: "missing timestamp",
+			revisionId: "rev-1",
+			queuedAt: null,
+			playback: "rev-1",
+		},
+		{
+			label: "future timestamp",
+			revisionId: "rev-1",
+			queuedAt: 1_800_000_000_001,
+			playback: "rev-1",
+		},
+	])(
+		"stops chapter polling for $label",
+		({ revisionId, queuedAt, playback }) => {
+			vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+			expect(
+				shouldContinueVideoStatusPolling(
+					completeStatus({
+						aiGenerationStatus: "COMPLETE",
+						chaptersRegenerationRevisionId: revisionId,
+						chaptersRegenerationQueuedAt: queuedAt,
+					}),
+					available,
+					playback,
+				),
+			).toBe(false);
+		},
+	);
 	it("continues when a summary exists but chapters and AI status are absent", () => {
 		expect(
 			shouldContinueVideoStatusPolling(

@@ -49,6 +49,8 @@ export interface VideoStatusResult {
 	summary: string | null;
 	chapters: { title: string; start: number }[] | null;
 	chaptersRevisionId?: string | null;
+	chaptersRegenerationRevisionId?: string | null;
+	chaptersRegenerationQueuedAt?: number | null;
 	error?: string;
 }
 
@@ -71,6 +73,12 @@ export async function getVideoStatus(
 	if (!video) throw new Error("Video not found");
 
 	const metadata: VideoMetadata = (video.metadata as VideoMetadata) || {};
+	const chapterStatus = {
+		chaptersRevisionId: metadata.chaptersRevisionId ?? null,
+		chaptersRegenerationRevisionId:
+			metadata.chaptersRegenerationRevisionId ?? null,
+		chaptersRegenerationQueuedAt: metadata.chaptersRegenerationQueuedAt ?? null,
+	};
 	const [user, organizationRows, sharedSpaces] = await Promise.all([
 		getCurrentUser(),
 		db()
@@ -135,7 +143,7 @@ export async function getVideoStatus(
 				aiTitle: aiData.title,
 				summary: aiData.summary,
 				chapters: aiData.chapters,
-				chaptersRevisionId: metadata.chaptersRevisionId ?? null,
+				...chapterStatus,
 			};
 		}
 
@@ -157,7 +165,7 @@ export async function getVideoStatus(
 				aiTitle: aiData.title,
 				summary: aiData.summary,
 				chapters: aiData.chapters,
-				chaptersRevisionId: metadata.chaptersRevisionId ?? null,
+				...chapterStatus,
 			};
 		} catch (error) {
 			console.error(
@@ -171,7 +179,7 @@ export async function getVideoStatus(
 				aiTitle: aiData.title,
 				summary: aiData.summary,
 				chapters: aiData.chapters,
-				chaptersRevisionId: metadata.chaptersRevisionId ?? null,
+				...chapterStatus,
 				error: "Failed to start transcription",
 			};
 		}
@@ -185,7 +193,7 @@ export async function getVideoStatus(
 			aiTitle: aiData.title,
 			summary: aiData.summary,
 			chapters: aiData.chapters,
-			chaptersRevisionId: metadata.chaptersRevisionId ?? null,
+			...chapterStatus,
 			error: "Transcription failed",
 		};
 	}
@@ -198,6 +206,6 @@ export async function getVideoStatus(
 		aiTitle: aiData.title,
 		summary: aiData.summary,
 		chapters: aiData.chapters,
-		chaptersRevisionId: metadata.chaptersRevisionId ?? null,
+		...chapterStatus,
 	};
 }

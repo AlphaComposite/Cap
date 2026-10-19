@@ -244,10 +244,24 @@ const useVideoStatus = (
 		} | null;
 	},
 	enabled: boolean = true,
+	playbackRevisionId?: string | null,
 ) => {
-	const started = useRef({ videoId, at: Date.now() });
-	if (started.current.videoId !== videoId) {
-		started.current = { videoId, at: Date.now() };
+	const started = useRef({
+		videoId,
+		playbackRevisionId,
+		at: Date.now(),
+		sawRegeneration: false,
+	});
+	if (
+		started.current.videoId !== videoId ||
+		started.current.playbackRevisionId !== playbackRevisionId
+	) {
+		started.current = {
+			videoId,
+			playbackRevisionId,
+			at: Date.now(),
+			sawRegeneration: false,
+		};
 	}
 	return useQuery({
 		queryKey: ["videoStatus", videoId],
@@ -276,13 +290,26 @@ const useVideoStatus = (
 				Date.now() - started.current.at < 5 * 60_000 ? 2000 : 5000;
 			const data = query.state.data;
 			if (!data) return interval;
+			if (
+				playbackRevisionId &&
+				data.chaptersRegenerationRevisionId === playbackRevisionId
+			) {
+				started.current.sawRegeneration = true;
+			}
 
 			const shouldContinuePolling = shouldContinueVideoStatusPolling(
 				data,
 				availability,
+				playbackRevisionId,
 			);
+			// ponytail: bounded queue discovery; no new status transport for late starts.
+			const waitingForQueue =
+				playbackRevisionId &&
+				!started.current.sawRegeneration &&
+				data.chaptersRegenerationRevisionId !== playbackRevisionId &&
+				Date.now() - started.current.at < 3 * 60_000;
 
-			return shouldContinuePolling ? interval : false;
+			return shouldContinuePolling || waitingForQueue ? interval : false;
 		},
 		refetchIntervalInBackground: false,
 		staleTime: 1000,
@@ -359,6 +386,7 @@ export const Share = ({
 			aiData: initialAiData,
 		},
 		!isScreenshot,
+		playback?.mode === "hls" ? playback.revisionId : null,
 	);
 
 	const transcriptionStatus =

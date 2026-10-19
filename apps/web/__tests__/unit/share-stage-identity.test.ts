@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	type ComponentProps,
@@ -12,11 +13,13 @@ import {
 	afterAll,
 	afterEach,
 	beforeAll,
+	beforeEach,
 	describe,
 	expect,
 	it,
 	vi,
 } from "vitest";
+import { getVideoStatus } from "@/actions/videos/get-status";
 import { Share } from "@/app/s/[videoId]/Share";
 
 vi.mock("motion/react", async () => {
@@ -87,21 +90,34 @@ vi.mock("next/navigation", () => ({
 
 const polledStatus = vi.hoisted(() => ({
 	transcriptionStatus: null as string | null,
+	realPolling: false,
 }));
 
-vi.mock("@tanstack/react-query", () => ({
-	useQuery: ({ initialData }: { initialData?: Record<string, unknown> }) => ({
-		data: polledStatus.transcriptionStatus
-			? {
-					...initialData,
-					transcriptionStatus: polledStatus.transcriptionStatus,
-				}
-			: initialData,
-	}),
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@tanstack/react-query")>();
+	return {
+		...actual,
+		useQuery: (options: Parameters<typeof actual.useQuery>[0]) =>
+			polledStatus.realPolling
+				? // biome-ignore lint/correctness/useHookAtTopLevel: Test mode never changes while a Share is mounted.
+					actual.useQuery(options)
+				: {
+						data: polledStatus.transcriptionStatus
+							? {
+									...(options.initialData as Record<string, unknown>),
+									transcriptionStatus: polledStatus.transcriptionStatus,
+								}
+							: options.initialData,
+					},
+	};
+});
+
+vi.mock("@/actions/video/retry-processing", () => ({
+	retryVideoProcessing: vi.fn(),
 }));
 
 vi.mock("@/actions/videos/get-status", () => ({
-	getVideoStatus: async () => ({}),
+	getVideoStatus: vi.fn(async () => ({})),
 }));
 
 vi.mock("@/app/s/[videoId]/_components/CaptionContext", () => ({
@@ -111,18 +127,35 @@ vi.mock("@/app/s/[videoId]/_components/CaptionContext", () => ({
 vi.mock("@/app/s/[videoId]/_components/ShareVideo", async () => {
 	const { createElement } = await import("react");
 	return {
-		ShareVideo: ({ ref }: { ref?: Ref<HTMLVideoElement> }) =>
-			createElement("video", { ref, "data-share-video": "" }),
+		ShareVideo: ({
+			ref,
+			chapters,
+		}: {
+			ref?: Ref<HTMLVideoElement>;
+			chapters?: unknown;
+		}) =>
+			createElement("video", {
+				ref,
+				"data-share-video": "",
+				"data-chapters": JSON.stringify(chapters),
+			}),
 	};
 });
 
 vi.mock("@/app/s/[videoId]/_components/Sidebar", async () => {
 	const { createElement } = await import("react");
 	return {
-		Sidebar: ({ openSummaryRequest }: { openSummaryRequest?: number }) =>
+		Sidebar: ({
+			openSummaryRequest,
+			aiData,
+		}: {
+			openSummaryRequest?: number;
+			aiData?: { chapters?: unknown };
+		}) =>
 			createElement("div", {
 				"data-sidebar": "",
 				"data-open-summary-request": openSummaryRequest,
+				"data-chapters": JSON.stringify(aiData?.chapters),
 			}),
 	};
 });
@@ -181,13 +214,85 @@ const findButton = (container: HTMLElement, label: string) =>
 const stageOf = (video: Element | null) =>
 	video?.parentElement?.parentElement?.parentElement ?? null;
 
+const completedStatus = {
+	transcriptionStatus: "COMPLETE" as const,
+	aiGenerationStatus: "COMPLETE" as const,
+	name: "Test video",
+	aiTitle: null,
+	summary: "Keep the summary",
+	chapters: [{ title: "Projected", start: 0 }],
+	chaptersRevisionId: "rev-1",
+	chaptersRegenerationRevisionId: null as string | null,
+	chaptersRegenerationQueuedAt: null as number | null,
+};
+
+async function mountPollingShare() {
+	vi.useFakeTimers();
+	vi.setSystemTime(1_800_000_000_000);
+	polledStatus.realPolling = true;
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	const container = document.createElement("div");
+	document.body.append(container);
+	const root = createRoot(container);
+	const props = createProps({
+		data: { ...createProps().data, transcriptionStatus: "COMPLETE" },
+		aiGenerationAvailable: true,
+		initialAiData: { ...completedStatus, title: null },
+		revisionPlayback: {
+			mode: "hls",
+			videoId: "video-id",
+			revisionId: "rev-1",
+			generation: 1,
+			playlistUrl: "/media/video-id/r/rev-1/playlist.m3u8",
+			duration: 60,
+			captionsUrl: null,
+			chapters: completedStatus.chapters,
+			commentTimestamps: null,
+			thumbnailUrl: null,
+			downloadReady: true,
+		},
+	});
+	await act(async () =>
+		root.render(
+			createElement(
+				QueryClientProvider,
+				{ client },
+				createElement(Share, props),
+			),
+		),
+	);
+	return {
+		container,
+		tick: async (ms: number) => {
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(ms);
+			});
+		},
+		close: async () => {
+			await act(async () => root.unmount());
+			client.clear();
+		},
+	};
+}
+
+const pendingStatus = () => ({
+	...completedStatus,
+	chaptersRegenerationRevisionId: "rev-1",
+	chaptersRegenerationQueuedAt: 1_800_000_000_000,
+});
+
 describe("Share view toggle", () => {
 	beforeAll(() => {
 		actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 	});
+	beforeEach(() => vi.mocked(getVideoStatus).mockReset());
 
 	afterEach(() => {
 		polledStatus.transcriptionStatus = null;
+		polledStatus.realPolling = false;
+		vi.useRealTimers();
 		document.body.replaceChildren();
 		window.history.replaceState(window.history.state, "", "/s/video-id");
 	});
@@ -195,6 +300,83 @@ describe("Share view toggle", () => {
 	afterAll(() => {
 		delete actEnvironment.IS_REACT_ACT_ENVIRONMENT;
 	});
+
+	it("updates chapters on the still-open Share after a detached queue races the first status read", async () => {
+		const regenerated = [
+			{ title: "Regenerated", start: 0 },
+			{ title: "Next", start: 20 },
+		];
+		vi.mocked(getVideoStatus).mockResolvedValue({
+			...completedStatus,
+			chaptersRegenerationRevisionId: "rev-previous",
+		});
+		const page = await mountPollingShare();
+		try {
+			const video = page.container.querySelector("[data-share-video]");
+			// Queueing may be slow, and the cache may still name a previous revision.
+			await page.tick(20_001);
+			expect(vi.mocked(getVideoStatus).mock.calls.length).toBeGreaterThan(5);
+			vi.mocked(getVideoStatus).mockResolvedValue({
+				...pendingStatus(),
+				chaptersRevisionId: "rev-other",
+				chapters: [{ title: "Wrong revision", start: 0 }],
+			});
+			await page.tick(2_000);
+			expect(video?.getAttribute("data-chapters")).toBe(
+				JSON.stringify(completedStatus.chapters),
+			);
+			vi.mocked(getVideoStatus).mockResolvedValue({
+				...completedStatus,
+				chapters: regenerated,
+			});
+			await page.tick(2_000);
+			expect(page.container.querySelector("[data-share-video]")).toBe(video);
+			for (const selector of ["[data-share-video]", "[data-sidebar]"]) {
+				expect(
+					page.container.querySelector(selector)?.getAttribute("data-chapters"),
+				).toBe(JSON.stringify(regenerated));
+			}
+			const calls = vi.mocked(getVideoStatus).mock.calls.length;
+			await page.tick(30_000);
+			expect(getVideoStatus).toHaveBeenCalledTimes(calls);
+		} finally {
+			await page.close();
+		}
+	});
+
+	it.each(["cleared", "expired", "never queued"])(
+		"stops open-page chapter polling when %s",
+		async (terminal) => {
+			vi.mocked(getVideoStatus).mockResolvedValue(
+				terminal === "never queued" ? completedStatus : pendingStatus(),
+			);
+			const page = await mountPollingShare();
+			try {
+				await page.tick(2_001);
+				expect(getVideoStatus).toHaveBeenCalledTimes(1);
+				if (terminal === "cleared") {
+					vi.mocked(getVideoStatus).mockResolvedValue(completedStatus);
+					await page.tick(2_000);
+					expect(getVideoStatus).toHaveBeenCalledTimes(2);
+				} else {
+					await page.tick(180_000);
+					if (terminal === "expired")
+						expect(vi.mocked(getVideoStatus).mock.calls.length).toBeGreaterThan(
+							50,
+						);
+					else
+						expect(
+							vi.mocked(getVideoStatus).mock.calls.length,
+						).toBeLessThanOrEqual(90);
+				}
+				const calls = vi.mocked(getVideoStatus).mock.calls.length;
+				await page.tick(30_000);
+				expect(getVideoStatus).toHaveBeenCalledTimes(calls);
+			} finally {
+				await page.close();
+			}
+		},
+	);
 
 	it("keeps the same stage and video element across view changes", async () => {
 		const container = document.createElement("div");

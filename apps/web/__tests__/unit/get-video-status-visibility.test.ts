@@ -104,6 +104,28 @@ describe("getVideoStatus AI visibility", () => {
 		startAiGenerationMock.mockResolvedValue({ success: true });
 	});
 
+	it("exposes pending revision chapter metadata and clears it on the next status read", async () => {
+		const queuedAt = 1_800_000_000_000;
+		const pending = await statusFor({
+			videoMetadata: {
+				...metadata,
+				chaptersRevisionId: "rev-1",
+				chaptersRegenerationRevisionId: "rev-1",
+				chaptersRegenerationQueuedAt: queuedAt,
+			},
+		});
+		expect(pending).toMatchObject({
+			aiGenerationStatus: "COMPLETE",
+			chaptersRevisionId: "rev-1",
+			chaptersRegenerationRevisionId: "rev-1",
+			chaptersRegenerationQueuedAt: queuedAt,
+		});
+		expect(await statusFor({})).toMatchObject({
+			chaptersRegenerationRevisionId: null,
+			chaptersRegenerationQueuedAt: null,
+		});
+	});
+
 	it("applies space disables over explicit video and organization enables for a non-owner", async () => {
 		const result = await statusFor({
 			videoSettings: { disableSummary: false, disableChapters: false },

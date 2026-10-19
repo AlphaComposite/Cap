@@ -223,11 +223,26 @@ export async function publishOwnerRevision(
 		{ origin: httpOriginClient() },
 	);
 	timing("flipped");
-	const { startRevisionChapterGeneration } = await import("@/lib/generate-ai");
-	await startRevisionChapterGeneration(input.videoId, published.revisionId, {
-		sourceDuration: input.editSpec.sourceDuration,
-		chaptersManuallyEdited: video.metadata?.chaptersManuallyEdited,
-	});
+	void (async () => {
+		try {
+			const { startRevisionChapterGeneration } = await import(
+				"@/lib/generate-ai"
+			);
+			await startRevisionChapterGeneration(
+				input.videoId,
+				published.revisionId,
+				{
+					sourceDuration: input.editSpec.sourceDuration,
+					chaptersManuallyEdited: video.metadata?.chaptersManuallyEdited,
+				},
+			);
+		} catch (error) {
+			console.warn(
+				"Failed to queue revision chapters after publication",
+				error,
+			);
+		}
+	})();
 	revalidatePath(`/s/${input.videoId}`);
 	const playback = await loadPublishPlayback(
 		{

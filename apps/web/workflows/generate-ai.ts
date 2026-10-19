@@ -584,6 +584,7 @@ function buildGeneratedMetadataUpdate(
 		chaptersRevisionId: string;
 	} | null,
 	clearInconsistentProvenance = false,
+	preserveChapters = false,
 ): SQL {
 	if (!Array.isArray(result.chapters)) {
 		throw new Error("Cannot mark AI generation complete without chapters");
@@ -593,7 +594,7 @@ function buildGeneratedMetadataUpdate(
 	if (generatedTitle) {
 		metadataUpdate = sql`JSON_SET(${metadataUpdate}, '$.aiTitle', ${generatedTitle})`;
 	}
-	if (result.chapters) {
+	if (result.chapters && !preserveChapters) {
 		metadataUpdate = chapterClock
 			? setGeneratedRevisionChapters(metadataUpdate, chapterClock)
 			: clearInconsistentProvenance
@@ -670,6 +671,9 @@ async function saveResults(
 							generationId,
 							chapterClock,
 							clearProvenance,
+							!!publication?.currentRevisionId &&
+								locked?.metadata?.chaptersRegeneratedRevisionId ===
+									publication.currentRevisionId,
 						),
 					})
 					.where(generationClaim(videoId, generationId));
@@ -680,6 +684,14 @@ async function saveResults(
 					.from(videos)
 					.where(eq(videos.id, videoId as Video.VideoId))
 					.for("update");
+				// A queued regeneration can finish after the rollout flag is disabled.
+				const [publication] = locked?.metadata?.chaptersRegeneratedRevisionId
+					? await tx
+							.select({ currentRevisionId: videoPublication.currentRevisionId })
+							.from(videoPublication)
+							.where(eq(videoPublication.videoId, videoId as Video.VideoId))
+							.for("update")
+					: [];
 				return tx
 					.update(videos)
 					.set({
@@ -692,6 +704,9 @@ async function saveResults(
 								(locked?.metadata as VideoMetadata | null) ?? {},
 								result.chapters ?? [],
 							),
+							!!publication?.currentRevisionId &&
+								locked?.metadata?.chaptersRegeneratedRevisionId ===
+									publication.currentRevisionId,
 						),
 					})
 					.where(generationClaim(videoId, generationId));

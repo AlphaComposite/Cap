@@ -10,9 +10,13 @@ import { parseAiGenerationLanguage, type Video } from "@cap/web-domain";
 import { and, eq, sql } from "drizzle-orm";
 import { sleep } from "workflow";
 import { isAiConfigured } from "@/lib/ai/provider";
-import { setGeneratedRevisionChapters } from "@/lib/ai-content-metadata";
+import {
+	clearRevisionChapterRegeneration,
+	setGeneratedRevisionChapters,
+} from "@/lib/ai-content-metadata";
 import {
 	mergeOwnerChapterEdit,
+	projectSourceChapters,
 	shouldRegenerateRevisionChapters,
 } from "@/lib/revision-chapter-source";
 import { loadStoredEditTranscript } from "@/lib/revision-publication";
@@ -86,7 +90,7 @@ export async function regenerateRevisionChapters({
 			}).vtt;
 		}
 		if (!captionsHaveCues(vtt)) return false;
-		const chapters = await generateChaptersForTranscript(
+		const generatedChapters = await generateChaptersForTranscript(
 			vtt,
 			snapshot.durationSeconds,
 			parseAiGenerationLanguage(row.settings?.aiGenerationLanguage),
@@ -113,13 +117,15 @@ export async function regenerateRevisionChapters({
 			const sourceChapters = mergeOwnerChapterEdit({
 				previousSourceChapters: video.metadata?.sourceChapters ?? [],
 				currentSpec: spec,
-				editedChapters: chapters,
+				editedChapters: generatedChapters,
 			});
+			const chapters = projectSourceChapters(sourceChapters, spec);
+			if (chapters.length === 0) return false;
 			await tx
 				.update(videos)
 				.set({
 					metadata: setGeneratedRevisionChapters(
-						sql`COALESCE(${videos.metadata}, JSON_OBJECT())`,
+						sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.chaptersRegeneratedRevisionId', ${revisionId})`,
 						{ chapters, sourceChapters, chaptersRevisionId: revisionId },
 					),
 				})
@@ -146,6 +152,13 @@ export async function regenerateRevisionChapters({
 			error,
 		});
 		return false;
+	} finally {
+		try {
+			await clearRevisionChapterRegeneration(videoId, revisionId);
+		} catch (error) {
+			// The share polling deadline also bounds crashed or unreachable workflows.
+			console.warn("Failed to clear pending revision chapters", error);
+		}
 	}
 }
 regenerateRevisionChapters.maxRetries = 0;
