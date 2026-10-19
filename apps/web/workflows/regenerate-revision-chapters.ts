@@ -120,7 +120,9 @@ export async function regenerateRevisionChapters({
 				editedChapters: generatedChapters,
 			});
 			const chapters = projectSourceChapters(sourceChapters, spec);
-			if (chapters.length === 0) return false;
+			// Never trade the projected chapters for a lone one on a real meeting.
+			if (chapters.length === 0 || (chapters.length < 2 && snapshot.durationSeconds >= 120))
+				return false;
 			await tx
 				.update(videos)
 				.set({

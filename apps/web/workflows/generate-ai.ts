@@ -1156,8 +1156,10 @@ ${chunk.text}`;
 			return `Section ${i + 1} (${timeRange}):\n${c.summary}${keyPointsList}`;
 		})
 		.join("\n\n");
+	// Valid section candidates are the chapters; a forced re-synthesis threw
+	// them away and collapsed a 23-minute edit to one chapter.
 	const minimumChapterCount = Math.max(
-		chaptersOnly ? 1 : 0,
+		chaptersOnly && allChapters.length === 0 ? 1 : 0,
 		getRequiredChapterSynthesisCount(
 			videoDuration,
 			chapterCandidates,

@@ -605,7 +605,39 @@ describe("published edit chapter regeneration", () => {
 			{ title: "Website", start: 0 },
 			{ title: "Apple", start: 700 },
 		]);
-		expect(mocks.ai).toHaveBeenCalledTimes(3);
+		// Two valid section chapters already cover it: no lossy synthesis call.
+		expect(mocks.ai).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps enough valid section chapters instead of forcing a lossy re-synthesis", async () => {
+		// 5jq002r78rtywmw: 9 good section chapters were thrown away by a forced
+		// synthesis that returned one usable chapter.
+		const longVtt = `WEBVTT\n\n${cue(0, "We review the website launch.")}\n${cue(700, "Next the Apple enrollment requires a DUNS number.")}`;
+		mocks.ai
+			.mockResolvedValueOnce({
+				text: '{"summary":"Website launch","keyPoints":[],"chapters":[{"title":"Website","start":0}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"summary":"Apple enrollment","keyPoints":[],"chapters":[{"title":"Apple","start":700}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"chapters":[{"title":"Everything","start":0}]}',
+			});
+		expect(
+			await generation.generateChaptersForTranscript(longVtt, 780, "auto"),
+		).toEqual([
+			{ title: "Website", start: 0 },
+			{ title: "Apple", start: 700 },
+		]);
+	});
+
+	it("never replaces projected chapters with a lone chapter on a 2-minute+ edit", async () => {
+		spec = makeSpec(1000, [{ start: 0, end: 300 }]);
+		mocks.ai.mockResolvedValue({
+			text: '{"chapters":[{"title":"Everything","start":0}]}',
+		});
+		expect(await workflow.regenerateRevisionChapters(payload)).toBe(false);
+		expect(writes.filter((w) => w.table === videos || w.table === editRevision)).toEqual([]);
 	});
 
 	it("uses explicit output duration, cue snapping, and the existing chapter parser", async () => {
