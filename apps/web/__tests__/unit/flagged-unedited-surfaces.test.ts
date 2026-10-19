@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { Effect, Exit } from "effect";
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,13 +31,17 @@ const rows = vi.hoisted(() => ({
 }));
 
 const mocks = vi.hoisted(() => ({
-	revisionArtifactUrl: vi.fn(async () => null as string | null),
+	revisionArtifactUrl: vi.fn(async (_input: { origin?: string }) => null as string | null),
 	sign: vi.fn((key: string) => Effect.succeed(`https://media.example/${key}`)),
 	policy: vi.fn(),
 	render: vi.fn(async (input: unknown) => input),
 }));
 
 vi.mock("server-only", () => ({}));
+vi.mock("@cap/env", async (importOriginal) => ({
+	...await importOriginal<typeof import("@cap/env")>(),
+	serverEnv: () => ({ WEB_URL: "https://og-web.example" }),
+}));
 vi.mock("@cap/database/auth/session", () => ({
 	getCurrentUser: async () => ({ id: "owner-flagged" }),
 }));
@@ -164,6 +169,45 @@ describe("eligible legacy share surfaces", () => {
 		rows.video.isScreenshot = true;
 		mocks.revisionArtifactUrl.mockClear();
 		mocks.sign.mockClear();
+	});
+
+	it("passes an absolute CURRENT revision screenshot URL to the OG renderer", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner-flagged";
+		rows.intent = [{ videoId: "video" }];
+		const path = "/media/video/r/revision/thumbnail.jpg?t=grant";
+		mocks.revisionArtifactUrl.mockImplementationOnce(async (input: { origin?: string }) =>
+			`${input.origin ?? ""}${path}`,
+		);
+		const rendered = await generateVideoOgImage(Video.VideoId.make("video"));
+		expect(mocks.revisionArtifactUrl).toHaveBeenCalledWith(expect.objectContaining({
+			artifact: "thumbnail", child: "thumbnail.jpg", origin: "https://og-web.example",
+		}));
+		expect(rendered).toMatchObject({ video: { screenshotUrl: `https://og-web.example${path}` } });
+	});
+
+	it("renders /api/video/og as a PNG with the absolute revision screenshot", async () => {
+		process.env.CAP_INSTANT_FINISH_OWNERS = "owner-flagged";
+		rows.intent = [{ videoId: "video" }];
+		const screenshotUrl = "https://og-web.example/media/video/r/routepng/thumbnail.jpg?t=grant";
+		mocks.revisionArtifactUrl.mockImplementationOnce(async (input) =>
+			`${input.origin ?? ""}/media/video/r/routepng/thumbnail.jpg?t=grant`,
+		);
+		const png = await readFile("public/favicon-32x32.png");
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			expect(String(url)).toBe(screenshotUrl);
+			return new Response(new Uint8Array(png), { headers: { "content-type": "image/png" } });
+		});
+		const actual = await vi.importActual<typeof import("@/lib/og/video-og")>("@/lib/og/video-og");
+		mocks.render.mockImplementationOnce(async (input) => actual.renderVideoOg(input as Parameters<typeof actual.renderVideoOg>[0]));
+		const { GET } = await import("@/app/api/video/og/route");
+		const response = await GET(new NextRequest("https://og-web.example/api/video/og?videoId=video"));
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toContain("image/png");
+		const rendered = Buffer.from(await response.arrayBuffer());
+		expect(rendered.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+		expect(rendered.readUInt32BE(16)).toBe(1200);
+		expect(rendered.readUInt32BE(20)).toBe(630);
+		expect(fetch).toHaveBeenCalledWith(screenshotUrl);
 	});
 
 	it("resolves a flagged screenshot thumbnail and OG frame from the public screenshot", async () => {

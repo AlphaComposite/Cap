@@ -74,6 +74,7 @@ import { SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client
 import { writeRevisionThumbnailSha } from "@/lib/revision-snapshot-patch";
 import {
 	isVerifiedJpeg,
+	thumbnailAtSeconds,
 	thumbnailRetryDelayMs,
 	thumbnailSha256,
 } from "@/lib/revision-thumbnail";
@@ -1646,6 +1647,7 @@ async function produceAndVerify(
 		captionsVtt: captions.vtt,
 		chaptersJson,
 		thumbnailPolicy,
+		thumbnailAtSeconds: thumbnailAtSeconds(spec.keepRanges),
 	});
 	const attested = assertSignedPrepareAttestation(
 		prepared,

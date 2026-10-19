@@ -1,5 +1,6 @@
 import { db } from "@cap/database";
 import { users, videos } from "@cap/database/schema";
+import { serverEnv } from "@cap/env";
 import { findScreenshotObjectKey, Storage } from "@cap/web-backend";
 import { getPublishedRecordingThumbnailKey } from "@cap/web-backend/src/Storage/recording-output";
 import type { Video } from "@cap/web-domain";
@@ -36,6 +37,7 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 				ownerId: video.ownerId,
 				artifact: "thumbnail",
 				child: "thumbnail.jpg",
+				origin: new URL(serverEnv().WEB_URL).origin,
 			}).catch(() => null);
 			return renderVideoOg({
 				kind: "video",

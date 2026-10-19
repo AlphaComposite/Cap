@@ -1370,6 +1370,7 @@ class OriginApp:
             cache=self.cache,
             secret=self.service_secret,
             revision_id=revision_id,
+            thumbnail_at_seconds=body.get("thumbnailAtSeconds"),
         )
         return vtt, chapters_doc
 
@@ -1826,6 +1827,7 @@ def schedule_thumbnail(
     cache: Path | None = None,
     secret: bytes | None = None,
     revision_id: str | None = None,
+    thumbnail_at_seconds: float | None = None,
 ) -> None:
     def run() -> None:
         # Reuse this deferred worker: prepare startup continuity before its thumbnail.
@@ -1840,14 +1842,14 @@ def schedule_thumbnail(
             try:
                 if cache is not None and secret is not None and revision_id:
                     dest = _side_dir(cache, revision_id) / "thumbnail.jpg"
-                    _thumbnail(origin, dest, duration_seconds)
+                    _thumbnail(origin, dest, duration_seconds, thumbnail_at_seconds)
                     data = dest.read_bytes()
                     if not _jpeg_has_frame(data):
                         raise RuntimeError("thumbnail is not a verified jpeg")
                     write_signed_side(secret, cache, revision_id, "thumbnail.jpg", data)
                     return
                 dest = origin.cache / "thumbnail.jpg"
-                _thumbnail(origin, dest, duration_seconds)
+                _thumbnail(origin, dest, duration_seconds, thumbnail_at_seconds)
                 return
             except Exception:
                 continue
@@ -1862,14 +1864,24 @@ def drain_thumbnails() -> None:
         thread.join(timeout=30)
 
 
-def _thumbnail(origin: lib_origin.Origin, dest: Path, duration_seconds: float) -> None:
+def _thumbnail(origin: lib_origin.Origin, dest: Path, duration_seconds: float, thumbnail_at_seconds: float | None = None) -> None:
     init = origin.ensure_init()
-    seg0 = origin.ensure(0)
-    blob = init + _without_styp(seg0)
+    index, seek = 0, []
+    if isinstance(thumbnail_at_seconds, (int, float)) and not isinstance(thumbnail_at_seconds, bool):
+        tb = origin.profile.timescale
+        for segment in origin.segments:
+            start = segment.out_pts / tb
+            if start <= thumbnail_at_seconds < (segment.out_pts + segment.duration_ticks) / tb:
+                index = segment.index
+                # The last frame holds through the segment end; seeking past its PTS emits nothing.
+                offset = min(thumbnail_at_seconds - start, (segment.frames[-1].out_pts - segment.out_pts) / tb)
+                seek = ["-ss", str(offset)]
+                break
+    blob = init + _without_styp(origin.ensure(index))
     tmp = dest.with_suffix(".in.mp4")
     atomic_write(tmp, blob, sync=False)
     result = limits.run_cmd(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(tmp), "-frames:v", "1", str(dest)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(tmp), *seek, "-frames:v", "1", str(dest)],
         limits.FFMPEG_TIMEOUT_S,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

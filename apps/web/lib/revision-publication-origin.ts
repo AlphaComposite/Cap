@@ -42,6 +42,7 @@ export type RevisionPrepareBody = {
 	captionsVtt: string;
 	chaptersJson: string;
 	thumbnailPolicy: "source-zero" | "seg0-first-frame";
+	thumbnailAtSeconds?: number;
 };
 
 export type RevisionPrepareResult = {

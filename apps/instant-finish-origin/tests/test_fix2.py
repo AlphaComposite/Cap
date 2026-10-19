@@ -59,7 +59,7 @@ class ThumbnailDeferTests(unittest.TestCase):
         gate = threading.Event()
         started = threading.Event()
 
-        def block(_origin, _dest, _duration):
+        def block(_origin, _dest, _duration, _at=None):
             started.set()
             gate.wait(2)
 
