@@ -313,9 +313,9 @@ describe("Share view toggle", () => {
 		const page = await mountPollingShare();
 		try {
 			const video = page.container.querySelector("[data-share-video]");
-			// Queueing may be slow, and the cache may still name a previous revision.
-			await page.tick(20_001);
-			expect(vi.mocked(getVideoStatus).mock.calls.length).toBeGreaterThan(5);
+			// The first reads still name a previous revision's stale marker.
+			await page.tick(4_001);
+			expect(vi.mocked(getVideoStatus).mock.calls.length).toBeGreaterThan(1);
 			vi.mocked(getVideoStatus).mockResolvedValue({
 				...pendingStatus(),
 				chaptersRevisionId: "rev-other",
@@ -359,7 +359,7 @@ describe("Share view toggle", () => {
 					await page.tick(2_000);
 					expect(getVideoStatus).toHaveBeenCalledTimes(2);
 				} else {
-					await page.tick(180_000);
+					await page.tick(terminal === "expired" ? 180_000 : 10_000);
 					if (terminal === "expired")
 						expect(vi.mocked(getVideoStatus).mock.calls.length).toBeGreaterThan(
 							50,
@@ -367,7 +367,7 @@ describe("Share view toggle", () => {
 					else
 						expect(
 							vi.mocked(getVideoStatus).mock.calls.length,
-						).toBeLessThanOrEqual(90);
+						).toBeLessThanOrEqual(6);
 				}
 				const calls = vi.mocked(getVideoStatus).mock.calls.length;
 				await page.tick(30_000);

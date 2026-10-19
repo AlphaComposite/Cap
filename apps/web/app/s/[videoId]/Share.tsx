@@ -302,12 +302,14 @@ const useVideoStatus = (
 				availability,
 				playbackRevisionId,
 			);
-			// ponytail: bounded queue discovery; no new status transport for late starts.
+			// Detached queueing can land just after the first read, and a stale
+			// marker may still name an older revision. Short window: every viewer
+			// page runs it. ponytail: a queue later than 10 s needs a refocus.
 			const waitingForQueue =
 				playbackRevisionId &&
 				!started.current.sawRegeneration &&
 				data.chaptersRegenerationRevisionId !== playbackRevisionId &&
-				Date.now() - started.current.at < 3 * 60_000;
+				Date.now() - started.current.at < 10_000;
 
 			return shouldContinuePolling || waitingForQueue ? interval : false;
 		},
