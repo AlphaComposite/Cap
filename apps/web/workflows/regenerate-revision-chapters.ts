@@ -23,7 +23,12 @@ import { loadStoredEditTranscript } from "@/lib/revision-publication";
 import { deriveRevisionCaptions } from "@/lib/revision-publication-metadata";
 import { captionsHaveCues } from "@/lib/source-prepare";
 import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
-import { generateChaptersForTranscript } from "@/workflows/generate-ai";
+import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
+import {
+	generateChaptersForTranscript,
+	generateTitleForChapters,
+	shouldReplaceVideoTitle,
+} from "@/workflows/generate-ai";
 
 type Payload = { videoId: string; revisionId: string };
 
@@ -96,7 +101,9 @@ export async function regenerateRevisionChapters({
 			parseAiGenerationLanguage(row.settings?.aiGenerationLanguage),
 		);
 
-		return await app.transaction(async (tx) => {
+		const language = parseAiGenerationLanguage(row.settings?.aiGenerationLanguage);
+		let savedChapters: { title: string; start: number }[] | null = null;
+		const saved = await app.transaction(async (tx) => {
 			// Same lock order as publication and saveResults: videos, then publication.
 			const [video] = await tx
 				.select()
@@ -123,6 +130,7 @@ export async function regenerateRevisionChapters({
 			// Never trade the projected chapters for a lone one on a real meeting.
 			if (chapters.length === 0 || (chapters.length < 2 && snapshot.durationSeconds >= 120))
 				return false;
+			savedChapters = chapters;
 			await tx
 				.update(videos)
 				.set({
@@ -146,6 +154,10 @@ export async function regenerateRevisionChapters({
 				);
 			return true;
 		});
+		if (saved && savedChapters) {
+			await refreshRevisionTitle(id, revisionId, savedChapters, language);
+		}
+		return saved;
 	} catch (error) {
 		// Projected chapters stay in place; provider fallback is the only retry chain.
 		console.error("Revision chapter regeneration failed", {
@@ -164,3 +176,51 @@ export async function regenerateRevisionChapters({
 	}
 }
 regenerateRevisionChapters.maxRetries = 0;
+
+/** Retitle from the edited chapters; never touches an owner-chosen title. */
+async function refreshRevisionTitle(
+	id: Video.VideoId,
+	revisionId: string,
+	chapters: { title: string; start: number }[],
+	language: ReturnType<typeof parseAiGenerationLanguage>,
+) {
+	try {
+		const app = db();
+		const [video] = await app.select().from(videos).where(eq(videos.id, id));
+		if (!video || video.metadata?.titleManuallyEdited === true) return;
+		const title = await generateTitleForChapters(chapters, language);
+		if (
+			!title ||
+			title === video.name ||
+			!shouldReplaceVideoTitle({
+				currentTitle: video.name,
+				previousAiTitle: video.metadata?.aiTitle,
+				nextAiTitle: title,
+				sourceName: video.metadata?.sourceName,
+				titleManuallyEdited: video.metadata?.titleManuallyEdited,
+			})
+		)
+			return;
+		const update = await app
+			.update(videos)
+			.set({
+				name: title,
+				metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiTitle', ${title})`,
+			})
+			.where(
+				and(
+					eq(videos.id, id),
+					eq(videos.name, video.name),
+					sql`COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.titleManuallyEdited')), 'false') <> 'true'`,
+					sql`EXISTS (SELECT 1 FROM ${videoPublication} WHERE ${videoPublication.videoId} = ${videos.id} AND ${videoPublication.currentRevisionId} = ${revisionId})`,
+				),
+			);
+		const rows = Array.isArray(update) ? update[0] : update;
+		if ((rows as { affectedRows?: number } | undefined)?.affectedRows) {
+			await enqueueVideoStorageNameSync(id);
+		}
+	} catch (error) {
+		// Chapters are already saved; a failed retitle keeps the old title.
+		console.warn("Revision title refresh failed", { videoId: id, revisionId, error });
+	}
+}

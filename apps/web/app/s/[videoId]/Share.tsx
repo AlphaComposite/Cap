@@ -8,7 +8,7 @@ import clsx from "clsx";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
 	Suspense,
 	startTransition,
@@ -311,7 +311,10 @@ const useVideoStatus = (
 				data.chaptersRegenerationRevisionId !== playbackRevisionId &&
 				Date.now() - started.current.at < 10_000;
 
-			return shouldContinuePolling || waitingForQueue ? interval : false;
+			if (shouldContinuePolling || waitingForQueue) return interval;
+			// ponytail: every visible revision viewer reads status every 20 s to
+			// notice a later Done; push (SSE) if share traffic makes this costly.
+			return playbackRevisionId ? 20_000 : false;
 		},
 		refetchIntervalInBackground: false,
 		staleTime: 1000,
@@ -390,6 +393,18 @@ export const Share = ({
 		!isScreenshot,
 		playback?.mode === "hls" ? playback.revisionId : null,
 	);
+
+	const router = useRouter();
+	const newerRevisionId =
+		playback?.mode === "hls" &&
+		videoStatus?.currentRevisionId &&
+		videoStatus.currentRevisionId !== playback.revisionId
+			? videoStatus.currentRevisionId
+			: null;
+	useEffect(() => {
+		// Done published a newer edit: reload the server data (video, chapters, title).
+		if (newerRevisionId) router.refresh();
+	}, [newerRevisionId, router]);
 
 	const transcriptionStatus =
 		videoStatus?.transcriptionStatus || data.transcriptionStatus;

@@ -71,6 +71,8 @@ type Chapter = { title: string; start: number };
 let spec: VideoEditSpecV2;
 let currentRevisionId: string;
 let manual: boolean;
+let titleEdited: boolean;
+let videoName: string;
 let vtt: string;
 let chapters: Chapter[];
 let sourceChapters: Chapter[];
@@ -107,6 +109,7 @@ const metadata = () => ({
 	chaptersManuallyEdited: manual,
 	summary: "Owner pasted this",
 	aiTitle: "Leave title alone",
+	titleManuallyEdited: titleEdited,
 });
 const snapshot = () => ({
 	captionsVtt: vtt,
@@ -127,12 +130,14 @@ function select(locked = false) {
 			const rows = () =>
 				locked
 					? table === videos
-						? [{ metadata: metadata() }]
+						? [{ name: videoName, metadata: metadata() }]
 						: [{ currentRevisionId }]
 					: table === videos
 						? [
 								{
-									video: { metadata: metadata() },
+									video: { name: videoName, metadata: metadata() },
+									name: videoName,
+									metadata: metadata(),
 									settings: { aiGenerationLanguage: "auto" },
 								},
 							]
@@ -168,6 +173,8 @@ const tx = {
 				const query = dialect.sqlToQuery(
 					value.metadata ?? value.metadataSnapshot!,
 				);
+				const name = (value as { name?: string }).name;
+				if (name) query.params.push(name);
 				if (!query.sql.includes("'$.chapters'")) {
 					markerWrites.push({
 						query: query.sql,
@@ -199,6 +206,8 @@ beforeEach(() => {
 	]);
 	currentRevisionId = payload.revisionId;
 	manual = false;
+	titleEdited = false;
+	videoName = "Custom owner name";
 	locks = [];
 	writes = [];
 	markerWrites = [];
@@ -638,6 +647,36 @@ describe("published edit chapter regeneration", () => {
 		});
 		expect(await workflow.regenerateRevisionChapters(payload)).toBe(false);
 		expect(writes.filter((w) => w.table === videos || w.table === editRevision)).toEqual([]);
+	});
+
+	it("retitles from the edited chapters unless the owner renamed the video", async () => {
+		const titleCall = () =>
+			mocks.ai.mock.calls.find((c) => String(c[0].prompt).includes("chapters of the edited version"));
+		const retitled = () =>
+			markerWrites.filter((w) => w.params.includes("Edited meeting title"));
+		mocks.ai.mockImplementation(async ({ prompt }: { prompt: string }) => ({
+			text: prompt.includes("chapters of the edited version")
+				? '{"title":"Edited meeting title"}'
+				: JSON.stringify({
+						chapters: [
+							{ title: "Website", start: 0 },
+							{ title: "Airtable and Android", start: 100 },
+							{ title: "Apple and DUNS", start: 200 },
+						],
+					}),
+		}));
+		videoName = "Leave title alone";
+		expect(await workflow.regenerateRevisionChapters(payload)).toBe(true);
+		expect(titleCall()![0].prompt).toContain("- Airtable and Android");
+		expect(retitled()).toHaveLength(1);
+		expect(retitled()[0]!.guard).toContain("titleManuallyEdited");
+
+		mocks.ai.mockClear();
+		markerWrites = [];
+		titleEdited = true;
+		expect(await workflow.regenerateRevisionChapters(payload)).toBe(true);
+		expect(titleCall()).toBeUndefined();
+		expect(retitled()).toEqual([]);
 	});
 
 	it("uses explicit output duration, cue snapping, and the existing chapter parser", async () => {

@@ -83,9 +83,10 @@ vi.mock("next/image", async () => {
 	};
 });
 
+const routerRefresh = vi.hoisted(() => vi.fn());
 vi.mock("next/navigation", () => ({
 	useSearchParams: () => new URLSearchParams(),
-	useRouter: () => ({ refresh: () => undefined }),
+	useRouter: () => ({ refresh: routerRefresh }),
 }));
 
 const polledStatus = vi.hoisted(() => ({
@@ -338,7 +339,29 @@ describe("Share view toggle", () => {
 			}
 			const calls = vi.mocked(getVideoStatus).mock.calls.length;
 			await page.tick(30_000);
-			expect(getVideoStatus).toHaveBeenCalledTimes(calls);
+			// Fast polling ended; only the 20 s newer-revision watch remains.
+			expect(getVideoStatus).toHaveBeenCalledTimes(calls + 1);
+		} finally {
+			await page.close();
+		}
+	});
+
+	it("reloads a still-open Share when Done publishes a newer revision", async () => {
+		routerRefresh.mockClear();
+		vi.mocked(getVideoStatus).mockResolvedValue({
+			...completedStatus,
+			currentRevisionId: "rev-1",
+		});
+		const page = await mountPollingShare();
+		try {
+			await page.tick(60_000);
+			expect(routerRefresh).not.toHaveBeenCalled();
+			vi.mocked(getVideoStatus).mockResolvedValue({
+				...completedStatus,
+				currentRevisionId: "rev-2",
+			});
+			await page.tick(20_001);
+			expect(routerRefresh).toHaveBeenCalledTimes(1);
 		} finally {
 			await page.close();
 		}
@@ -371,7 +394,9 @@ describe("Share view toggle", () => {
 				}
 				const calls = vi.mocked(getVideoStatus).mock.calls.length;
 				await page.tick(30_000);
-				expect(getVideoStatus).toHaveBeenCalledTimes(calls);
+				expect(vi.mocked(getVideoStatus).mock.calls.length).toBeLessThanOrEqual(
+					calls + 2,
+				);
 			} finally {
 				await page.close();
 			}

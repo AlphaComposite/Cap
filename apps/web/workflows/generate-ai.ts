@@ -1249,6 +1249,28 @@ Return ONLY valid JSON without any markdown formatting or code blocks.`;
 	return { chapters: allChapters };
 }
 
+/** Title for a published edit, from its regenerated chapters (one small call). */
+export async function generateTitleForChapters(
+	chapters: readonly { title: string; start: number }[],
+	language: AiGenerationLanguage,
+): Promise<string | null> {
+	const prompt = `You are Cap AI. This video was edited; these are the chapters of the edited version:
+${chapters.map((c) => `- ${c.title}`).join("\n")}
+Provide JSON: {"title": "string (concise title covering what the edited video contains)"}
+- ${getAiLanguageInstruction(language)}
+- ${conciseGeneratedTitleGuidance()}
+- Do not mention topics that are not in the chapters.
+Return ONLY valid JSON without any markdown formatting or code blocks.`;
+	for (const attempt of [prompt, `${prompt}\n\n${strictTitleRetry()}`]) {
+		try {
+			return (await callAiApi(attempt, parseFinalTitle)).title;
+		} catch (error) {
+			if (!failedOnInvalidOutput(error)) throw error;
+		}
+	}
+	return null;
+}
+
 export function strictTitleRetry(): string {
 	return `Your previous title was rejected. The title MUST be ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters or fewer, counting spaces. Name only the main topic.`;
 }

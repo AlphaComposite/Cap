@@ -5,6 +5,7 @@ import { getCurrentUser } from "@cap/database/auth/session";
 import {
 	organizations,
 	spaces,
+	videoPublication,
 	spaceVideos,
 	videos,
 	videoUploads,
@@ -51,6 +52,7 @@ export interface VideoStatusResult {
 	chaptersRevisionId?: string | null;
 	chaptersRegenerationRevisionId?: string | null;
 	chaptersRegenerationQueuedAt?: number | null;
+	currentRevisionId?: string | null;
 	error?: string;
 }
 
@@ -73,13 +75,13 @@ export async function getVideoStatus(
 	if (!video) throw new Error("Video not found");
 
 	const metadata: VideoMetadata = (video.metadata as VideoMetadata) || {};
-	const chapterStatus = {
+	const chapterStatus: Record<string, unknown> = {
 		chaptersRevisionId: metadata.chaptersRevisionId ?? null,
 		chaptersRegenerationRevisionId:
 			metadata.chaptersRegenerationRevisionId ?? null,
 		chaptersRegenerationQueuedAt: metadata.chaptersRegenerationQueuedAt ?? null,
 	};
-	const [user, organizationRows, sharedSpaces] = await Promise.all([
+	const [user, organizationRows, sharedSpaces, publicationRows] = await Promise.all([
 		getCurrentUser(),
 		db()
 			.select({ settings: organizations.settings })
@@ -95,7 +97,16 @@ export async function getVideoStatus(
 			.from(spaceVideos)
 			.innerJoin(spaces, eq(spaceVideos.spaceId, spaces.id))
 			.where(eq(spaceVideos.videoId, videoId)),
+		db()
+			.select({ currentRevisionId: videoPublication.currentRevisionId })
+			.from(videoPublication)
+			.where(eq(videoPublication.videoId, videoId))
+			.limit(1),
 	]);
+	// An open share page reloads when Done publishes a newer revision.
+	Object.assign(chapterStatus, {
+		currentRevisionId: publicationRows[0]?.currentRevisionId ?? null,
+	});
 	const rules = resolveEffectiveVideoRules({
 		videoSettings: video.settings,
 		organizationSettings: organizationRows[0]?.settings,
