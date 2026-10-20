@@ -1249,17 +1249,28 @@ Return ONLY valid JSON without any markdown formatting or code blocks.`;
 	return { chapters: allChapters };
 }
 
-/** Title for a published edit, from its regenerated chapters (one small call). */
+/** Title for a published edit: chapters plus a transcript sample, one call. */
 export async function generateTitleForChapters(
 	chapters: readonly { title: string; start: number }[],
 	language: AiGenerationLanguage,
+	vtt = "",
 ): Promise<string | null> {
-	const prompt = `You are Cap AI. This video was edited; these are the chapters of the edited version:
+	// ponytail: first ~6k chars of the edited transcript; enough to name the
+	// subject. Sample across the whole edit if long meetings still go vague.
+	const transcript = parseVttWithTimestamps(vtt)
+		.map((s) => s.text)
+		.join(" ")
+		.slice(0, 6000);
+	const prompt = `You are Cap AI, naming an edited video for the people who were in it.
+Chapters of the edited version:
 ${chapters.map((c) => `- ${c.title}`).join("\n")}
-Provide JSON: {"title": "string (concise title covering what the edited video contains)"}
+${transcript ? `\nStart of the edited transcript:\n${transcript}\n` : ""}
+Provide JSON: {"title": "string"}
+- Name the specific subject: the product, project, client, or decision discussed.
+- Avoid generic words such as "Overview", "Video", "Comprehensive", or "Discussion" unless they are the subject.
+- Do not mention topics that are not in the chapters.
 - ${getAiLanguageInstruction(language)}
 - ${conciseGeneratedTitleGuidance()}
-- Do not mention topics that are not in the chapters.
 Return ONLY valid JSON without any markdown formatting or code blocks.`;
 	for (const attempt of [prompt, `${prompt}\n\n${strictTitleRetry()}`]) {
 		try {

@@ -651,11 +651,11 @@ describe("published edit chapter regeneration", () => {
 
 	it("retitles from the edited chapters unless the owner renamed the video", async () => {
 		const titleCall = () =>
-			mocks.ai.mock.calls.find((c) => String(c[0].prompt).includes("chapters of the edited version"));
+			mocks.ai.mock.calls.find((c) => String(c[0].prompt).includes("Chapters of the edited version"));
 		const retitled = () =>
 			markerWrites.filter((w) => w.params.includes("Edited meeting title"));
 		mocks.ai.mockImplementation(async ({ prompt }: { prompt: string }) => ({
-			text: prompt.includes("chapters of the edited version")
+			text: prompt.includes("Chapters of the edited version")
 				? '{"title":"Edited meeting title"}'
 				: JSON.stringify({
 						chapters: [
@@ -668,6 +668,8 @@ describe("published edit chapter regeneration", () => {
 		videoName = "Leave title alone";
 		expect(await workflow.regenerateRevisionChapters(payload)).toBe(true);
 		expect(titleCall()![0].prompt).toContain("- Airtable and Android");
+		// The transcript sample keeps the specifics (names, products) in the title.
+		expect(titleCall()![0].prompt).toContain("Airtable migration and Android release");
 		expect(retitled()).toHaveLength(1);
 		expect(retitled()[0]!.guard).toContain("titleManuallyEdited");
 

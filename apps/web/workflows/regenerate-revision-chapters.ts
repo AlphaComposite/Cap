@@ -155,7 +155,7 @@ export async function regenerateRevisionChapters({
 			return true;
 		});
 		if (saved && savedChapters) {
-			await refreshRevisionTitle(id, revisionId, savedChapters, language);
+			await refreshRevisionTitle(id, revisionId, savedChapters, language, vtt);
 		}
 		return saved;
 	} catch (error) {
@@ -183,12 +183,13 @@ async function refreshRevisionTitle(
 	revisionId: string,
 	chapters: { title: string; start: number }[],
 	language: ReturnType<typeof parseAiGenerationLanguage>,
+	vtt: string,
 ) {
 	try {
 		const app = db();
 		const [video] = await app.select().from(videos).where(eq(videos.id, id));
 		if (!video || video.metadata?.titleManuallyEdited === true) return;
-		const title = await generateTitleForChapters(chapters, language);
+		const title = await generateTitleForChapters(chapters, language, vtt);
 		if (
 			!title ||
 			title === video.name ||
