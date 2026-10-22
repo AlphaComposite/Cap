@@ -479,7 +479,12 @@ export async function recoverStalledVideoPipeline({
 	};
 }
 
-export const AI_RUN_STALE_MS = 3 * 60 * 1000;
+// ponytail: no per-run heartbeat; videos.updatedAt is the only liveness signal.
+// Restarts after a reboot are instant (bootedAt); a run that's merely slow is
+// only displaced after 10 min, and its saveResults is fenced by generationId.
+export const AI_RUN_STALE_MS = 10 * 60 * 1000;
+// videos.updatedAt has 1 s precision: a claim in the boot second must not look pre-boot.
+const BOOT_MARGIN_MS = 2_000;
 export const AI_AUTO_RETRY_MAX = 3;
 const AI_AUTO_RETRY_WINDOW_MS = 48 * 60 * 60 * 1000;
 
@@ -501,7 +506,7 @@ export function aiRunNeedsRestart(input: {
 	if (input.status === "ERROR") return true;
 	if (input.status !== "QUEUED" && input.status !== "PROCESSING") return false;
 	return (
-		input.updatedAt < input.bootedAt ||
+		input.updatedAt.getTime() < input.bootedAt.getTime() - BOOT_MARGIN_MS ||
 		input.now.getTime() - input.updatedAt.getTime() >= AI_RUN_STALE_MS
 	);
 }
@@ -536,8 +541,13 @@ export async function restartFailedAiRuns({
 						sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus'))`,
 						["QUEUED", "PROCESSING", "ERROR"],
 					),
+					// Exhausted and manual-chapter rows must not fill the batch and
+					// starve rows that still need a restart.
+					sql`COALESCE(JSON_EXTRACT(${videos.metadata}, '$.aiAutoRetryCount'), 0) < ${AI_AUTO_RETRY_MAX}`,
+					sql`COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.chaptersManuallyEdited')), 'false') <> 'true'`,
 				),
 			)
+			.orderBy(asc(videos.updatedAt))
 			.limit(STALLED_AI_RECOVERY_BATCH_SIZE)
 	).filter(isAiGenerationEnabledForUser);
 

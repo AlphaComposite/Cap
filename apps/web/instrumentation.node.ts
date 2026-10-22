@@ -37,7 +37,9 @@ export async function register() {
 	// Add a timeout to trigger migrations after 5 seconds on server start
 	setTimeout(() => triggerMigrations(), 5000);
 	setTimeout(() => createS3Bucket(), 5000);
-	if (process.env.DATABASE_URL) {
+	const watchdogFlag = globalThis as { __capAiWatchdog?: boolean };
+	if (process.env.DATABASE_URL && !watchdogFlag.__capAiWatchdog) {
+		watchdogFlag.__capAiWatchdog = true;
 		// Restart chapter/summary runs that failed or died (e.g. on a deploy).
 		const bootedAt = new Date();
 		let running = false;

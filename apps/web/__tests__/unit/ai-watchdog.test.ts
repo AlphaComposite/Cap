@@ -12,7 +12,7 @@ const { aiRunNeedsRestart, AI_AUTO_RETRY_MAX, AI_RUN_STALE_MS } = await import(
 );
 
 const now = new Date("2026-10-22T19:00:00Z");
-const bootedAt = new Date("2026-10-22T18:50:00Z");
+const bootedAt = new Date("2026-10-22T18:59:00Z");
 const ago = (ms: number) => new Date(now.getTime() - ms);
 const base = { autoRetries: 0, bootedAt, now, updatedAt: ago(10_000) };
 
@@ -29,6 +29,7 @@ describe("aiRunNeedsRestart", () => {
 			aiRunNeedsRestart({
 				...base,
 				status: "PROCESSING",
+				bootedAt: ago(60 * 60_000),
 				updatedAt: ago(AI_RUN_STALE_MS),
 			}),
 		).toBe(true);
@@ -38,9 +39,29 @@ describe("aiRunNeedsRestart", () => {
 			aiRunNeedsRestart({
 				...base,
 				status: "PROCESSING",
-				updatedAt: new Date(bootedAt.getTime() - 1000),
+				updatedAt: new Date(bootedAt.getTime() - 5000),
 			}),
 		).toBe(true);
+	});
+	it("does not mistake a run claimed in the boot second for a dead one", () => {
+		expect(
+			aiRunNeedsRestart({
+				...base,
+				status: "PROCESSING",
+				updatedAt: new Date(bootedAt.getTime() - 500),
+			}),
+		).toBe(false);
+	});
+	it("gives a slow live run 10 minutes before displacing it", () => {
+		expect(
+			aiRunNeedsRestart({
+				...base,
+				status: "PROCESSING",
+				bootedAt: ago(60 * 60_000),
+				updatedAt: ago(5 * 60_000),
+			}),
+		).toBe(false);
+		expect(AI_RUN_STALE_MS).toBe(10 * 60_000);
 	});
 	it("stops after the retry cap so an outage can't loop", () => {
 		expect(
