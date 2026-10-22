@@ -145,3 +145,71 @@ describe("dashboard download RPC", () => {
 		).toThrow("Failed to get download URL");
 	});
 });
+
+describe("saveUrlDirectly", () => {
+	it("hands same-origin files to the browser and refuses cross-origin ones", async () => {
+		const { saveUrlDirectly } = await import("@/lib/dashboard-download");
+		const clicked: { href: string; download: string }[] = [];
+		const g = globalThis as Record<string, unknown>;
+		const prev = { window: g.window, document: g.document };
+		g.window = {
+			location: {
+				href: "https://cap.test/dashboard/caps",
+				origin: "https://cap.test",
+			},
+		};
+		g.document = {
+			createElement: () => {
+				const a = {
+					href: "",
+					download: "",
+					style: {},
+					click: () => clicked.push({ href: a.href, download: a.download }),
+				};
+				return a;
+			},
+			body: { appendChild() {}, removeChild() {} },
+		};
+		try {
+			expect(
+				saveUrlDirectly(
+					"https://cap.test/media/v/r/rev/download.mp4?t=g",
+					"a.mp4",
+				),
+			).toBe(true);
+			expect(saveUrlDirectly("/media/v/original", "b.mp4")).toBe(true);
+			expect(
+				saveUrlDirectly("https://s3.test/bucket/result.mp4?sig=1", "c.mp4"),
+			).toBe(false);
+			expect(clicked).toEqual([
+				{
+					href: "https://cap.test/media/v/r/rev/download.mp4?t=g",
+					download: "a.mp4",
+				},
+				{ href: "/media/v/original", download: "b.mp4" },
+			]);
+		} finally {
+			g.window = prev.window;
+			g.document = prev.document;
+		}
+	});
+
+	it("dashboard card and share-page hook both use the direct path", () => {
+		const card = readFileSync(
+			new URL(
+				"../../app/(org)/dashboard/caps/components/CapCard/CapCard.tsx",
+				import.meta.url,
+			),
+			"utf8",
+		);
+		const hook = readFileSync(
+			new URL(
+				"../../app/s/[videoId]/_components/use-video-download.ts",
+				import.meta.url,
+			),
+			"utf8",
+		);
+		expect(card).toMatch(/saveUrlDirectly\(presented\.downloadUrl/);
+		expect(hook).toMatch(/saveUrlDirectly\(downloadUrl/);
+	});
+});

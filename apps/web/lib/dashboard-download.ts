@@ -115,3 +115,34 @@ export function readDashboardDownloadResult(
 	}
 	throw new Error(messageFrom(failure));
 }
+
+function clickLink(href: string, filename: string) {
+	const link = document.createElement("a");
+	link.href = href;
+	link.download = filename;
+	link.style.display = "none";
+	document.body.appendChild(link);
+	link.click();
+	document.body.removeChild(link);
+}
+
+/**
+ * Same-origin files (/media/... revision downloads) go straight to the
+ * browser's download manager: it starts at once with real progress instead of
+ * buffering the whole MP4 in page memory first. Cross-origin URLs (legacy
+ * signed S3 links) ignore `download`, so callers fall back to saveViaBlob.
+ */
+export function saveUrlDirectly(url: string, filename: string): boolean {
+	if (new URL(url, window.location.href).origin !== window.location.origin)
+		return false;
+	clickLink(url, filename);
+	return true;
+}
+
+export async function saveViaBlob(url: string, filename: string) {
+	const response = await fetch(url);
+	if (!response.ok) throw new Error("Failed to download video");
+	const blobUrl = window.URL.createObjectURL(await response.blob());
+	clickLink(blobUrl, filename);
+	window.URL.revokeObjectURL(blobUrl);
+}

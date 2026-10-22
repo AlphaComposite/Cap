@@ -37,7 +37,6 @@ import { FolderInput } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type PropsWithChildren, useEffect, useRef, useState } from "react";
-import { useOpenEditor } from "../../../../../../hooks/use-open-editor";
 import { toast } from "sonner";
 import { ConfirmationDialog } from "@/app/(org)/dashboard/_components/ConfirmationDialog";
 import { useDashboardContext } from "@/app/(org)/dashboard/Contexts";
@@ -52,6 +51,7 @@ import {
 	isDownloadPreparingError,
 	presentRpcDownload,
 	readDashboardDownloadResult,
+	saveUrlDirectly,
 } from "@/lib/dashboard-download";
 import { useEffectMutation, useRpcClient } from "@/lib/EffectRuntime";
 import type { MoveLocation } from "@/lib/move-items";
@@ -62,6 +62,7 @@ import {
 } from "@/lib/video-share-clipboard";
 import { usePublicEnv } from "@/utils/public-env";
 import { useEditReadiness } from "../../../../../../hooks/use-edit-readiness";
+import { useOpenEditor } from "../../../../../../hooks/use-open-editor";
 import { MoveItemsDialog } from "../MoveItemsDialog";
 import { PasswordDialog } from "../PasswordDialog";
 import { SettingsDialog } from "../SettingsDialog";
@@ -219,6 +220,9 @@ export const CapCard = ({
 				}
 				if (presented.action === "error") {
 					return yield* Effect.fail(new Error(presented.message));
+				}
+				if (saveUrlDirectly(presented.downloadUrl, presented.fileName)) {
+					return { kind: "started" as const };
 				}
 				const httpClient = yield* HttpClient.HttpClient;
 				const fetchResponse = yield* httpClient.get(presented.downloadUrl);
