@@ -251,6 +251,35 @@ export function SummaryEditor({
 						void queryClient.invalidateQueries({ queryKey });
 						return false;
 					}
+					// Chapters can be generated server-side while only the summary is
+					// edited. Adopt them when the owner left chapters untouched, or the
+					// next loop pass would save the stale (often empty) list as a
+					// manual chapter edit and block generation for good.
+					if (
+						!chaptersChanged &&
+						chaptersEqual(
+							valueRef.current.chapters,
+							normalizedBaseline.chapters,
+						) &&
+						!chaptersEqual(result.data.chapters, normalizedBaseline.chapters)
+					) {
+						const adopted = result.data.chapters.map((chapter, index) => ({
+							id: index,
+							title: chapter.title,
+							time: formatChapterTime(chapter.start),
+							originalStart: chapter.start,
+						}));
+						nextId.current = adopted.length;
+						setChapters(adopted);
+						formValueRef.current = {
+							...formValueRef.current,
+							chapters: adopted,
+						};
+						valueRef.current = {
+							...valueRef.current,
+							chapters: result.data.chapters,
+						};
+					}
 					expectedRef.current = result.data;
 					setExpected(result.data);
 					setHasSaved(true);

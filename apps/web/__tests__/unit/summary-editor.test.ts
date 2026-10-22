@@ -181,6 +181,47 @@ describe("summary autosave editor", () => {
 		});
 	});
 
+	it("never wipes chapters that were generated while only the summary was being edited", async () => {
+		vi.useFakeTimers();
+		const generated = [
+			{ title: "Introduction", start: 0 },
+			{ title: "Pilot proposal", start: 60 },
+		];
+		const empty = { summary: "", chapters: [] };
+		vi.mocked(editAiContent).mockImplementation(async (_id, input) => {
+			if (vi.mocked(editAiContent).mock.calls.length > 4)
+				return { success: false, message: "loop" };
+			const { value } = input as { value: typeof empty };
+			return {
+				success: true,
+				data: { summary: value.summary, chapters: generated },
+			};
+		});
+		await render(
+			createElement(SummaryEditor, {
+				videoId,
+				initialContent: empty,
+				duration: 120,
+			}),
+		);
+		await change(summary(), "Pasted summary");
+		await act(async () => vi.advanceTimersByTimeAsync(700));
+		await change(summary(), "Pasted summary, edited");
+		await act(async () => vi.advanceTimersByTimeAsync(700));
+		for (const [, input] of vi.mocked(editAiContent).mock.calls) {
+			const { value, expected } = input as {
+				value: typeof empty;
+				expected: typeof empty;
+			};
+			expect(value.chapters).toEqual(expected.chapters);
+		}
+		expect(editAiContent).toHaveBeenCalledTimes(2);
+		expect(chapterInputs().titles.map((input) => input.value)).toEqual([
+			"Introduction",
+			"Pilot proposal",
+		]);
+	});
+
 	it("lets navigation await the blur save without starting a duplicate", async () => {
 		vi.useFakeTimers();
 		let finishSave!: () => void;
