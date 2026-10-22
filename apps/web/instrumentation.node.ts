@@ -37,6 +37,21 @@ export async function register() {
 	// Add a timeout to trigger migrations after 5 seconds on server start
 	setTimeout(() => triggerMigrations(), 5000);
 	setTimeout(() => createS3Bucket(), 5000);
+	if (process.env.DATABASE_URL) {
+		// Restart chapter/summary runs that failed or died (e.g. on a deploy).
+		const bootedAt = new Date();
+		let running = false;
+		setInterval(() => {
+			if (running) return;
+			running = true;
+			void import("@/lib/video-pipeline-recovery")
+				.then((m) => m.restartFailedAiRuns({ bootedAt }))
+				.catch((error) => console.error("[ai-watchdog]", error))
+				.finally(() => {
+					running = false;
+				});
+		}, 30_000);
+	}
 	if (
 		process.env.CAP_REVISION_WORKER_MODE !== "external" &&
 		(process.env.CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL ||

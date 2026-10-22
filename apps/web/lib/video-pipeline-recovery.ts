@@ -478,3 +478,107 @@ export async function recoverStalledVideoPipeline({
 		ai: summarize(ai),
 	};
 }
+
+export const AI_RUN_STALE_MS = 3 * 60 * 1000;
+export const AI_AUTO_RETRY_MAX = 3;
+const AI_AUTO_RETRY_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Should this video's chapter/summary run be thrown away and started again?
+ * Workflow runs live in this process, so a run claimed before the current boot
+ * is dead; a live run normally finishes in under 30 s, so one untouched for
+ * AI_RUN_STALE_MS is hung. ERROR retries at once. Capped per video so a
+ * provider outage can't loop or spend unbounded AI calls.
+ */
+export function aiRunNeedsRestart(input: {
+	status: string | undefined;
+	autoRetries: number;
+	updatedAt: Date;
+	bootedAt: Date;
+	now: Date;
+}): boolean {
+	if (input.autoRetries >= AI_AUTO_RETRY_MAX) return false;
+	if (input.status === "ERROR") return true;
+	if (input.status !== "QUEUED" && input.status !== "PROCESSING") return false;
+	return (
+		input.updatedAt < input.bootedAt ||
+		input.now.getTime() - input.updatedAt.getTime() >= AI_RUN_STALE_MS
+	);
+}
+
+export async function restartFailedAiRuns({
+	bootedAt,
+	now = new Date(),
+}: {
+	bootedAt: Date;
+	now?: Date;
+}) {
+	const rows = (
+		await db()
+			.select({
+				videoId: videos.id,
+				userId: videos.ownerId,
+				metadata: videos.metadata,
+				updatedAt: videos.updatedAt,
+				stripeSubscriptionStatus: users.stripeSubscriptionStatus,
+				thirdPartyStripeSubscriptionId: users.thirdPartyStripeSubscriptionId,
+			})
+			.from(videos)
+			.innerJoin(users, eq(videos.ownerId, users.id))
+			.where(
+				and(
+					eq(videos.transcriptionStatus, "COMPLETE"),
+					gte(
+						videos.createdAt,
+						new Date(now.getTime() - AI_AUTO_RETRY_WINDOW_MS),
+					),
+					inArray(
+						sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus'))`,
+						["QUEUED", "PROCESSING", "ERROR"],
+					),
+				),
+			)
+			.limit(STALLED_AI_RECOVERY_BATCH_SIZE)
+	).filter(isAiGenerationEnabledForUser);
+
+	const restarted: Video.VideoId[] = [];
+	for (const row of rows) {
+		const metadata = (row.metadata ?? {}) as VideoMetadata & {
+			aiAutoRetryCount?: number;
+		};
+		const autoRetries = Number(metadata.aiAutoRetryCount ?? 0);
+		const status = metadata.aiGenerationStatus;
+		if (
+			!aiRunNeedsRestart({
+				status,
+				autoRetries,
+				updatedAt: row.updatedAt,
+				bootedAt,
+				now,
+			})
+		)
+			continue;
+		// Kill this try: only if nothing moved since we looked (same status,
+		// generation and updatedAt), mark it ERROR and count the retry.
+		const claim = await db()
+			.update(videos)
+			.set({
+				metadata: sql`JSON_SET(${videos.metadata}, '$.aiGenerationStatus', 'ERROR', '$.aiAutoRetryCount', ${autoRetries + 1})`,
+			})
+			.where(
+				and(
+					eq(videos.id, row.videoId),
+					eq(videos.updatedAt, row.updatedAt),
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')) = ${status}`,
+					sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationId')) <=> ${metadata.aiGenerationId ?? null}`,
+				),
+			);
+		if (getAffectedRows(claim) === 0) continue;
+		const result = await startAiGeneration(row.videoId, row.userId);
+		console.log(
+			`[ai-watchdog] ${row.videoId} ${status} -> retry ${autoRetries + 1}/${AI_AUTO_RETRY_MAX}: ${result.message}`,
+		);
+		restarted.push(row.videoId);
+	}
+	return restarted;
+}
