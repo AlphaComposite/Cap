@@ -175,7 +175,9 @@ describe.skipIf(!databaseUrl)("source prepare mysql lease", () => {
 			lines.push(String(line));
 		});
 		const run = async (videoId: string) => {
-			await pool.query("DELETE FROM outbox WHERE job = ?", [SOURCE_PREPARE_JOB]);
+			await pool.query("DELETE FROM outbox WHERE job = ?", [
+				SOURCE_PREPARE_JOB,
+			]);
 			await enqueueSourcePrepare(database as never, {
 				videoId,
 				ownerId,
@@ -214,16 +216,28 @@ describe.skipIf(!databaseUrl)("source prepare mysql lease", () => {
 		try {
 			delete process.env.CAP_WORKER_TIMING;
 			await run(videoB);
-			expect(lines.filter((l) => l.startsWith("source-prepare-timing"))).toEqual([]);
+			expect(
+				lines.filter((l) => l.startsWith("source-prepare-timing")),
+			).toEqual([]);
 			process.env.CAP_WORKER_TIMING = "1";
 			await run(videoB);
 			const events = lines
 				.filter((l) => l.startsWith("source-prepare-timing "))
 				.map((l) => JSON.parse(l.slice("source-prepare-timing ".length)));
 			expect(events.map((e) => e.event)).toEqual(
-				expect.arrayContaining(["claim", "load", "prepare:start", "prepare:end", "done"]),
+				expect.arrayContaining([
+					"claim",
+					"load",
+					"prepare:start",
+					"prepare:end",
+					"done",
+				]),
 			);
-			expect(events.every((e) => e.videoId === videoB && typeof e.sinceQueuedMs === "number")).toBe(true);
+			expect(
+				events.every(
+					(e) => e.videoId === videoB && typeof e.sinceQueuedMs === "number",
+				),
+			).toBe(true);
 		} finally {
 			delete process.env.CAP_WORKER_TIMING;
 			spy.mockRestore();
