@@ -222,12 +222,15 @@ async function signedFetch(
 	body = "",
 	signal?: AbortSignal,
 ) {
+	const deadline = AbortSignal.timeout(45 * 60 * 1000);
 	return originFetch(`${originBaseUrl()}${path}`, {
 		method,
 		headers: signedHeaders(method, path, body),
 		body: method === "POST" ? body : undefined,
 		dispatcher: originDispatcher,
-		signal,
+		// Bun's bare undici uses native fetch; its 300s timer ignores the Agent.
+		...(process.versions.bun ? { timeout: false as const } : {}),
+		signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
 	});
 }
 
@@ -309,7 +312,10 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 		},
 		async requestDownload(input) {
 			const path = `/internal/revisions/${input.revisionId}/download`;
-			const encoded = JSON.stringify({ videoId: input.videoId, automatic: input.automatic === true });
+			const encoded = JSON.stringify({
+				videoId: input.videoId,
+				automatic: input.automatic === true,
+			});
 			const response = await signedFetch(path, "POST", encoded);
 			// Only the job's own encode-slot timeout is "busy"; admission
 			// overload 503s ("overloaded") count as real failures.
