@@ -571,6 +571,21 @@ export const editIntent = mysqlTable(
 	],
 );
 
+type RevisionArtifactReceipt = {
+	validation: "verified";
+	ownerId: string;
+	videoId: string;
+	revisionId: string;
+	generation: number;
+	sourceId: string;
+	namespace: string;
+	bucket: string;
+	key: string;
+	versionId: string;
+	sha256: string;
+	size: number;
+};
+
 export const editRevision = mysqlTable(
 	"edit_revision",
 	{
@@ -595,19 +610,17 @@ export const editRevision = mysqlTable(
 			thumbnailSha256?: string;
 			downloadReady?: boolean;
 			downloadDurabilityStarted?: boolean;
-			downloadArtifact?: {
-				validation: "verified";
-				ownerId: string;
-				videoId: string;
-				revisionId: string;
-				generation: number;
-				sourceId: string;
-				namespace: string;
-				bucket: string;
-				key: string;
-				versionId: string;
-				sha256: string;
-				size: number;
+			hlsDurabilityStarted?: boolean;
+			downloadArtifact?: RevisionArtifactReceipt & {
+				hls?: {
+					validation: "verified";
+					snapshot: {
+						captionsVtt: string;
+						chapters: { title: string; start: number }[];
+						thumbnailSha256: string;
+					};
+					artifacts: Record<string, RevisionArtifactReceipt>;
+				};
 			};
 		}>(),
 		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),

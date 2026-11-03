@@ -64,7 +64,9 @@ function read(request: Request) {
 			)
 		)
 			return new Response(null, { status: 400, headers });
-		const current = yield* Effect.promise(() => readCurrentDownload(videoId));
+		const current = yield* Effect.promise(() =>
+			readCurrentDownload(videoId, undefined, { requireValidReceipt: true }),
+		);
 		if (!current) return new Response(null, { status: 204, headers });
 		if (current.revisionId !== revisionId)
 			return new Response(null, { status: 409, headers });
@@ -95,7 +97,9 @@ function read(request: Request) {
 		const bytes = yield* Effect.promise(() =>
 			readDurableHlsArtifact(artifact, signal),
 		);
-		const again = yield* Effect.promise(() => readCurrentDownload(videoId));
+		const again = yield* Effect.promise(() =>
+			readCurrentDownload(videoId, undefined, { requireValidReceipt: true }),
+		);
 		if (
 			!again ||
 			again.revisionId !== revisionId ||

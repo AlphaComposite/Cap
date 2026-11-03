@@ -504,6 +504,7 @@ export function denyFlaggedPresign(input: {
 export async function readCurrentDownload(
 	videoId: string,
 	executor: SqlExecutor = db(),
+	options: { requireValidReceipt?: boolean } = {},
 ) {
 	const result = await executor.execute(sql`
 		SELECT r.revisionId, r.videoId, r.generation, r.sourceId, v.ownerId, v.name,
@@ -537,7 +538,11 @@ export async function readCurrentDownload(
 		generation: Number(row.generation),
 		sourceId: row.sourceId,
 	};
-	if (!verifiedDownloadReceipt(receipt, identity)) return null;
+	if (!verifiedDownloadReceipt(receipt, identity)) {
+		if (options.requireValidReceipt && receipt !== undefined)
+			throw new Error("DownloadReceiptInvalid");
+		return null;
+	}
 	return {
 		...identity,
 		receipt,

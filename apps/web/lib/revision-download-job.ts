@@ -13,6 +13,7 @@ import {
 	type DownloadReceipt,
 	hlsSnapshot,
 	persistRevisionDownload,
+	persistRevisionHls,
 	verifiedDownloadReceipt,
 	verifiedHlsReceipt,
 } from "@/lib/revision-download-artifact";
@@ -163,6 +164,7 @@ export async function markRevisionDownloadReady(
 	database: Database,
 	claimed: { id: number; payload: DownloadPayload; leaseToken: string },
 	receipt: DownloadReceipt,
+	keepJob = false,
 ) {
 	if (
 		!verifiedDownloadReceipt(receipt, receipt) ||
@@ -172,7 +174,7 @@ export async function markRevisionDownloadReady(
 		receipt.videoId !== claimed.payload.videoId
 	)
 		throw new Error("DownloadReceiptInvalid");
-	await database.transaction(async (tx) => {
+	return database.transaction(async (tx) => {
 		// NOW is fixed at statement start; acquire every completion lock before checking lease expiry.
 		const locked = await tx.execute(sql`
 			SELECT r.revisionId FROM video_publication p
@@ -185,7 +187,7 @@ export async function markRevisionDownloadReady(
 		`);
 		const rows =
 			Array.isArray(locked) && Array.isArray(locked[0]) ? locked[0] : [];
-		if (rows.length === 0) return;
+		if (rows.length === 0) return false;
 		const result = await tx.execute(sql`
 			UPDATE edit_revision r
 			JOIN video_publication p ON BINARY p.videoId = BINARY r.videoId
@@ -193,7 +195,7 @@ export async function markRevisionDownloadReady(
 			JOIN outbox o ON o.id = ${claimed.id}
 			JOIN revision_artifact_status a ON BINARY a.revisionId = BINARY r.revisionId AND a.artifact = 'download'
 			SET r.metadataSnapshot = JSON_SET(COALESCE(r.metadataSnapshot, JSON_OBJECT()),
-				'$.downloadArtifact', CAST(${JSON.stringify(receipt)} AS JSON), '$.downloadReady', CAST('true' AS JSON)),
+				'$.downloadArtifact', CAST(${JSON.stringify(receipt)} AS JSON), '$.downloadReady', CAST('true' AS JSON), '$.hlsDurabilityStarted', CAST('true' AS JSON)),
 				r.updatedAt = CURRENT_TIMESTAMP(3), a.state = 'READY', a.leaseUntil = NULL, a.heartbeatAt = CURRENT_TIMESTAMP(3)
 			WHERE BINARY r.revisionId = BINARY ${receipt.revisionId}
 				AND BINARY r.videoId = BINARY ${receipt.videoId}
@@ -216,12 +218,14 @@ export async function markRevisionDownloadReady(
 		const header = (Array.isArray(result) ? result[0] : result) as {
 			affectedRows?: number;
 		};
-		if ((header?.affectedRows ?? 0) > 0)
+		const completed = (header?.affectedRows ?? 0) > 0;
+		if (completed && !keepJob)
 			await deleteLeased(
 				tx as unknown as Database,
 				claimed.id,
 				claimed.leaseToken,
 			);
+		return completed;
 	});
 }
 
@@ -313,7 +317,7 @@ async function finishDownload(
 		await deleteLeased(database, claimed.id, claimed.leaseToken);
 		return;
 	}
-	const already = await readArtifactReady(
+	let already = await readArtifactReady(
 		claimed.payload.revisionId,
 		"download",
 		database,
@@ -331,41 +335,67 @@ async function finishDownload(
 		...(origin.signal ? [origin.signal] : []),
 	]);
 	try {
-		if (!origin.requestDownload) {
-			const unavailable = new Error("download origin unavailable");
-			unavailable.name = "OriginDownloadUnavailable";
-			throw unavailable;
+		const [revision] = await database
+			.select({
+				ownerId: videos.ownerId,
+				videoId: editRevision.videoId,
+				revisionId: editRevision.revisionId,
+				generation: editRevision.generation,
+				sourceId: editRevision.sourceId,
+				metadataSnapshot: editRevision.metadataSnapshot,
+			})
+			.from(editRevision)
+			.innerJoin(videos, eq(videos.id, editRevision.videoId))
+			.where(eq(editRevision.revisionId, claimed.payload.revisionId));
+		const stored = (
+			revision?.metadataSnapshot as { downloadArtifact?: unknown } | null
+		)?.downloadArtifact;
+		if (
+			already === true &&
+			revision &&
+			verifiedDownloadReceipt(stored, revision)
+		) {
+			receipt = stored;
+			status = 200;
+		} else {
+			if (!origin.requestDownload) {
+				const unavailable = new Error("download origin unavailable");
+				unavailable.name = "OriginDownloadUnavailable";
+				throw unavailable;
+			}
+			const response = await origin.requestDownload({
+				videoId: claimed.payload.videoId,
+				revisionId: claimed.payload.revisionId,
+				automatic: true,
+				signal,
+			});
+			status = response.status;
+			busy = response.busy === true;
 		}
-		const response = await origin.requestDownload({
-			videoId: claimed.payload.videoId,
-			revisionId: claimed.payload.revisionId,
-			automatic: true,
-			signal,
-		});
-		status = response.status;
-		busy = response.busy === true;
 		if (status === 200) {
-			const [revision] = await database
-				.select({
-					ownerId: videos.ownerId,
-					videoId: editRevision.videoId,
-					revisionId: editRevision.revisionId,
-					generation: editRevision.generation,
-					sourceId: editRevision.sourceId,
-					metadataSnapshot: editRevision.metadataSnapshot,
-				})
-				.from(editRevision)
-				.innerJoin(videos, eq(videos.id, editRevision.videoId))
-				.where(eq(editRevision.revisionId, claimed.payload.revisionId));
 			if (!revision || revision.videoId !== claimed.payload.videoId)
 				throw new Error("DownloadRevisionMissing");
 			const { metadataSnapshot, ...identity } = revision;
-			receipt = await persistRevisionDownload({
-				identity,
-				origin,
-				signal,
-				includeHls: hlsSnapshot(metadataSnapshot),
-			});
+			if (!receipt) {
+				receipt = await persistRevisionDownload({ identity, origin, signal });
+				if (
+					!(await markRevisionDownloadReady(database, claimed, receipt, true))
+				)
+					return;
+				already = true;
+			}
+			const snapshot = hlsSnapshot(metadataSnapshot);
+			if (!verifiedHlsReceipt(receipt, identity, snapshot)) {
+				receipt = {
+					...receipt,
+					hls: await persistRevisionHls(
+						{ identity, origin, signal, includeHls: snapshot },
+						receipt.namespace,
+					),
+				};
+			}
+			if (!(await markRevisionDownloadReady(database, claimed, receipt)))
+				throw new Error("HlsCompletionFenceChanged");
 		}
 	} catch (error) {
 		alertRevisionDownloadFailure({
@@ -388,8 +418,6 @@ async function finishDownload(
 		nowMs: stamp.getTime(),
 	});
 	if (plan.action === "ready") {
-		if (!receipt) throw new Error("DownloadReceiptMissing");
-		await markRevisionDownloadReady(database, claimed, receipt);
 		return;
 	}
 	if (plan.action === "skip") {

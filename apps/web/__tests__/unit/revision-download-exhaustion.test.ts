@@ -23,6 +23,7 @@ import {
 	revisionOutbox,
 	videoPublication,
 } from "@cap/database/schema";
+import type { DownloadReceipt } from "@/lib/revision-download-artifact";
 import {
 	DOWNLOAD_MAX_FAILURES,
 	DOWNLOAD_MAX_POLLS,
@@ -41,6 +42,7 @@ type Artifact = {
 	heartbeatAt: Date | null;
 	current: boolean;
 	durabilityStarted?: boolean;
+	receipt?: DownloadReceipt;
 };
 
 type Job = {
@@ -189,6 +191,21 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 	function executeSelect(state: QueryState) {
 		const name = state.table ? getTableName(state.table) : "";
 		const { sql, params } = queryText(state.where);
+		if (name === "edit_revision") {
+			const artifact = artifacts.find((row) => params.includes(row.revisionId));
+			return artifact?.receipt
+				? [
+						{
+							ownerId: artifact.receipt.ownerId,
+							videoId: artifact.videoId,
+							revisionId: artifact.revisionId,
+							generation: artifact.receipt.generation,
+							sourceId: artifact.receipt.sourceId,
+							metadataSnapshot: { downloadArtifact: artifact.receipt },
+						},
+					]
+				: [];
+		}
 		if (name === getTableName(videoPublication)) {
 			const videoId = params.find((value) => typeof value === "string");
 			const row = artifacts.find(
@@ -427,6 +444,84 @@ describe("revision download exhaustion", () => {
 		},
 	);
 
+	it("bounds persisted HLS pending backfill without requesting or replacing a READY MP4", async () => {
+		const receipt: DownloadReceipt = {
+			ownerId: "owner1234",
+			videoId: "video1234",
+			revisionId: "revision1234",
+			generation: 7,
+			sourceId: "source1234",
+			validation: "verified",
+			namespace: Array(4).fill("a".repeat(64)).join("/"),
+			bucket: "private",
+			key: "owner1234/video1234/private/edited/revision1234/7/export.mp4",
+			versionId: "pinned-version",
+			sha256: "a".repeat(64),
+			size: 123,
+		};
+		const artifact: Artifact = {
+			revisionId: receipt.revisionId,
+			videoId: receipt.videoId,
+			state: "READY",
+			attempts: 0,
+			heartbeatAt: null,
+			current: true,
+			durabilityStarted: true,
+			receipt,
+		};
+		const jobs: Job[] = [];
+		const inserted: string[] = [];
+		const database = workerDb([artifact], jobs, inserted);
+		const requestDownload = vi.fn(async () => ({ status: 202 }));
+		const streamArtifact = vi.fn(async () => ({
+			status: 202,
+			headers: new Headers(),
+			body: new Response("").body,
+		}));
+		const origin = {
+			prepareRevision: vi.fn(),
+			selectFrames: vi.fn(),
+			fetchArtifact: vi.fn(),
+			requestDownload,
+			streamArtifact,
+		};
+		let now = 1_000_000;
+		for (let round = 1; round <= MAX_FAILED_CYCLES; round++) {
+			for (let failure = 0; failure <= DOWNLOAD_MAX_FAILURES; failure++) {
+				await sweepRevisionDownloads(database, {
+					origin,
+					now: new Date(now),
+					limit: 1,
+				});
+				now += 300_001;
+			}
+			expect(artifact.attempts).toBe(round);
+			expect(artifact.state).toBe("READY");
+			expect(jobs).toHaveLength(0);
+			expect(artifact.receipt).toBe(receipt);
+			await sweepRevisionDownloads(database, {
+				origin,
+				now: new Date(now),
+				limit: 1,
+			});
+			expect(jobs).toHaveLength(0);
+			now += COOLDOWN_MS;
+		}
+		for (let sweep = 0; sweep < 3; sweep++) {
+			await sweepRevisionDownloads(database, {
+				origin,
+				now: new Date(now),
+				limit: 1,
+			});
+			now += COOLDOWN_MS;
+		}
+		expect(streamArtifact).toHaveBeenCalledTimes(
+			MAX_FAILED_CYCLES * (DOWNLOAD_MAX_FAILURES + 1),
+		);
+		expect(requestDownload).not.toHaveBeenCalled();
+		expect(inserted).toHaveLength(MAX_FAILED_CYCLES);
+		expect(jobs).toHaveLength(0);
+	});
 	it("marks outbox exports automatic and skips an origin supersession race", async () => {
 		const artifact: Artifact = {
 			revisionId: "rev-race",

@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { HttpApiBuilder, HttpServer } from "@effect/platform";
@@ -14,6 +16,8 @@ const state = vi.hoisted(() => ({
 	missing: false,
 	partial: false,
 	snapshotChanged: false,
+	invalid: null as Record<string, unknown> | null,
+	badSnapshot: undefined as unknown,
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/env", () => ({ serverEnv: () => ({}), buildEnv: {} }));
@@ -22,32 +26,50 @@ vi.mock("@/lib/server", () => ({
 		HttpApiBuilder.toWebHandler(api.pipe(Layer.merge(HttpServer.layerContext)))
 			.handler,
 }));
-vi.mock("@/lib/revision-media-grant", () => ({
-	readCurrentDownload: async () => {
-		state.reads++;
-		if (state.missing) return null;
-		const artifacts = Object.fromEntries(
-			names.map((name) => [
-				name,
-				{ ...member, key: `${prefix}${name.replaceAll("/", "-")}` },
-			]),
-		);
-		if (state.partial) delete artifacts["init.mp4"];
-		return {
-			...identity,
-			publicationEpoch: 2,
-			policyEpoch: state.epoch,
-			name: "edited",
-			snapshot: {
-				...snapshot,
-				captionsVtt: state.snapshotChanged ? "changed" : snapshot.captionsVtt,
-			},
-			receipt: {
-				...member,
-				hls: { validation: "verified", snapshot, artifacts },
-			},
-		};
-	},
+vi.mock("@cap/web-backend", () => ({
+	VideosPolicy: class VideosPolicy {},
+	provideOptionalAuth: <T>(effect: T) => effect,
+}));
+vi.mock("@cap/database", () => ({
+	db: () => ({
+		execute: async () => {
+			state.reads++;
+			if (state.missing) return [];
+			const artifacts = Object.fromEntries(
+				names.map((name) => [
+					name,
+					{ ...member, key: `${prefix}${name.replaceAll("/", "-")}` },
+				]),
+			);
+			if (state.partial) delete artifacts["init.mp4"];
+			return [
+				{
+					...identity,
+					publicationEpoch: 2,
+					policyEpoch: state.epoch,
+					name: "edited",
+					metadataSnapshot: {
+						...snapshot,
+						captionsVtt: state.snapshotChanged
+							? "changed"
+							: snapshot.captionsVtt,
+						downloadArtifact: {
+							...member,
+							...state.invalid,
+							hls: {
+								validation: "verified",
+								snapshot:
+									state.badSnapshot === undefined
+										? snapshot
+										: state.badSnapshot,
+								artifacts,
+							},
+						},
+					},
+				},
+			];
+		},
+	}),
 }));
 vi.mock("@/lib/instant-finish-source-relocate", () => ({
 	runtimeS3Client: () => ({
@@ -145,6 +167,8 @@ describe("private exact revision artifact transport", () => {
 			missing: false,
 			partial: false,
 			snapshotChanged: false,
+			invalid: null,
+			badSnapshot: undefined,
 		});
 		vi.stubEnv("REVISION_ORIGIN_SERVICE_SECRET", "s".repeat(32));
 	});
@@ -176,6 +200,48 @@ describe("private exact revision artifact transport", () => {
 		expect((await GET(signed.clone())).status).toBe(401);
 		expect(state.storage).toBe(1);
 	});
+	it("admits two Python signs in one second and denies replay of each", async () => {
+		const unsigned = request();
+		const target = new URL(unsigned.url);
+		const tokens = JSON.parse(
+			execFileSync(
+				"python3",
+				[
+					"-c",
+					"import json,sys; sys.path.insert(0,sys.argv[1]); import service_auth; print(json.dumps([service_auth.sign_request(b's'*32,'GET',sys.argv[2],now=int(sys.argv[3]),audience='web-revision-artifact') for _ in range(2)]))",
+					resolve("../instant-finish-origin"),
+					`${target.pathname}${target.search}`,
+					String(Math.floor(Date.now() / 1000)),
+				],
+				{ encoding: "utf8" },
+			),
+		) as string[];
+		const signs = tokens.map(
+			(token) =>
+				new Request(unsigned.url, {
+					headers: { "x-cap-origin-service": token },
+				}),
+		);
+		for (const signed of signs)
+			expect((await GET(signed.clone())).status).toBe(200);
+		for (const signed of signs)
+			expect((await GET(signed.clone())).status).toBe(401);
+		expect(state.storage).toBe(2);
+	});
+	it.each([
+		{ ownerId: "anotherowner" },
+		{ key: "private/source/original.mp4" },
+		{ versionId: "null" },
+		{ sha256: "invalid" },
+		{ namespace: "invalid" },
+	])(
+		"never signals absence for malformed READY receipt %j",
+		async (invalid) => {
+			state.invalid = invalid;
+			expect((await GET(request())).status).toBe(503);
+			expect(state.storage).toBe(0);
+		},
+	);
 	it.each([
 		"&key=private/source/original.mp4",
 		"&versionId=attacker",
@@ -192,6 +258,15 @@ describe("private exact revision artifact transport", () => {
 	});
 	it("never serves partial receipts", async () => {
 		state.partial = true;
+		expect((await GET(request())).status).toBe(409);
+		expect(state.storage).toBe(0);
+	});
+	it.each([
+		{ captionsVtt: 123, chapters: [], thumbnailSha256: "" },
+		{ captionsVtt: "", chapters: [{}], thumbnailSha256: "" },
+		{ captionsVtt: "", chapters: [], thumbnailSha256: "not-a-hash" },
+	])("validates untrusted HLS JSON structurally %j", async (badSnapshot) => {
+		state.badSnapshot = badSnapshot;
 		expect((await GET(request())).status).toBe(409);
 		expect(state.storage).toBe(0);
 	});

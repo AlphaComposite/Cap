@@ -15,23 +15,13 @@ import { runtimeS3Client } from "@/lib/instant-finish-source-relocate";
 import type { OriginClient } from "@/lib/revision-publication-origin";
 import type { editRevision } from "../../../packages/database/schema";
 
-type StoredDownloadReceipt = NonNullable<
+export type DownloadReceipt = NonNullable<
 	NonNullable<
 		typeof editRevision.$inferSelect.metadataSnapshot
 	>["downloadArtifact"]
 >;
-export type HlsSnapshot = {
-	captionsVtt: string;
-	chapters: { title: string; start: number }[];
-	thumbnailSha256: string;
-};
-export type DownloadReceipt = StoredDownloadReceipt & {
-	hls?: {
-		validation: "verified";
-		snapshot: HlsSnapshot;
-		artifacts: Record<string, StoredDownloadReceipt>;
-	};
-};
+type StoredDownloadReceipt = Omit<DownloadReceipt, "hls">;
+export type HlsSnapshot = NonNullable<DownloadReceipt["hls"]>["snapshot"];
 export const HLS_ARTIFACT_BYTES = 32 * 1024 * 1024;
 export const HLS_MAX_SEGMENTS = 10000;
 export type DownloadIdentity = Pick<
@@ -74,6 +64,7 @@ export function verifiedDownloadReceipt(
 		typeof receipt.versionId === "string" &&
 		receipt.versionId.length > 0 &&
 		receipt.versionId !== "null" &&
+		typeof receipt.sha256 === "string" &&
 		SHA.test(receipt.sha256) &&
 		Number.isSafeInteger(receipt.size) &&
 		receipt.size > 0
@@ -296,7 +287,8 @@ export async function persistRevisionDownload(input: {
 			size,
 			validation: "verified",
 		};
-		if (input.includeHls) receipt.hls = await persistHls(input, namespace);
+		if (input.includeHls)
+			receipt.hls = await persistRevisionHls(input, namespace);
 		return receipt;
 	} finally {
 		if (body && !body.locked) await body.cancel().catch(() => {});
@@ -370,7 +362,7 @@ async function boundedBody(
 	}
 }
 
-async function persistHls(
+export async function persistRevisionHls(
 	input: Parameters<typeof persistRevisionDownload>[0],
 	namespace: string,
 ): Promise<NonNullable<DownloadReceipt["hls"]>> {
@@ -443,6 +435,20 @@ export function verifiedHlsReceipt(
 	if (
 		!verifiedDownloadReceipt(receipt, identity) ||
 		hls?.validation !== "verified" ||
+		!hls.snapshot ||
+		typeof hls.snapshot.captionsVtt !== "string" ||
+		typeof hls.snapshot.thumbnailSha256 !== "string" ||
+		(hls.snapshot.thumbnailSha256 !== "" &&
+			!SHA.test(hls.snapshot.thumbnailSha256)) ||
+		!Array.isArray(hls.snapshot.chapters) ||
+		!hls.snapshot.chapters.every(
+			(chapter) =>
+				chapter !== null &&
+				typeof chapter === "object" &&
+				typeof chapter.title === "string" &&
+				Number.isFinite(chapter.start) &&
+				chapter.start >= 0,
+		) ||
 		JSON.stringify(hlsSnapshot(hls.snapshot)) !==
 			JSON.stringify(hlsSnapshot(snapshot))
 	)

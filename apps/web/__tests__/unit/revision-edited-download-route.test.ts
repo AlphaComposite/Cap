@@ -35,6 +35,7 @@ vi.mock("@cap/database", () => ({
 							publicationEpoch: 2,
 							policyEpoch: state.epoch,
 							metadataSnapshot: {
+								hlsDurabilityStarted: true,
 								downloadArtifact: state.receipt
 									? {
 											validation: "verified",
@@ -159,7 +160,7 @@ describe("edited-download actual HttpApi handler", () => {
 		process.env.REVISION_MEDIA_GRANT_KEYS =
 			"k1:grant-secret-grant-secret-grant-01";
 	});
-	it("streams the trusted current receipt ignoring client storage identifiers", async () => {
+	it("streams the trusted MP4 without HLS after side durability has started", async () => {
 		const response = await GET(request());
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("edited-bytes");

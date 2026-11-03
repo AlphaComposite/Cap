@@ -5,8 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const transfer = vi.hoisted(() => ({
 	calls: 0,
 	failed: false,
+	hlsFailed: false,
+	hlsCalls: 0,
 	localReady: false,
 	wait: null as Promise<void> | null,
+	hlsWait: null as Promise<void> | null,
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@cap/database", () => ({ db: () => ({}) }));
@@ -19,11 +22,19 @@ vi.mock("@/lib/instant-finish-source-relocate", () => ({
 }));
 vi.mock("@/lib/revision-download-artifact", async (original) => ({
 	...(await original<typeof import("@/lib/revision-download-artifact")>()),
-	persistRevisionDownload: async () => {
+	persistRevisionDownload: async (input: { includeHls?: unknown }) => {
 		transfer.calls += 1;
 		await transfer.wait;
 		if (transfer.failed) throw new Error("ReadbackFailed");
-		return receipt;
+		if (input.includeHls && transfer.hlsFailed)
+			throw new Error("ThumbnailUnavailable");
+		return input.includeHls ? receipt : { ...receipt, hls: undefined };
+	},
+	persistRevisionHls: async () => {
+		transfer.hlsCalls += 1;
+		await transfer.hlsWait;
+		if (transfer.hlsFailed) throw new Error("ThumbnailUnavailable");
+		return receipt.hls;
 	},
 }));
 
@@ -101,7 +112,12 @@ function workerDb() {
 						},
 					];
 				if (table === "edit_revision")
-					return [{ ...identity, metadataSnapshot: {} }];
+					return [
+						{
+							...identity,
+							metadataSnapshot: { downloadArtifact: state.receipt },
+						},
+					];
 				if (table === "outbox") return [{ id: 1, payload: { ...payload } }];
 				return [];
 			};
@@ -167,18 +183,25 @@ function workerDb() {
 			expect(compiled.sql).toContain("'$.leaseUntilMs'");
 			expect(compiled.sql).toContain("UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))");
 			expect(compiled.params).toContain(payload.leaseToken);
-			expect(compiled.sql).toContain("'$.captionsVtt'");
-			expect(compiled.sql).toContain("'$.chapters'");
-			expect(compiled.sql).toContain("'$.thumbnailSha256'");
+			const stored = compiled.params.find(
+				(value) => typeof value === "string" && value.startsWith('{"ownerId"'),
+			);
+			if (typeof stored !== "string") throw new Error("Missing receipt");
+			const completed = JSON.parse(stored) as DownloadReceipt;
+			if (completed.hls) {
+				expect(compiled.sql).toContain("'$.captionsVtt'");
+				expect(compiled.sql).toContain("'$.chapters'");
+				expect(compiled.sql).toContain("'$.thumbnailSha256'");
+			}
 			const allowed =
-				!state.snapshotChanged &&
+				(!completed.hls || !state.snapshotChanged) &&
 				!state.tokenChanged &&
 				!state.expired &&
 				state.currentRevisionId === identity.revisionId &&
 				state.currentGeneration === identity.generation;
 			if (allowed) {
 				state.ready = true;
-				state.receipt = receipt;
+				state.receipt = completed;
 			}
 			return [{ affectedRows: allowed ? 2 : 0 }, []];
 		},
@@ -191,8 +214,11 @@ describe("post-await durable job completion fencing", () => {
 		Object.assign(transfer, {
 			calls: 0,
 			failed: false,
+			hlsFailed: false,
+			hlsCalls: 0,
 			localReady: false,
 			wait: null,
+			hlsWait: null,
 		});
 		vi.spyOn(console, "error").mockImplementation(() => {});
 	});
@@ -255,8 +281,10 @@ describe("post-await durable job completion fencing", () => {
 			release();
 			await run;
 		}
-		expect(state.ready).toBe(false);
-		expect(state.receipt).toBeUndefined();
+		expect(state.ready).toBe(race === "side-snapshot");
+		if (race === "side-snapshot") {
+			expect((state.receipt as DownloadReceipt).hls).toBeUndefined();
+		} else expect(state.receipt).toBeUndefined();
 		expect(state.deleted).toBe(false);
 	});
 	it.each([
@@ -322,6 +350,84 @@ describe("post-await durable job completion fencing", () => {
 		expect(transfer.calls).toBe(1);
 		expect(state.receipt).toEqual(receipt);
 		expect(state.localReady).toBe(true);
+	});
+	it.each([
+		"revision",
+		"generation",
+		"lease-replaced",
+		"lease-expired",
+		"side-snapshot",
+	])(
+		"retains MP4 but cannot attach HLS after %s changes during side readback",
+		async (race) => {
+			let release = () => {};
+			transfer.hlsWait = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { app, state } = workerDb();
+			const run = sweepRevisionDownloads(app, {
+				limit: 1,
+				origin: {
+					prepareRevision: vi.fn(),
+					selectFrames: vi.fn(),
+					fetchArtifact: vi.fn(),
+					requestDownload: async () => ({ status: 200 }),
+				},
+			});
+			try {
+				await vi.waitFor(() => expect(transfer.hlsCalls).toBe(1));
+				expect(state.ready).toBe(true);
+				expect((state.receipt as DownloadReceipt).hls).toBeUndefined();
+				if (race === "revision") state.currentRevisionId = "newrevision";
+				if (race === "generation") state.currentGeneration += 1;
+				if (race === "lease-replaced") state.tokenChanged = true;
+				if (race === "lease-expired") state.expired = true;
+				if (race === "side-snapshot") state.snapshotChanged = true;
+			} finally {
+				release();
+				await run;
+			}
+			expect((state.receipt as DownloadReceipt).hls).toBeUndefined();
+			expect(state.deleted).toBe(false);
+			expect(transfer.calls).toBe(1);
+		},
+	);
+	it("publishes verified MP4 independently of permanent thumbnail failure", async () => {
+		transfer.hlsFailed = true;
+		const { app, state } = workerDb();
+		await sweepRevisionDownloads(app, {
+			limit: 1,
+			origin: {
+				prepareRevision: vi.fn(),
+				selectFrames: vi.fn(),
+				fetchArtifact: vi.fn(),
+				requestDownload: async () => ({ status: 200 }),
+			},
+		});
+		expect(state.ready).toBe(true);
+		expect(state.receipt).toEqual({ ...receipt, hls: undefined });
+		expect(state.deleted).toBe(false);
+		expect(transfer.calls).toBe(1);
+	});
+	it("reuses a verified READY MP4 when HLS backfill fails", async () => {
+		transfer.localReady = true;
+		transfer.hlsFailed = true;
+		const { app, state } = workerDb();
+		state.receipt = { ...receipt, hls: undefined };
+		const requestDownload = vi.fn(async () => ({ status: 202 }));
+		await sweepRevisionDownloads(app, {
+			limit: 1,
+			origin: {
+				prepareRevision: vi.fn(),
+				selectFrames: vi.fn(),
+				fetchArtifact: vi.fn(),
+				requestDownload,
+			},
+		});
+		expect(transfer.hlsCalls).toBe(1);
+		expect(transfer.calls).toBe(0);
+		expect(requestDownload).not.toHaveBeenCalled();
+		expect(state.receipt).toEqual({ ...receipt, hls: undefined });
 	});
 	it("readback failure is contained by the background sweep and cannot change publication", async () => {
 		transfer.failed = true;
