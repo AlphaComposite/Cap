@@ -170,6 +170,12 @@ describe("private exact revision artifact transport", () => {
 		expect((await GET(request({ token: false }))).status).toBe(401);
 		expect(state.reads).toBe(0);
 	});
+	it("consumes a signed request before storage and denies replay", async () => {
+		const signed = request();
+		expect((await GET(signed.clone())).status).toBe(200);
+		expect((await GET(signed.clone())).status).toBe(401);
+		expect(state.storage).toBe(1);
+	});
 	it.each([
 		"&key=private/source/original.mp4",
 		"&versionId=attacker",

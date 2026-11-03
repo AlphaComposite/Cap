@@ -13,12 +13,15 @@ import {
 import { readCurrentDownload } from "@/lib/revision-media-grant";
 import {
 	ORIGIN_SERVICE_HEADER,
+	REVISION_MEDIA_GRANT_SKEW_SECONDS,
 	verifyInternalServiceRequest,
 } from "@/lib/revision-media-token";
 import { apiToHandler } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 const PATH = "/api/internal/origin/revision-artifact";
+// ponytail: single web instance, use shared atomic nonces before scaling out.
+const seenNonces = new Map<string, number>();
 const headers = {
 	"Cache-Control": "private, no-store",
 	"Referrer-Policy": "no-referrer",
@@ -27,18 +30,26 @@ const headers = {
 function read(request: Request) {
 	return Effect.gen(function* () {
 		const url = new URL(request.url);
+		const token = request.headers.get(ORIGIN_SERVICE_HEADER) ?? "";
 		if (
 			url.search.length > 2048 ||
-			!verifyInternalServiceRequest(
-				request.headers.get(ORIGIN_SERVICE_HEADER) ?? "",
-				{
-					method: "GET",
-					path: `${PATH}${url.search}`,
-					audience: "web-revision-artifact",
-				},
-			)
+			!verifyInternalServiceRequest(token, {
+				method: "GET",
+				path: `${PATH}${url.search}`,
+				audience: "web-revision-artifact",
+			})
 		)
 			return new Response(null, { status: 401, headers });
+		const { nonce, exp } = JSON.parse(
+			Buffer.from(token.split(".")[0] ?? "", "base64url").toString("utf8"),
+		);
+		const now = Math.floor(Date.now() / 1000);
+		for (const [used, expiry] of seenNonces) {
+			if (expiry < now) seenNonces.delete(used);
+		}
+		if (typeof nonce !== "string" || !nonce || seenNonces.has(nonce))
+			return new Response(null, { status: 401, headers });
+		seenNonces.set(nonce, exp + REVISION_MEDIA_GRANT_SKEW_SECONDS);
 		const videoId = url.searchParams.get("videoId") ?? "";
 		const revisionId = url.searchParams.get("revisionId") ?? "";
 		const name = url.searchParams.get("name") ?? "";
