@@ -208,9 +208,9 @@ export async function markRevisionDownloadReady(
 				AND ${
 					receipt.hls
 						? sql`
-					COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt'), JSON_QUOTE('')) = CAST(${JSON.stringify(receipt.hls.snapshot.captionsVtt)} AS JSON)
+					CAST(COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt'), JSON_QUOTE('')) AS JSON) = CAST(${JSON.stringify(receipt.hls.snapshot.captionsVtt)} AS JSON)
 					AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.chapters'), JSON_ARRAY()) = CAST(${JSON.stringify(receipt.hls.snapshot.chapters)} AS JSON)
-					AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256'), JSON_QUOTE('')) = CAST(${JSON.stringify(receipt.hls.snapshot.thumbnailSha256)} AS JSON)
+					AND CAST(COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256'), JSON_QUOTE('')) AS JSON) = CAST(${JSON.stringify(receipt.hls.snapshot.thumbnailSha256)} AS JSON)
 				`
 						: sql`TRUE`
 				}
@@ -519,9 +519,9 @@ async function enqueueCurrentDownloads(
 						eq(revisionArtifactStatus.state, "READY"),
 						sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId}
 							AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.validation')) = 'verified'
-							AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.captionsVtt'), JSON_QUOTE('')) = COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt'), JSON_QUOTE(''))
+							AND CAST(COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.captionsVtt'), JSON_QUOTE('')) AS JSON) = CAST(COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt'), JSON_QUOTE('')) AS JSON)
 							AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.chapters'), JSON_ARRAY()) = COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.chapters'), JSON_ARRAY())
-							AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.thumbnailSha256'), JSON_QUOTE('')) = COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256'), JSON_QUOTE('')))`,
+							AND CAST(COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.thumbnailSha256'), JSON_QUOTE('')) AS JSON) = CAST(COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256'), JSON_QUOTE('')) AS JSON))`,
 						or(
 							sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.hlsDurabilityStarted')) = 'true')`,
 							lt(revisionArtifactStatus.attempts, DOWNLOAD_MAX_FAILED_CYCLES),
