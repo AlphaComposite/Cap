@@ -7,6 +7,10 @@ import { Effect, Option } from "effect";
 import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
+	type DownloadIdentity,
+	verifiedDownloadReceipt,
+} from "@/lib/revision-download-artifact";
+import {
 	evaluatePresentedGrant,
 	type GrantDenial,
 	getRevisionPlaybackUrl,
@@ -496,6 +500,52 @@ export function denyFlaggedPresign(input: {
 	return { deny: false };
 }
 
+export async function readCurrentDownload(
+	videoId: string,
+	executor: SqlExecutor = db(),
+) {
+	const result = await executor.execute(sql`
+		SELECT r.revisionId, r.videoId, r.generation, r.sourceId, v.ownerId, v.name,
+			p.publicationEpoch, p.policyEpoch, r.metadataSnapshot
+		FROM video_publication p
+		JOIN edit_revision r ON BINARY r.revisionId = BINARY p.currentRevisionId AND BINARY r.videoId = BINARY p.videoId
+		JOIN videos v ON BINARY v.id = BINARY p.videoId
+		JOIN revision_artifact_status a ON BINARY a.revisionId = BINARY r.revisionId AND a.artifact = 'download'
+		WHERE BINARY p.videoId = BINARY ${videoId} AND r.state = 'CURRENT' AND p.currentGeneration = r.generation AND a.state = 'READY'
+		LIMIT 1
+	`);
+	const row = rowsOf(result)[0] as
+		| (DownloadIdentity & {
+				name: string;
+				publicationEpoch: number;
+				policyEpoch: number;
+				metadataSnapshot: unknown;
+		  })
+		| undefined;
+	if (!row) return null;
+	const snapshot =
+		typeof row.metadataSnapshot === "string"
+			? JSON.parse(row.metadataSnapshot)
+			: row.metadataSnapshot;
+	const receipt = (snapshot as { downloadArtifact?: unknown } | null)
+		?.downloadArtifact;
+	const identity = {
+		ownerId: row.ownerId,
+		videoId: row.videoId,
+		revisionId: row.revisionId,
+		generation: Number(row.generation),
+		sourceId: row.sourceId,
+	};
+	if (!verifiedDownloadReceipt(receipt, identity)) return null;
+	return {
+		...identity,
+		receipt,
+		name: row.name,
+		publicationEpoch: Number(row.publicationEpoch),
+		policyEpoch: Number(row.policyEpoch),
+	};
+}
+
 export async function revisionArtifactUrl(
 	input: {
 		videoId: string;
@@ -526,6 +576,19 @@ export async function revisionArtifactUrl(
 		child: input.child,
 		artifact: input.artifact === "download" ? "download" : undefined,
 	});
+	if (input.artifact === "download") {
+		const durable = await readCurrentDownload(input.videoId, executor);
+		if (
+			durable &&
+			durable.ownerId === input.ownerId &&
+			durable.revisionId === publication.currentRevisionId &&
+			durable.publicationEpoch === publication.publicationEpoch &&
+			durable.policyEpoch === publication.policyEpoch
+		) {
+			const path = `/api/video/edited-download?videoId=${encodeURIComponent(input.videoId)}&t=${encodeURIComponent(issued.grant)}`;
+			return input.origin ? new URL(path, input.origin).toString() : path;
+		}
+	}
 	return issued.playbackUrl;
 }
 

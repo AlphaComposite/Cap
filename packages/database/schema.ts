@@ -594,6 +594,21 @@ export const editRevision = mysqlTable(
 			attestationBody?: string;
 			thumbnailSha256?: string;
 			downloadReady?: boolean;
+			downloadDurabilityStarted?: boolean;
+			downloadArtifact?: {
+				validation: "verified";
+				ownerId: string;
+				videoId: string;
+				revisionId: string;
+				generation: number;
+				sourceId: string;
+				namespace: string;
+				bucket: string;
+				key: string;
+				versionId: string;
+				sha256: string;
+				size: number;
+			};
 		}>(),
 		createdAt: datetime("createdAt", { fsp: 3 }).notNull(),
 		updatedAt: datetime("updatedAt", { fsp: 3 }).notNull(),

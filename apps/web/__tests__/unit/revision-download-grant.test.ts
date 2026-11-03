@@ -30,10 +30,46 @@ const dialect = new MySqlDialect();
 function executor(
 	state = "READY",
 	currentRevisionId: string | null = "revdownload01",
+	durable: false | "verified" | "wrong-key" = false,
 ) {
 	return {
 		execute: async (query: Parameters<MySqlDialect["sqlToQuery"]>[0]) => {
 			const text = dialect.sqlToQuery(query).sql;
+			if (text.includes("metadataSnapshot")) {
+				return durable
+					? [
+							{
+								ownerId: "owner",
+								videoId: "viddownload1",
+								revisionId: "revdownload01",
+								generation: 1,
+								sourceId: "source1234",
+								name: "Edited",
+								publicationEpoch: 2,
+								policyEpoch: 3,
+								metadataSnapshot: {
+									downloadArtifact: {
+										validation: "verified",
+										ownerId: "owner",
+										videoId: "viddownload1",
+										revisionId: "revdownload01",
+										generation: 1,
+										sourceId: "source1234",
+										namespace: Array(4).fill("a".repeat(64)).join("/"),
+										bucket: "private",
+										key:
+											durable === "wrong-key"
+												? "owner/viddownload1/source/original.mp4"
+												: "owner/viddownload1/private/edited/revdownload01/1/attempt.mp4",
+										versionId: "version1",
+										sha256: "a".repeat(64),
+										size: 123,
+									},
+								},
+							},
+						]
+					: [];
+			}
 			if (text.includes("video_publication")) {
 				return [
 					{
@@ -71,6 +107,29 @@ describe("download media grant", () => {
 		process.env.CAP_INSTANT_FINISH_OWNERS = env.CAP_INSTANT_FINISH_OWNERS;
 	});
 
+	it("selects the authorized CAP download endpoint only for a verified current receipt", async () => {
+		for (const durable of [false, "verified", "wrong-key"] as const) {
+			const download = await revisionArtifactUrl(
+				{
+					videoId: "viddownload1",
+					ownerId: "owner",
+					artifact: "download",
+					child: "download.mp4",
+					origin: "https://cap.test",
+				},
+				executor("READY", "revdownload01", durable),
+			);
+			expect(artifactOf(download)).toBe("download");
+			const url = new URL(download ?? "", "https://cap.test");
+			expect(url.pathname).toBe(
+				durable === "verified"
+					? "/api/video/edited-download"
+					: "/media/viddownload1/r/revdownload01/download.mp4",
+			);
+			expect(download).not.toContain("attempt.mp4");
+			expect(download).not.toContain("version1");
+		}
+	});
 	it("mints a download artifact grant only on the download path", async () => {
 		const download = await revisionArtifactUrl(
 			{

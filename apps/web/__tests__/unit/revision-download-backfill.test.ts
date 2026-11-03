@@ -19,11 +19,19 @@ vi.mock("@cap/web-backend", () => ({
 }));
 
 import { revisionArtifactStatus, revisionOutbox } from "@cap/database/schema";
-import { sweepRevisionDownloads } from "@/lib/revision-download-job";
+import { drainRevisionDownloads as sweepRevisionDownloads } from "@/lib/revision-download-job";
 
 const dialect = new MySqlDialect();
 
-type Pending = { revisionId: string; videoId: string; queued: boolean };
+type Pending = {
+	revisionId: string;
+	videoId: string;
+	queued: boolean;
+	state?: "READY";
+	attempts?: number;
+	durabilityStarted?: boolean;
+	verified?: boolean;
+};
 
 function whereSql(where: unknown): string {
 	try {
@@ -80,6 +88,18 @@ function backfillDb(pending: Pending[], inserted: string[]) {
 			};
 		},
 		transaction: async () => null,
+		execute: async (query: unknown) => {
+			const text = whereSql(query);
+			if (text.includes("downloaddurabilitystarted")) {
+				for (const row of pending) {
+					if (!row.durabilityStarted && !row.verified) {
+						row.durabilityStarted = true;
+						row.attempts = 0;
+					}
+				}
+			}
+			return [];
+		},
 	};
 
 	function execute(state: { table?: Table; where?: unknown; limit?: number }) {
@@ -90,10 +110,19 @@ function backfillDb(pending: Pending[], inserted: string[]) {
 				sql.includes("not exists") ||
 				(sql.includes("is null") && sql.includes("outbox"));
 			let rows = pending.filter((row) => !excludesQueued || !row.queued);
+			rows = rows.filter(
+				(row) =>
+					row.state !== "READY" ||
+					(sql.includes("downloaddurabilitystarted") &&
+						!row.verified &&
+						(!row.durabilityStarted || (row.attempts ?? 0) < 3)),
+			);
 			if (state.limit != null) rows = rows.slice(0, state.limit);
 			return rows.map((row) => ({
 				revisionId: row.revisionId,
 				videoId: row.videoId,
+				state: row.state,
+				attempts: row.attempts ?? 0,
 			}));
 		}
 		if (name === getTableName(revisionOutbox)) {
@@ -116,6 +145,36 @@ describe("revision download backfill", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 	});
 
+	it.each([
+		{ durabilityStarted: false, verified: false, enqueued: true },
+		{ durabilityStarted: true, verified: false, enqueued: false },
+		{ durabilityStarted: false, verified: true, enqueued: false },
+	])(
+		"backfills old READY independently of legacy retry counts and preserves the durability cap: %j",
+		async ({ durabilityStarted, verified, enqueued }) => {
+			const row: Pending = {
+				revisionId: "old-ready",
+				videoId: "vid-old",
+				queued: false,
+				state: "READY",
+				attempts: 3,
+				durabilityStarted,
+				verified,
+			};
+			const inserted: string[] = [];
+			await sweepRevisionDownloads(backfillDb([row], inserted), {
+				origin: {
+					prepareRevision: vi.fn(),
+					selectFrames: vi.fn(),
+					fetchArtifact: vi.fn(),
+				},
+				limit: 1,
+			});
+			expect(inserted).toEqual(enqueued ? [row.revisionId] : []);
+			expect(row.attempts).toBe(enqueued ? 0 : 3);
+			expect(row.state).toBe("READY");
+		},
+	);
 	it("enqueues an unqueued pending revision when four are already queued", async () => {
 		const pending: Pending[] = [
 			...Array.from({ length: 4 }, (_, index) => ({

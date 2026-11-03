@@ -4,12 +4,18 @@ import {
 	revisionArtifactStatus,
 	revisionOutbox,
 	videoPublication,
+	videos,
 } from "@cap/database/schema";
 import type { Video } from "@cap/web-domain";
 import { and, asc, eq, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+	DOWNLOAD_TRANSFER_MS,
+	type DownloadReceipt,
+	persistRevisionDownload,
+	verifiedDownloadReceipt,
+} from "@/lib/revision-download-artifact";
 import { readArtifactReady } from "@/lib/revision-media-grant";
 import type { OriginClient } from "@/lib/revision-publication-origin";
-import { revisionSnapshotKeySql } from "@/lib/revision-snapshot-patch";
 
 type Database = ReturnType<typeof db>;
 
@@ -17,7 +23,7 @@ export const DOWNLOAD_MAX_FAILURES = 8;
 export const DOWNLOAD_MAX_POLLS = 240;
 export const DOWNLOAD_MAX_FAILED_CYCLES = 3;
 export const DOWNLOAD_FAILED_COOLDOWN_MS = 30 * 60 * 1000;
-const DOWNLOAD_LEASE_MS = 20_000;
+const DOWNLOAD_LEASE_MS = DOWNLOAD_TRANSFER_MS + 120_000;
 const DOWNLOAD_POLL_MS = 5_000;
 const DOWNLOAD_BACKOFF_MS = [
 	2_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000,
@@ -147,41 +153,63 @@ async function leaseHeld(database: Database, id: number, leaseToken: string) {
 		.select({ payload: revisionOutbox.payload })
 		.from(revisionOutbox)
 		.where(eq(revisionOutbox.id, id));
-	const payload = row?.payload as { leaseToken?: string } | undefined;
+	const payload = row?.payload as DownloadPayload | undefined;
 	return payload?.leaseToken === leaseToken;
 }
 
 export async function markRevisionDownloadReady(
 	database: Database,
-	revisionId: string,
-	stamp: Date,
+	claimed: { id: number; payload: DownloadPayload; leaseToken: string },
+	receipt: DownloadReceipt,
 ) {
-	await database
-		.update(revisionArtifactStatus)
-		.set({
-			state: "READY",
-			heartbeatAt: stamp,
-			leaseUntil: null,
-		})
-		.where(
-			and(
-				eq(revisionArtifactStatus.revisionId, revisionId),
-				eq(revisionArtifactStatus.artifact, "download"),
-			),
-		);
-	const [revision] = await database
-		.select({ metadataSnapshot: editRevision.metadataSnapshot })
-		.from(editRevision)
-		.where(eq(editRevision.revisionId, revisionId));
-	if (!revision?.metadataSnapshot) return;
-	if (revision.metadataSnapshot.downloadReady === true) return;
-	await database
-		.update(editRevision)
-		.set({
-			metadataSnapshot: revisionSnapshotKeySql("downloadReady"),
-			updatedAt: stamp,
-		})
-		.where(eq(editRevision.revisionId, revisionId));
+	if (
+		!verifiedDownloadReceipt(receipt, receipt) ||
+		receipt.revisionId !== claimed.payload.revisionId ||
+		receipt.videoId !== claimed.payload.videoId
+	)
+		throw new Error("DownloadReceiptInvalid");
+	await database.transaction(async (tx) => {
+		// NOW is fixed at statement start; acquire every completion lock before checking lease expiry.
+		const locked = await tx.execute(sql`
+			SELECT r.revisionId FROM video_publication p
+			JOIN edit_revision r ON BINARY r.videoId = BINARY p.videoId
+			JOIN videos v ON BINARY v.id = BINARY r.videoId
+			JOIN outbox o ON o.id = ${claimed.id}
+			JOIN revision_artifact_status a ON BINARY a.revisionId = BINARY r.revisionId AND a.artifact = 'download'
+			WHERE BINARY r.revisionId = BINARY ${receipt.revisionId} AND BINARY p.videoId = BINARY ${receipt.videoId}
+			FOR UPDATE
+		`);
+		const rows =
+			Array.isArray(locked) && Array.isArray(locked[0]) ? locked[0] : [];
+		if (rows.length === 0) return;
+		const result = await tx.execute(sql`
+			UPDATE edit_revision r
+			JOIN video_publication p ON BINARY p.videoId = BINARY r.videoId
+			JOIN videos v ON BINARY v.id = BINARY r.videoId
+			JOIN outbox o ON o.id = ${claimed.id}
+			JOIN revision_artifact_status a ON BINARY a.revisionId = BINARY r.revisionId AND a.artifact = 'download'
+			SET r.metadataSnapshot = JSON_SET(COALESCE(r.metadataSnapshot, JSON_OBJECT()),
+				'$.downloadArtifact', CAST(${JSON.stringify(receipt)} AS JSON), '$.downloadReady', CAST('true' AS JSON)),
+				r.updatedAt = CURRENT_TIMESTAMP(3), a.state = 'READY', a.leaseUntil = NULL, a.heartbeatAt = CURRENT_TIMESTAMP(3)
+			WHERE BINARY r.revisionId = BINARY ${receipt.revisionId}
+				AND BINARY r.videoId = BINARY ${receipt.videoId}
+				AND BINARY v.ownerId = BINARY ${receipt.ownerId}
+				AND BINARY r.sourceId = BINARY ${receipt.sourceId} AND r.generation = ${receipt.generation}
+				AND r.state = 'CURRENT' AND BINARY p.currentRevisionId = BINARY r.revisionId AND p.currentGeneration = r.generation
+				AND BINARY o.revisionId = BINARY r.revisionId AND BINARY o.videoId = BINARY r.videoId AND o.job = 'download'
+				AND BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseToken')) = BINARY ${claimed.leaseToken}
+				AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseUntilMs')) AS UNSIGNED) > UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000
+		`);
+		const header = (Array.isArray(result) ? result[0] : result) as {
+			affectedRows?: number;
+		};
+		if ((header?.affectedRows ?? 0) > 0)
+			await deleteLeased(
+				tx as unknown as Database,
+				claimed.id,
+				claimed.leaseToken,
+			);
+	});
 }
 
 async function reschedule(
@@ -208,6 +236,7 @@ async function reschedule(
 			and(
 				eq(revisionOutbox.id, id),
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseToken')) = ${leaseToken}`,
+				sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${revisionOutbox.payload}, '$.leaseUntilMs')) AS UNSIGNED) > UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000`,
 			),
 		);
 }
@@ -276,21 +305,18 @@ async function finishDownload(
 		"download",
 		database,
 	);
-	if (already === true) {
-		await markRevisionDownloadReady(
-			database,
-			claimed.payload.revisionId,
-			stamp,
-		);
-		await deleteLeased(database, claimed.id, claimed.leaseToken);
-		return;
-	}
+
 	const failures =
 		typeof claimed.payload.attempts === "number" ? claimed.payload.attempts : 0;
 	const polls =
 		typeof claimed.payload.polls === "number" ? claimed.payload.polls : 0;
 	let status = 500;
 	let busy = false;
+	let receipt: DownloadReceipt | undefined;
+	const signal = AbortSignal.any([
+		AbortSignal.timeout(DOWNLOAD_TRANSFER_MS),
+		...(origin.signal ? [origin.signal] : []),
+	]);
 	try {
 		if (!origin.requestDownload) {
 			const unavailable = new Error("download origin unavailable");
@@ -301,9 +327,30 @@ async function finishDownload(
 			videoId: claimed.payload.videoId,
 			revisionId: claimed.payload.revisionId,
 			automatic: true,
+			signal,
 		});
 		status = response.status;
 		busy = response.busy === true;
+		if (status === 200) {
+			const [revision] = await database
+				.select({
+					ownerId: videos.ownerId,
+					videoId: editRevision.videoId,
+					revisionId: editRevision.revisionId,
+					generation: editRevision.generation,
+					sourceId: editRevision.sourceId,
+				})
+				.from(editRevision)
+				.innerJoin(videos, eq(videos.id, editRevision.videoId))
+				.where(eq(editRevision.revisionId, claimed.payload.revisionId));
+			if (!revision || revision.videoId !== claimed.payload.videoId)
+				throw new Error("DownloadRevisionMissing");
+			receipt = await persistRevisionDownload({
+				identity: revision,
+				origin,
+				signal,
+			});
+		}
 	} catch (error) {
 		alertRevisionDownloadFailure({
 			videoId: claimed.payload.videoId,
@@ -325,12 +372,8 @@ async function finishDownload(
 		nowMs: stamp.getTime(),
 	});
 	if (plan.action === "ready") {
-		await markRevisionDownloadReady(
-			database,
-			claimed.payload.revisionId,
-			stamp,
-		);
-		await deleteLeased(database, claimed.id, claimed.leaseToken);
+		if (!receipt) throw new Error("DownloadReceiptMissing");
+		await markRevisionDownloadReady(database, claimed, receipt);
 		return;
 	}
 	if (plan.action === "skip" || plan.action === "yield") {
@@ -346,7 +389,7 @@ async function finishDownload(
 		await database
 			.update(revisionArtifactStatus)
 			.set({
-				state: "FAILED",
+				state: already === true ? "READY" : "FAILED",
 				...(!hardFailure
 					? {}
 					: {
@@ -362,6 +405,11 @@ async function finishDownload(
 				and(
 					eq(revisionArtifactStatus.revisionId, claimed.payload.revisionId),
 					eq(revisionArtifactStatus.artifact, "download"),
+					sql`EXISTS (SELECT 1 FROM outbox o JOIN video_publication p ON BINARY p.videoId = BINARY o.videoId
+						WHERE o.id = ${claimed.id} AND BINARY o.revisionId = BINARY ${claimed.payload.revisionId}
+						AND BINARY p.currentRevisionId = BINARY o.revisionId
+						AND BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseToken')) = BINARY ${claimed.leaseToken}
+						AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseUntilMs')) AS UNSIGNED) > UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)`,
 				),
 			);
 		await deleteLeased(database, claimed.id, claimed.leaseToken);
@@ -424,6 +472,18 @@ async function enqueueCurrentDownloads(
 				or(
 					eq(revisionArtifactStatus.state, "PENDING"),
 					and(
+						eq(revisionArtifactStatus.state, "READY"),
+						sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.validation')) = 'verified')`,
+						or(
+							sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadDurabilityStarted')) = 'true')`,
+							lt(revisionArtifactStatus.attempts, DOWNLOAD_MAX_FAILED_CYCLES),
+						),
+						or(
+							isNull(revisionArtifactStatus.heartbeatAt),
+							lte(revisionArtifactStatus.heartbeatAt, cooledBefore),
+						),
+					),
+					and(
 						eq(revisionArtifactStatus.state, "FAILED"),
 						or(
 							isNull(revisionArtifactStatus.heartbeatAt),
@@ -439,6 +499,16 @@ async function enqueueCurrentDownloads(
 		)
 		.limit(limit);
 	for (const row of pending) {
+		if (row.state === "READY") {
+			await database.execute(sql`
+				UPDATE edit_revision r
+				JOIN revision_artifact_status a ON BINARY a.revisionId = BINARY r.revisionId AND a.artifact = 'download'
+				SET r.metadataSnapshot = JSON_SET(COALESCE(r.metadataSnapshot, JSON_OBJECT()), '$.downloadDurabilityStarted', CAST('true' AS JSON)), a.attempts = 0
+				WHERE BINARY r.revisionId = BINARY ${row.revisionId} AND a.state = 'READY'
+					AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadDurabilityStarted')), '') <> 'true'
+					AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.validation')), '') <> 'verified'
+			`);
+		}
 		if (row.state === "FAILED") {
 			await database
 				.update(revisionArtifactStatus)
@@ -480,7 +550,28 @@ async function enqueueCurrentDownloads(
 	}
 }
 
-export async function sweepRevisionDownloads(
+let downloadInFlight: Promise<void> | null = null;
+
+export function pendingRevisionDownloads(): Promise<void> {
+	return downloadInFlight ?? Promise.resolve();
+}
+
+export function sweepRevisionDownloads(
+	...args: Parameters<typeof drainRevisionDownloads>
+): Promise<void> {
+	if (!downloadInFlight) {
+		// Publication readback shares this tick; a slow export must not hold it.
+		const run = drainRevisionDownloads(...args);
+		downloadInFlight = run;
+		const clear = () => {
+			if (downloadInFlight === run) downloadInFlight = null;
+		};
+		void run.then(clear, clear);
+	}
+	return Promise.resolve();
+}
+
+export async function drainRevisionDownloads(
 	database: unknown,
 	input: { origin: OriginClient; now?: Date; limit?: number },
 ): Promise<void> {
@@ -498,7 +589,7 @@ export async function sweepRevisionDownloads(
 	}
 	for (let index = 0; index < limit; index += 1) {
 		try {
-			const claimed = await claimDueDownload(app, stamp);
+			const claimed = await claimDueDownload(app, input.now ?? new Date());
 			if (!claimed) return;
 			await finishDownload(app, claimed, input.origin, stamp);
 		} catch (error) {

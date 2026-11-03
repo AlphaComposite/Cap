@@ -291,7 +291,7 @@ class OriginApp:
         self.sha_hits = 0
         self.timings: list[tuple[float, dict]] = []
 
-    def handle(self, method: str, raw_path: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+    def handle(self, method: str, raw_path: str, headers) -> tuple[int, bytes | StreamedBody, str, dict[str, str]]:
         if method not in {"GET", "HEAD", "POST"}:
             return self._text(405, b"method")
         parsed = urlparse(raw_path)
@@ -309,7 +309,7 @@ class OriginApp:
             return self._text(404, b"not found")
         return self._media(method, match, parse_qs(parsed.query), headers)
 
-    def _internal(self, method: str, path: str, headers) -> tuple[int, bytes, str, dict[str, str]]:
+    def _internal(self, method: str, path: str, headers) -> tuple[int, bytes | StreamedBody, str, dict[str, str]]:
         body = headers.get("_body") or b""
         if isinstance(body, str):
             body = body.encode()
@@ -331,6 +331,9 @@ class OriginApp:
         artifact = ARTIFACT_RE.match(path)
         if artifact and method in {"GET", "HEAD"}:
             return self._internal_artifact(artifact)
+        download = REVISION_DOWNLOAD_RE.match(path)
+        if download and method in {"GET", "HEAD"}:
+            return self._internal_download(download.group("rev"))
         if method != "POST":
             return self._text(405, b"method")
         source = SOURCE_PREPARE_RE.match(path)
@@ -779,6 +782,34 @@ class OriginApp:
                     and row["current_revision_id"] == revision_id
                     and row["current_generation"] is not None
                     and row["current_generation"] == row["revision_generation"])
+
+    def _internal_download(self, revision_id: str) -> tuple[int, bytes | StreamedBody, str, dict[str, str]]:
+        row = self.store.revision(revision_id)
+        if row is None:
+            return self._text(404, b"not found")
+        if not self._download_current(row.video_id, revision_id):
+            return self._text(409, b"superseded")
+        try:
+            path = self._download_media_path({"revision": row})
+            if path is None or not path.is_file() or path.stat().st_size <= 0:
+                return self._text(404, b"not found")
+            namespace = path.relative_to(self.cache / "ns").parts[:-1]
+            if (len(namespace) != 4 or not all(_sha64(part) for part in namespace)
+                    or namespace[2] != _namespace(self.cache, revision_id)):
+                return self._text(500, b"unavailable")
+            if not self._download_current(row.video_id, revision_id):
+                return self._text(409, b"superseded")
+            return 200, StreamedBody(path, 0, path.stat().st_size), "video/mp4", {
+                "Cache-Control": NO_STORE,
+                "X-Cap-Video-Id": row.video_id,
+                "X-Cap-Revision-Id": revision_id,
+                "X-Cap-Source-Id": row.source_id,
+                "X-Cap-Generation": str(row.generation),
+                "X-Cap-Namespace": "/".join(namespace),
+            }
+        except Exception as exc:
+            _log_failed("revision-download", exc, video=row.video_id, rev=revision_id)
+            return self._text(500, b"unavailable")
 
     def _request_download(self, revision_id: str, *, automatic: bool = False) -> tuple[int, bytes, str, dict[str, str]]:
         row = self.store.revision(revision_id)

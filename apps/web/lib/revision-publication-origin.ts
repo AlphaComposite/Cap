@@ -171,7 +171,13 @@ export type OriginClient = {
 		videoId: string;
 		revisionId: string;
 		automatic?: boolean;
+		signal?: AbortSignal;
 	}): Promise<{ status: number; busy?: boolean }>;
+	streamDownload?(input: { revisionId: string; signal: AbortSignal }): Promise<{
+		status: number;
+		headers: Headers;
+		body: ReadableStream<Uint8Array> | null;
+	}>;
 	writeCaptions?(input: {
 		videoId: string;
 		revisionId: string;
@@ -309,14 +315,31 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 		},
 		async requestDownload(input) {
 			const path = `/internal/revisions/${input.revisionId}/download`;
-			const encoded = JSON.stringify({ videoId: input.videoId, automatic: input.automatic === true });
-			const response = await signedFetch(path, "POST", encoded);
+			const encoded = JSON.stringify({
+				videoId: input.videoId,
+				automatic: input.automatic === true,
+			});
+			const response = await signedFetch(
+				path,
+				"POST",
+				encoded,
+				input.signal ?? signal,
+			);
 			// Only the job's own encode-slot timeout is "busy"; admission
 			// overload 503s ("overloaded") count as real failures.
 			const busy =
 				response.status === 503 &&
 				(await response.text()).trim() === "encode busy";
 			return { status: response.status, busy };
+		},
+		async streamDownload(input) {
+			const path = `/internal/revisions/${input.revisionId}/download`;
+			const response = await signedFetch(path, "GET", "", input.signal);
+			return {
+				status: response.status,
+				headers: new Headers([...response.headers]),
+				body: response.body as ReadableStream<Uint8Array> | null,
+			};
 		},
 		async writeCaptions(input) {
 			const path = `/internal/revisions/${input.revisionId}/captions`;
