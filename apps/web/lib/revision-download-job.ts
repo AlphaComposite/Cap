@@ -376,11 +376,11 @@ async function finishDownload(
 		await markRevisionDownloadReady(database, claimed, receipt);
 		return;
 	}
-	if (plan.action === "skip" || plan.action === "yield") {
+	if (plan.action === "skip") {
 		await deleteLeased(database, claimed.id, claimed.leaseToken);
 		return;
 	}
-	if (plan.action === "exhausted") {
+	if (plan.action === "exhausted" || plan.action === "yield") {
 		alertRevisionDownloadFailure({
 			videoId: claimed.payload.videoId,
 			revisionId: claimed.payload.revisionId,
@@ -390,7 +390,7 @@ async function finishDownload(
 			.update(revisionArtifactStatus)
 			.set({
 				state: already === true ? "READY" : "FAILED",
-				...(!hardFailure
+				...(!hardFailure && plan.action !== "yield"
 					? {}
 					: {
 							attempts: await downloadFailedCycle(

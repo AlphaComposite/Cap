@@ -40,6 +40,7 @@ type Artifact = {
 	attempts: number;
 	heartbeatAt: Date | null;
 	current: boolean;
+	durabilityStarted?: boolean;
 };
 
 type Job = {
@@ -120,11 +121,19 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 			});
 		},
 		execute: async (query: unknown) => {
-			const { params } = queryText(query);
+			const { sql, params } = queryText(query);
 			const revisionId = params.find(
 				(value) => typeof value === "string" && value !== "download",
 			);
 			const row = artifacts.find((item) => item.revisionId === revisionId);
+			if (
+				sql.includes("update edit_revision") &&
+				row &&
+				!row.durabilityStarted
+			) {
+				row.durabilityStarted = true;
+				row.attempts = 0;
+			}
 			return [{ state: row?.state ?? "PENDING" }];
 		},
 		transaction: async <T>(fn: (tx: unknown) => Promise<T>) => fn(database),
@@ -230,6 +239,9 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 		if (name === getTableName(revisionArtifactStatus)) {
 			const wantsPending = params.includes("PENDING");
 			const wantsFailed = params.includes("FAILED");
+			if (!wantsPending && !wantsFailed) {
+				return artifacts.filter((row) => params.includes(row.revisionId));
+			}
 			const numbers = params.filter(
 				(value): value is number => typeof value === "number",
 			);
@@ -245,6 +257,14 @@ function workerDb(artifacts: Artifact[], jobs: Job[], inserted: string[]) {
 					return false;
 				}
 				if (wantsPending && row.state === "PENDING") return true;
+				if (params.includes("READY") && row.state === "READY") {
+					return (
+						(!row.durabilityStarted || row.attempts < MAX_FAILED_CYCLES) &&
+						(cooledAt == null ||
+							row.heartbeatAt == null ||
+							row.heartbeatAt.getTime() <= cooledAt)
+					);
+				}
 				if (!wantsFailed || row.state !== "FAILED") return false;
 				const cyclesOk =
 					row.attempts < MAX_FAILED_CYCLES ||
@@ -329,74 +349,83 @@ describe("revision download exhaustion", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 	});
 
-	it("leaves a long 202 build PENDING and lets the next sweep re-enqueue it", async () => {
-		const artifact: Artifact = {
-			revisionId: "rev-long",
-			videoId: "vid-long",
-			state: "PENDING",
-			attempts: 0,
-			heartbeatAt: null,
-			current: true,
-		};
-		const jobs: Job[] = [
-			{
-				id: 7,
-				revisionId: artifact.revisionId,
-				videoId: artifact.videoId,
-				createdAt: new Date(0),
-				payload: {
-					job: "download",
-					revisionId: artifact.revisionId,
-					videoId: artifact.videoId,
-					polls: DOWNLOAD_MAX_POLLS,
-					attempts: 0,
+	it.each(["PENDING", "READY"] as const)(
+		"caps repeated full 202 poll rounds while preserving local %s",
+		async (state) => {
+			const artifact: Artifact = {
+				revisionId: "rev-long",
+				videoId: "vid-long",
+				state,
+				attempts: 0,
+				heartbeatAt: null,
+				current: true,
+			};
+			const jobs: Job[] = [];
+			const inserted: string[] = [];
+			let calls = 0;
+			const database = workerDb([artifact], jobs, inserted);
+			const origin = {
+				prepareRevision: async () => {
+					throw new Error("Unexpected prepare");
 				},
-			},
-		];
-		const inserted: string[] = [];
-		let calls = 0;
-		const database = workerDb([artifact], jobs, inserted);
-		const origin = {
-			prepareRevision: async () => {
-				throw new Error("Unexpected prepare");
-			},
-			selectFrames: async () => {
-				throw new Error("Unexpected frame selection");
-			},
-			fetchArtifact: async () => {
-				throw new Error("Unexpected artifact fetch");
-			},
-			requestDownload: async () => {
-				calls += 1;
-				return { status: 202, body: "" };
-			},
-		};
+				selectFrames: async () => {
+					throw new Error("Unexpected frame selection");
+				},
+				fetchArtifact: async () => {
+					throw new Error("Unexpected artifact fetch");
+				},
+				requestDownload: async () => {
+					calls += 1;
+					return { status: 202, body: "" };
+				},
+			};
 
-		await sweepRevisionDownloads(database, {
-			origin,
-			now: new Date(1_000_000),
-			limit: 1,
-		});
-
-		expect(calls).toBe(1);
-		expect(artifact.state).toBe("PENDING");
-		expect(artifact.attempts).toBe(0);
-		expect(jobs).toHaveLength(0);
-		expect(console.error).not.toHaveBeenCalledWith(
-			"cap-revision-download-failed",
-			artifact.videoId,
-			artifact.revisionId,
-			"DownloadAttemptsExhausted",
-		);
-
-		await sweepRevisionDownloads(database, {
-			origin,
-			now: new Date(1_000_000),
-			limit: 1,
-		});
-		expect(inserted).toEqual([artifact.revisionId]);
-		expect(artifact.state).toBe("PENDING");
-	});
+			let now = 1_000_000;
+			const rounds = [];
+			for (let round = 1; round <= MAX_FAILED_CYCLES; round += 1) {
+				for (let poll = 0; poll <= DOWNLOAD_MAX_POLLS; poll += 1) {
+					await sweepRevisionDownloads(database, {
+						origin,
+						now: new Date(now),
+						limit: 1,
+					});
+					now += 5_001;
+				}
+				const completed = {
+					calls,
+					state: artifact.state,
+					attempts: artifact.attempts,
+					jobs: jobs.length,
+				};
+				await sweepRevisionDownloads(database, {
+					origin,
+					now: new Date(now),
+					limit: 1,
+				});
+				rounds.push({ ...completed, cooldownJobs: jobs.length });
+				now += COOLDOWN_MS;
+			}
+			for (let tick = 0; tick < 3; tick += 1) {
+				await sweepRevisionDownloads(database, {
+					origin,
+					now: new Date(now),
+					limit: 1,
+				});
+				now += COOLDOWN_MS;
+			}
+			expect(rounds).toEqual(
+				Array.from({ length: MAX_FAILED_CYCLES }, (_, index) => ({
+					calls: (index + 1) * (DOWNLOAD_MAX_POLLS + 1),
+					state: state === "READY" ? "READY" : "FAILED",
+					attempts: index + 1,
+					jobs: 0,
+					cooldownJobs: 0,
+				})),
+			);
+			expect(inserted).toHaveLength(MAX_FAILED_CYCLES);
+			expect(calls).toBe(MAX_FAILED_CYCLES * (DOWNLOAD_MAX_POLLS + 1));
+		},
+	);
 
 	it("marks outbox exports automatic and skips an origin supersession race", async () => {
 		const artifact: Artifact = {

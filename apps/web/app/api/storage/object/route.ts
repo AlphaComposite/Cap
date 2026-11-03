@@ -216,6 +216,12 @@ export async function GET(request: NextRequest) {
 		}
 		if (
 			!internalDownload &&
+			key.startsWith(`${video.ownerId}/${video.id}/private/edited/`)
+		) {
+			return yield* Effect.fail("not-found" as const);
+		}
+		if (
+			!internalDownload &&
 			(yield* Effect.promise(() => isEditedSourceObject(video, key)))
 		) {
 			return yield* Effect.fail("not-found" as const);
