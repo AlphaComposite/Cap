@@ -77,6 +77,16 @@ export type ExposedKey = {
 
 const TRANSCRIPT_LANG_REST = /^transcription\.[a-z]{2}\.vtt$/;
 
+export function isDurableEditedArtifactKey(key: string) {
+	return /^[^/]+\/[^/]+\/private\/edited(?:\/|$)/.test(key);
+}
+
+export function assertRelocatableKey(key: string) {
+	if (isDurableEditedArtifactKey(key)) {
+		throw new Error("durable edited artifact cannot be relocated or deleted");
+	}
+}
+
 export function isRetainedTranscriptKey(key: string, prefix: string) {
 	if (!key.startsWith(prefix)) return false;
 	const rest = key.slice(prefix.length);
@@ -90,7 +100,9 @@ export function isRetainedTranscriptKey(key: string, prefix: string) {
 
 export function isFinishInventoryExempt(key: string, prefix: string) {
 	return (
-		isRetainedTranscriptKey(key, prefix) || key.startsWith(`${prefix}comments/`)
+		isRetainedTranscriptKey(key, prefix) ||
+		key.startsWith(`${prefix}comments/`) ||
+		(key.startsWith(prefix) && isDurableEditedArtifactKey(key))
 	);
 }
 
@@ -118,6 +130,7 @@ export function inventoryExposedKeys(input: {
 	const add = (key: string | null | undefined, kind: RelocationKind) => {
 		if (!key || !key.startsWith(prefix)) return;
 		if (key.startsWith("private/")) return;
+		if (isDurableEditedArtifactKey(key)) return;
 		if (isRetainedTranscriptKey(key, prefix)) return;
 		const existing = keys.get(key);
 		if (existing === "original") return;
@@ -172,6 +185,8 @@ export async function relocateKey(input: {
 	if (input.flagged === false) {
 		throw new Error("relocation refused while flag is off");
 	}
+	assertRelocatableKey(input.oldKey);
+	assertRelocatableKey(input.newKey);
 	const sha = await input.store.sha256(input.oldKey);
 	if (!sha) throw new Error("source object missing before relocation");
 	const row = await input.journal.insertIntent({
@@ -207,6 +222,8 @@ export async function continueRelocation(
 		crash?: CrashPoint;
 	},
 ) {
+	assertRelocatableKey(row.oldKey);
+	assertRelocatableKey(row.newKey);
 	let state = row.state;
 	if (state === "INTENT") {
 		const copiedSha = await store.sha256(row.newKey);
@@ -297,6 +314,8 @@ export async function reconcileRelocations(input: {
 }): Promise<number> {
 	const open = await input.journal.listOpen();
 	for (const row of open) {
+		assertRelocatableKey(row.oldKey);
+		assertRelocatableKey(row.newKey);
 		if (row.state === "INTENT") {
 			const newSha = await input.store.sha256(row.newKey);
 			const oldSha = await input.store.sha256(row.oldKey);
@@ -488,6 +507,11 @@ export async function relocateOwnerVideo(input: {
 	const moved: string[] = [];
 	if (!input.reconcileOnly) {
 		const assertCurrentOpen = async (open: RelocationRow[]) => {
+			for (const row of open) {
+				if (row.videoId !== input.videoId) continue;
+				assertRelocatableKey(row.oldKey);
+				assertRelocatableKey(row.newKey);
+			}
 			const openOriginals: string[] = [];
 			const freshOriginals: string[] = [];
 			for (const item of exposed) {

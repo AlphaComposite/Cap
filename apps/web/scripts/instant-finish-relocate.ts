@@ -18,6 +18,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createConnection } from "mysql2/promise";
 import { deletionPlan } from "@/lib/origin-object-policy";
 import {
+	assertRelocatableKey,
 	type CrashPoint,
 	type ObjectStore,
 	type RelocationJournal,
@@ -135,6 +136,7 @@ export function createS3Store(
 			}
 		},
 		async deleteAllVersions(key) {
+			assertRelocatableKey(key);
 			let keyMarker: string | undefined;
 			let versionMarker: string | undefined;
 			const listedItems: { Key?: string; VersionId?: string }[] = [];
