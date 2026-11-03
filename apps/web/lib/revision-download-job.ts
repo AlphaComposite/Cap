@@ -519,9 +519,9 @@ async function enqueueCurrentDownloads(
 						eq(revisionArtifactStatus.state, "READY"),
 						sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId}
 							AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.validation')) = 'verified'
-							AND JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.captionsVtt') = JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt')
-							AND JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.chapters') = JSON_EXTRACT(r.metadataSnapshot, '$.chapters')
-							AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.thumbnailSha256')), '') = COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256')), ''))`,
+							AND BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.captionsVtt')), '') = BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt')), '')
+							AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.chapters'), JSON_ARRAY()) = COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.chapters'), JSON_ARRAY())
+							AND BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.thumbnailSha256')), '') = BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256')), ''))`,
 						or(
 							sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.hlsDurabilityStarted')) = 'true')`,
 							lt(revisionArtifactStatus.attempts, DOWNLOAD_MAX_FAILED_CYCLES),

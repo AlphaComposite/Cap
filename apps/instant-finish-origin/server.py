@@ -1550,7 +1550,7 @@ with http.open(request, timeout=15) as response:
             "Content-Length": str(len(body)),
             "X-Cap-Video-Id": row.video_id, "X-Cap-Revision-Id": row.revision_id,
             "X-Cap-Source-Id": row.source_id, "X-Cap-Generation": str(row.generation),
-            "X-Cap-Namespace": origin.rev,
+            "X-Cap-Namespace": origin.namespace,
             **({"X-Cap-Thumbnail": "ready"} if kind == "thumbnail.jpg" else {}),
         }
 
