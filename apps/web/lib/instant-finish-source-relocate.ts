@@ -240,16 +240,6 @@ export async function completePreparedSourceInventory(
 		)
 	)
 		throw new Error("prepared original purge proof is missing");
-	const listed = await store.list(prefix);
-	if (
-		listed.some(
-			(key) =>
-				!isFinishInventoryExempt(key, prefix) && key.includes("/source/"),
-		)
-	)
-		throw new Error(
-			"inventory completion cannot replace the prepared original",
-		);
 	const pending = rows.filter((row) => row.state !== "PURGED");
 	if (
 		pending.some(
@@ -262,6 +252,16 @@ export async function completePreparedSourceInventory(
 	)
 		throw new Error(
 			"inventory completion encountered an unsafe relocation row",
+		);
+	const listed = await store.list(prefix);
+	if (
+		listed.some(
+			(key) =>
+				!isFinishInventoryExempt(key, prefix) && key.includes("/source/"),
+		)
+	)
+		throw new Error(
+			"inventory completion cannot replace the prepared original",
 		);
 	for (const row of pending)
 		await continueRelocation(row, store, journal, { kind: "rollback" });

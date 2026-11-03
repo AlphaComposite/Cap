@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
 	DeleteObjectCommand,
 	ListObjectVersionsCommand,
@@ -178,9 +179,62 @@ describe("durable edited relocation boundary (offline transport doubles)", () =>
 				journal,
 			}),
 		).rejects.toThrow(refusal);
-		expect(store.copy).not.toHaveBeenCalled();
-		expect(store.deleteAllVersions).not.toHaveBeenCalled();
+		expectNoStoreCalls(store);
 		expect(row.state).toBe("COPIED");
+	});
+
+	it.each(["reconcile", "owner", "owner-reconcile"])(
+		"preflights the whole mixed journal before any %s object effect",
+		async (mode) => {
+			const journal = createMemoryJournal();
+			for (const oldKey of [
+				`${prefix}result.mp4`,
+				`${prefix}private/edited/revision/7/attempt.mp4`,
+			])
+				await journal.insertIntent({
+					videoId: "video",
+					revisionId: "revision",
+					oldKey,
+					newKey: `private/rollback/video/${journal.rows.length}`,
+					sha256: "expected",
+					state: "INTENT",
+				});
+			const before = JSON.stringify(journal.rows);
+			const store = {
+				...offlineStore(),
+				list: vi.fn(async () => [`${prefix}result.mp4`]),
+			};
+			await expect(
+				mode === "reconcile"
+					? reconcileRelocations({ store, journal, kindFor: () => "rollback" })
+					: relocateOwnerVideo({
+							ownerId: "owner",
+							videoId: "video",
+							store,
+							journal,
+							reconcileOnly: mode === "owner-reconcile",
+						}),
+			).rejects.toThrow(refusal);
+			expectNoStoreCalls(store);
+			expect(JSON.stringify(journal.rows)).toBe(before);
+			expect(journal.live.size).toBe(0);
+		},
+	);
+
+	it("prepared inventory validates pending rows before its first object listing (source ordering)", () => {
+		const source = readFileSync(
+			new URL("../../lib/instant-finish-source-relocate.ts", import.meta.url),
+			"utf8",
+		);
+		const body = source.slice(
+			source.indexOf("export async function completePreparedSourceInventory"),
+		);
+		expect(
+			body.indexOf("inventory completion encountered an unsafe relocation row"),
+		).toBeGreaterThan(0);
+		expect(
+			body.indexOf("inventory completion encountered an unsafe relocation row"),
+		).toBeLessThan(body.indexOf("const listed = await store.list(prefix)"));
 	});
 
 	it.each(protectedKeys)(

@@ -316,6 +316,8 @@ export async function reconcileRelocations(input: {
 	for (const row of open) {
 		assertRelocatableKey(row.oldKey);
 		assertRelocatableKey(row.newKey);
+	}
+	for (const row of open) {
 		if (row.state === "INTENT") {
 			const newSha = await input.store.sha256(row.newKey);
 			const oldSha = await input.store.sha256(row.oldKey);
@@ -472,6 +474,11 @@ export async function relocateOwnerVideo(input: {
 	reconcileOnly?: boolean;
 }): Promise<RelocationProof> {
 	const prefix = `${input.ownerId}/${input.videoId}/`;
+	for (const row of await input.journal.listOpen()) {
+		if (!input.reconcileOnly && row.videoId !== input.videoId) continue;
+		assertRelocatableKey(row.oldKey);
+		assertRelocatableKey(row.newKey);
+	}
 	const listed = input.store.list ? await input.store.list(prefix) : [];
 	const exposed = inventoryExposedKeys({
 		ownerId: input.ownerId,
