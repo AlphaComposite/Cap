@@ -108,7 +108,12 @@ describe("generic object proxy edited-export denial", () => {
 	});
 
 	it.each(
-		["current/7/attempt.mp4", "superseded/6/retired.mp4"].flatMap((suffix) =>
+		[
+			"current/7/attempt.mp4",
+			"superseded/6/retired.mp4",
+			"current/7/segment.artifact",
+			"superseded/6/captions.artifact",
+		].flatMap((suffix) =>
 			["GET", "HEAD", "RANGE"].flatMap((method) =>
 				[false, true].flatMap((token) =>
 					[false, true].flatMap((flagged) =>

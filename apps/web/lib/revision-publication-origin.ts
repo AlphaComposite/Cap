@@ -178,6 +178,15 @@ export type OriginClient = {
 		headers: Headers;
 		body: ReadableStream<Uint8Array> | null;
 	}>;
+	streamArtifact?(input: {
+		revisionId: string;
+		name: string;
+		signal: AbortSignal;
+	}): Promise<{
+		status: number;
+		headers: Headers;
+		body: ReadableStream<Uint8Array> | null;
+	}>;
 	writeCaptions?(input: {
 		videoId: string;
 		revisionId: string;
@@ -334,6 +343,21 @@ export function httpOriginClient(signal?: AbortSignal): OriginClient {
 		},
 		async streamDownload(input) {
 			const path = `/internal/revisions/${input.revisionId}/download`;
+			const response = await signedFetch(path, "GET", "", input.signal);
+			return {
+				status: response.status,
+				headers: new Headers([...response.headers]),
+				body: response.body as ReadableStream<Uint8Array> | null,
+			};
+		},
+		async streamArtifact(input) {
+			if (
+				!/^(playlist\.m3u8|init\.mp4|seg\/[0-9]+\.m4s|captions\.vtt|chapters\.json|thumbnail\.jpg)$/.test(
+					input.name,
+				)
+			)
+				throw new Error("HlsArtifactInvalid");
+			const path = `/internal/revisions/${input.revisionId}/artifact/${input.name}`;
 			const response = await signedFetch(path, "GET", "", input.signal);
 			return {
 				status: response.status,

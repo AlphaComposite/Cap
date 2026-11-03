@@ -287,7 +287,7 @@ export function redactGrantBearer(value: string): string {
 
 export type InternalServiceClaims = {
 	v: 1;
-	aud: "origin-service" | "web-object-url";
+	aud: "origin-service" | "web-object-url" | "web-revision-artifact";
 	iat: number;
 	exp: number;
 	nonce: string;

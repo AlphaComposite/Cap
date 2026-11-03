@@ -22,9 +22,12 @@ vi.mock("@cap/env", () => ({ serverEnv: () => ({}) }));
 import {
 	type DownloadReceipt,
 	downloadRange,
+	hlsArtifactNames,
 	persistRevisionDownload,
+	readDurableHlsArtifact,
 	streamDurableDownload,
 	verifiedDownloadReceipt,
+	verifiedHlsReceipt,
 } from "@/lib/revision-download-artifact";
 import type { OriginClient } from "@/lib/revision-publication-origin";
 
@@ -266,6 +269,170 @@ describe("immutable verified edited artifacts", () => {
 				client: store().client,
 			}),
 		).rejects.toThrow();
+	});
+});
+
+describe("exact durable HLS", () => {
+	it("persists every exact playlist member and side artifact without changing its namespace", async () => {
+		const backend = store();
+		const source = origin();
+		const playlist = Buffer.from(
+			'#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:1,\nseg/0.m4s\n#EXTINF:2,\nseg/1.m4s\n#EXT-X-ENDLIST\n',
+		);
+		const artifacts = new Map([
+			["playlist.m3u8", playlist],
+			["init.mp4", Buffer.from("init-exact")],
+			["seg/0.m4s", Buffer.from("segment-zero")],
+			["seg/1.m4s", Buffer.from("segment-one")],
+			["captions.vtt", Buffer.from("WEBVTT\n")],
+			["chapters.json", Buffer.from('{"chapters":[]}\n')],
+			["thumbnail.jpg", Buffer.from("thumbnail-exact")],
+		]);
+		const streamArtifact = vi.fn(async ({ name }: { name: string }) => {
+			const bytes = artifacts.get(name);
+			if (!bytes) throw new Error("Unexpected member");
+			const stream = origin(bytes).streamDownload;
+			if (!stream) throw new Error("Missing fixture stream");
+			return stream({
+				revisionId: identity.revisionId,
+				signal: AbortSignal.timeout(5000),
+			});
+		});
+		const input = {
+			identity,
+			origin: { ...source, streamArtifact },
+			signal: AbortSignal.timeout(5000),
+			bucket: "private",
+			client: backend.client,
+			includeHls: {
+				captionsVtt: "WEBVTT\n",
+				chapters: [],
+				thumbnailSha256: "",
+			},
+		};
+		const actual = await persistRevisionDownload(input);
+		expect(actual.hls).toBeDefined();
+		expect(verifiedHlsReceipt(actual, identity, input.includeHls)).toBe(true);
+		expect(
+			verifiedHlsReceipt(actual, identity, {
+				...input.includeHls,
+				captionsVtt: "changed",
+			}),
+		).toBe(false);
+		const reordered = {
+			...actual,
+			hls: actual.hls
+				? {
+						...actual.hls,
+						snapshot: {
+							thumbnailSha256: "",
+							chapters: [],
+							captionsVtt: "WEBVTT\n",
+						},
+					}
+				: undefined,
+		};
+		expect(verifiedHlsReceipt(reordered, identity, input.includeHls)).toBe(
+			true,
+		);
+		expect(Object.keys(actual.hls?.artifacts ?? {}).sort()).toEqual(
+			[...artifacts.keys()].sort(),
+		);
+		for (const [name, bytes] of artifacts) {
+			const member = actual.hls?.artifacts[name];
+			expect(member?.namespace).toBe(namespace);
+			expect(member?.sha256).toBe(
+				createHash("sha256").update(bytes).digest("hex"),
+			);
+			expect(backend.versions.get(member?.key ?? "")?.equals(bytes)).toBe(true);
+		}
+		expect(streamArtifact).toHaveBeenCalledTimes(7);
+	});
+	it.each([
+		'#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\nhttps://outside.test/original.mp4\n#EXT-X-ENDLIST\n',
+		'#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\nseg/1.m4s\n#EXT-X-ENDLIST\n',
+		'#EXTM3U\n#EXT-X-MAP:URI="source.mp4"\nseg/0.m4s\n#EXT-X-ENDLIST\n',
+		'#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\nseg/0.m4s\n',
+	])("rejects incomplete or foreign playlist references", (playlist) => {
+		expect(() => hlsArtifactNames(playlist)).toThrow("HlsPlaylistInvalid");
+	});
+	it("bounds the persisted manifest segment count", () => {
+		const playlist = `#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n${Array.from({ length: 10001 }, (_, index) => `seg/${index}.m4s\n`).join("")}#EXT-X-ENDLIST\n`;
+		expect(() => hlsArtifactNames(playlist)).toThrow("HlsPlaylistInvalid");
+	});
+	it.each([{ corrupt: true }, { truncate: true }, { wrongVersion: true }])(
+		"rejects bad pinned cold bytes %j",
+		async (options) => {
+			await expect(
+				readDurableHlsArtifact(
+					receipt,
+					AbortSignal.timeout(5000),
+					store(options).client,
+				),
+			).rejects.toThrow();
+		},
+	);
+	it.each(["namespace", "missing", "oversized"])(
+		"never completes a manifest after %s artifact failure",
+		async (failure) => {
+			const backend = store();
+			const playlist = Buffer.from(
+				'#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\nseg/0.m4s\n#EXT-X-ENDLIST\n',
+			);
+			const source = origin();
+			const streamArtifact = async ({ name }: { name: string }) => {
+				const bytes =
+					failure === "oversized"
+						? Buffer.alloc(1024 * 1024 + 1)
+						: name === "playlist.m3u8"
+							? playlist
+							: fixture;
+				const stream = origin(
+					bytes,
+					bytes.length,
+					name === "init.mp4" && failure === "namespace"
+						? { "x-cap-namespace": Array(4).fill("b".repeat(64)).join("/") }
+						: {},
+				).streamDownload;
+				if (!stream) throw new Error("Missing fixture stream");
+				const response = await stream({
+					revisionId: identity.revisionId,
+					signal: AbortSignal.timeout(5000),
+				});
+				return {
+					...response,
+					status: name === "init.mp4" && failure === "missing" ? 404 : 200,
+				};
+			};
+			await expect(
+				persistRevisionDownload({
+					identity,
+					origin: { ...source, streamArtifact },
+					signal: AbortSignal.timeout(5000),
+					bucket: "private",
+					client: backend.client,
+					includeHls: { captionsVtt: "", chapters: [], thumbnailSha256: "" },
+				}),
+			).rejects.toThrow(
+				failure === "oversized"
+					? "HlsBodyTooLarge"
+					: "DownloadIdentityMismatch",
+			);
+			expect(backend.versions.size).toBe(failure === "oversized" ? 1 : 2);
+			expect(
+				backend.commands.some((command) =>
+					/Delete/.test((command as object).constructor.name),
+				),
+			).toBe(false);
+		},
+	);
+	it("returns native-equal cold bytes from the exact pinned version", async () => {
+		const bytes = await readDurableHlsArtifact(
+			receipt,
+			AbortSignal.timeout(5000),
+			store().client,
+		);
+		expect(bytes.equals(fixture)).toBe(true);
 	});
 });
 

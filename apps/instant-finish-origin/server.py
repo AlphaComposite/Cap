@@ -16,7 +16,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import grant as grant_mod
 import lib_audio
@@ -1120,6 +1120,12 @@ class OriginApp:
 
     def _artifact(self, snap: dict, kind: str, match: re.Match, token: str) -> tuple[bytes, str]:
         rev = snap["revision"]
+        durable = self._durable_artifact(snap, kind)
+        if durable is not None:
+            body, content_type, _namespace_id = durable
+            if kind == "playlist.m3u8":
+                body = lib_origin.playlist_with_grant(body.decode(), token)
+            return body, content_type
         ranges = json.loads((self.cache / "revisions" / rev.revision_id / "ranges.json").read_text())
         origin = self._origin_for(
             rev.video_id,
@@ -1149,6 +1155,63 @@ class OriginApp:
                 raise FileNotFoundError("revision mp4 is not required before finish")
             return path.read_bytes(), "video/mp4"
         raise FileNotFoundError(kind)
+
+    def _durable_artifact(self, snap: dict, kind: str) -> tuple[bytes, str, str] | None:
+        endpoint = os.environ.get("ORIGIN_OBJECT_URL_ENDPOINT", "").rstrip("/")
+        if not endpoint:
+            return None
+        rev = snap["revision"]
+        path = "/api/internal/origin/revision-artifact?" + urlencode({
+            "videoId": rev.video_id, "revisionId": rev.revision_id, "name": kind,
+        })
+        token = service_auth.sign_request(self.service_secret, "GET", path, audience="web-revision-artifact")
+        task = {"url": endpoint + path, "token": token}
+        script = """
+import json, sys, urllib.request
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+task = json.load(sys.stdin)
+http = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+request = urllib.request.Request(task["url"], headers={"x-cap-origin-service": task["token"]})
+with http.open(request, timeout=15) as response:
+    if response.status not in (200, 204):
+        raise ValueError("artifact unavailable")
+    size = int(response.headers.get("Content-Length", "0"))
+    if size < 0 or size > 32 * 1024 * 1024:
+        raise ValueError("artifact too large")
+    data = response.read(size + 1)
+    if len(data) != size:
+        raise ValueError("artifact length mismatch")
+    print(json.dumps({"status": response.status, "headers": dict(response.headers)}), flush=True)
+    sys.stdout.buffer.write(data)
+"""
+        try:
+            result = subprocess.run([sys.executable, "-c", script], input=json.dumps(task).encode(),
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=40, check=True)
+            encoded, body = result.stdout.split(b"\n", 1)
+            response = json.loads(encoded)
+            if response["status"] == 204:
+                return None
+            headers = {key.lower(): value for key, value in response["headers"].items()}
+            namespace = headers.get("x-cap-namespace", "")
+            expected = {
+                "x-cap-video-id": rev.video_id, "x-cap-revision-id": rev.revision_id,
+                "x-cap-source-id": rev.source_id, "x-cap-generation": str(rev.generation),
+                "x-cap-publication-epoch": str(snap["publication_epoch"]),
+                "x-cap-policy-epoch": str(snap["policy_epoch"]),
+            }
+            if (any(headers.get(key) != value for key, value in expected.items())
+                    or re.fullmatch(r"[a-f0-9]{64}(?:/[a-f0-9]{64}){3}", namespace) is None
+                    or (_namespace(self.cache, rev.revision_id) and _namespace(self.cache, rev.revision_id) != namespace)
+                    or hashlib.sha256(body).hexdigest() != headers.get("x-cap-sha256")
+                    or len(body) != int(headers.get("content-length", "0"))
+                    or (kind in SIDE_CONTENT_TYPES and len(body) > SIDE_MAX_BYTES)):
+                raise StorageError("durable artifact identity mismatch")
+            content_type = SIDE_CONTENT_TYPES.get(kind, "application/vnd.apple.mpegurl" if kind == "playlist.m3u8" else "video/mp4")
+            return body, content_type, namespace
+        except Exception:
+            raise StorageError("durable artifact unavailable") from None
 
     def _origin_for(
         self,
@@ -1255,6 +1318,8 @@ class OriginApp:
         return str(json.loads(mapped.read_text()).get("sourceKey") or "") or None
 
     def _range_segment(self, snap: dict, index: int, header: str, content_type: str) -> tuple | None:
+        if os.environ.get("ORIGIN_OBJECT_URL_ENDPOINT"):
+            return None
         rev = snap["revision"]
         ranges = json.loads((self.cache / "revisions" / rev.revision_id / "ranges.json").read_text())
         origin = self._origin_for(
@@ -1422,11 +1487,30 @@ class OriginApp:
         revision_id = match.group("rev")
         kind = match.group("name")
         ranges_path = self.cache / "revisions" / revision_id / "ranges.json"
-        if not ranges_path.is_file():
-            return self._text(404, b"not found")
         row = self.store.revision(revision_id)
         if row is None:
             return self._text(404, b"not found")
+        if not ranges_path.is_file():
+            pub = self.store.publication(row.video_id)
+            if pub is None or pub.current_revision_id != revision_id or pub.current_generation != row.generation or row.state != "CURRENT":
+                return self._text(404, b"not found")
+            try:
+                durable = self._durable_artifact({"revision": row, "publication_epoch": pub.publication_epoch, "policy_epoch": pub.policy_epoch}, kind)
+                again = self._recheck(row.video_id, revision_id)
+                if durable is not None and again is not None and (
+                        again["current_revision_id"] == revision_id and again["current_generation"] == row.generation
+                        and again["publication_epoch"] == pub.publication_epoch and again["policy_epoch"] == pub.policy_epoch
+                        and again["revision_state"] == "CURRENT"):
+                    return 200, durable[0], durable[1], {
+                        "Cache-Control": NO_STORE, "Accept-Ranges": "bytes",
+                        "Content-Length": str(len(durable[0])), "X-Cap-Namespace": durable[2],
+                        "X-Cap-Video-Id": row.video_id, "X-Cap-Revision-Id": row.revision_id,
+                        "X-Cap-Source-Id": row.source_id, "X-Cap-Generation": str(row.generation),
+                        **({"X-Cap-Thumbnail": "ready"} if kind == "thumbnail.jpg" else {}),
+                    }
+                return self._text(404, b"not found")
+            except Exception:
+                return self._text(500, b"unavailable")
         try:
             ranges = json.loads(ranges_path.read_text())
             origin = self._origin_for(row.video_id, row.source_id, ranges, revision_id=revision_id)
@@ -1451,11 +1535,7 @@ class OriginApp:
                 body, content_type = read_verified_side(self.service_secret, self.cache, revision_id, "chapters.json"), "application/json"
             elif kind == "thumbnail.jpg":
                 body = read_verified_side(self.service_secret, self.cache, revision_id, "thumbnail.jpg")
-                return 200, body, "image/jpeg", {
-                    "Cache-Control": NO_STORE,
-                    "Accept-Ranges": "bytes",
-                    "X-Cap-Thumbnail": "ready",
-                }
+                content_type = "image/jpeg"
             else:
                 return self._text(404, b"not found")
         except TimeoutError:
@@ -1465,7 +1545,14 @@ class OriginApp:
         except Exception as exc:
             _log_failed("artifact", exc, video=row.video_id, rev=revision_id, kind=kind)
             return self._text(500, b"unavailable")
-        return 200, body, content_type, {"Cache-Control": NO_STORE, "Accept-Ranges": "bytes"}
+        return 200, body, content_type, {
+            "Cache-Control": NO_STORE, "Accept-Ranges": "bytes",
+            "Content-Length": str(len(body)),
+            "X-Cap-Video-Id": row.video_id, "X-Cap-Revision-Id": row.revision_id,
+            "X-Cap-Source-Id": row.source_id, "X-Cap-Generation": str(row.generation),
+            "X-Cap-Namespace": origin.rev,
+            **({"X-Cap-Thumbnail": "ready"} if kind == "thumbnail.jpg" else {}),
+        }
 
     def _text(self, status: int, body: bytes, content_type: str = "text/plain") -> tuple[int, bytes, str, dict[str, str]]:
         return status, body, content_type, {"Cache-Control": NO_STORE, "Referrer-Policy": REFERRER}

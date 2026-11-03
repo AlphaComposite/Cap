@@ -11,8 +11,10 @@ import { and, asc, eq, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
 	DOWNLOAD_TRANSFER_MS,
 	type DownloadReceipt,
+	hlsSnapshot,
 	persistRevisionDownload,
 	verifiedDownloadReceipt,
+	verifiedHlsReceipt,
 } from "@/lib/revision-download-artifact";
 import { readArtifactReady } from "@/lib/revision-media-grant";
 import type { OriginClient } from "@/lib/revision-publication-origin";
@@ -164,6 +166,8 @@ export async function markRevisionDownloadReady(
 ) {
 	if (
 		!verifiedDownloadReceipt(receipt, receipt) ||
+		(receipt.hls !== undefined &&
+			!verifiedHlsReceipt(receipt, receipt, receipt.hls.snapshot)) ||
 		receipt.revisionId !== claimed.payload.revisionId ||
 		receipt.videoId !== claimed.payload.videoId
 	)
@@ -199,6 +203,15 @@ export async function markRevisionDownloadReady(
 				AND BINARY o.revisionId = BINARY r.revisionId AND BINARY o.videoId = BINARY r.videoId AND o.job = 'download'
 				AND BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseToken')) = BINARY ${claimed.leaseToken}
 				AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.payload, '$.leaseUntilMs')) AS UNSIGNED) > UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000
+				AND ${
+					receipt.hls
+						? sql`
+					BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt')), '') = BINARY ${receipt.hls.snapshot.captionsVtt}
+					AND COALESCE(JSON_EXTRACT(r.metadataSnapshot, '$.chapters'), JSON_ARRAY()) = CAST(${JSON.stringify(receipt.hls.snapshot.chapters)} AS JSON)
+					AND BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256')), '') = BINARY ${receipt.hls.snapshot.thumbnailSha256}
+				`
+						: sql`TRUE`
+				}
 		`);
 		const header = (Array.isArray(result) ? result[0] : result) as {
 			affectedRows?: number;
@@ -339,16 +352,19 @@ async function finishDownload(
 					revisionId: editRevision.revisionId,
 					generation: editRevision.generation,
 					sourceId: editRevision.sourceId,
+					metadataSnapshot: editRevision.metadataSnapshot,
 				})
 				.from(editRevision)
 				.innerJoin(videos, eq(videos.id, editRevision.videoId))
 				.where(eq(editRevision.revisionId, claimed.payload.revisionId));
 			if (!revision || revision.videoId !== claimed.payload.videoId)
 				throw new Error("DownloadRevisionMissing");
+			const { metadataSnapshot, ...identity } = revision;
 			receipt = await persistRevisionDownload({
-				identity: revision,
+				identity,
 				origin,
 				signal,
+				includeHls: hlsSnapshot(metadataSnapshot),
 			});
 		}
 	} catch (error) {
@@ -473,9 +489,13 @@ async function enqueueCurrentDownloads(
 					eq(revisionArtifactStatus.state, "PENDING"),
 					and(
 						eq(revisionArtifactStatus.state, "READY"),
-						sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.validation')) = 'verified')`,
+						sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId}
+							AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.validation')) = 'verified'
+							AND JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.captionsVtt') = JSON_EXTRACT(r.metadataSnapshot, '$.captionsVtt')
+							AND JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.chapters') = JSON_EXTRACT(r.metadataSnapshot, '$.chapters')
+							AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.hls.snapshot.thumbnailSha256')), '') = COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.thumbnailSha256')), ''))`,
 						or(
-							sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadDurabilityStarted')) = 'true')`,
+							sql`NOT EXISTS (SELECT 1 FROM edit_revision r WHERE BINARY r.revisionId = BINARY ${revisionArtifactStatus.revisionId} AND JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.hlsDurabilityStarted')) = 'true')`,
 							lt(revisionArtifactStatus.attempts, DOWNLOAD_MAX_FAILED_CYCLES),
 						),
 						or(
@@ -503,10 +523,9 @@ async function enqueueCurrentDownloads(
 			await database.execute(sql`
 				UPDATE edit_revision r
 				JOIN revision_artifact_status a ON BINARY a.revisionId = BINARY r.revisionId AND a.artifact = 'download'
-				SET r.metadataSnapshot = JSON_SET(COALESCE(r.metadataSnapshot, JSON_OBJECT()), '$.downloadDurabilityStarted', CAST('true' AS JSON)), a.attempts = 0
+				SET r.metadataSnapshot = JSON_SET(COALESCE(r.metadataSnapshot, JSON_OBJECT()), '$.downloadDurabilityStarted', CAST('true' AS JSON), '$.hlsDurabilityStarted', CAST('true' AS JSON)), a.attempts = 0
 				WHERE BINARY r.revisionId = BINARY ${row.revisionId} AND a.state = 'READY'
-					AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadDurabilityStarted')), '') <> 'true'
-					AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.downloadArtifact.validation')), '') <> 'verified'
+					AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadataSnapshot, '$.hlsDurabilityStarted')), '') <> 'true'
 			`);
 		}
 		if (row.state === "FAILED") {

@@ -31,6 +31,8 @@ type Pending = {
 	attempts?: number;
 	durabilityStarted?: boolean;
 	verified?: boolean;
+	hlsVerified?: boolean;
+	hlsStarted?: boolean;
 };
 
 function whereSql(where: unknown): string {
@@ -90,10 +92,11 @@ function backfillDb(pending: Pending[], inserted: string[]) {
 		transaction: async () => null,
 		execute: async (query: unknown) => {
 			const text = whereSql(query);
-			if (text.includes("downloaddurabilitystarted")) {
+			if (text.includes("hlsdurabilitystarted")) {
 				for (const row of pending) {
-					if (!row.durabilityStarted && !row.verified) {
+					if (!row.hlsStarted) {
 						row.durabilityStarted = true;
+						row.hlsStarted = true;
 						row.attempts = 0;
 					}
 				}
@@ -113,9 +116,9 @@ function backfillDb(pending: Pending[], inserted: string[]) {
 			rows = rows.filter(
 				(row) =>
 					row.state !== "READY" ||
-					(sql.includes("downloaddurabilitystarted") &&
-						!row.verified &&
-						(!row.durabilityStarted || (row.attempts ?? 0) < 3)),
+					(sql.includes("hlsdurabilitystarted") &&
+						!row.hlsVerified &&
+						(!row.hlsStarted || (row.attempts ?? 0) < 3)),
 			);
 			if (state.limit != null) rows = rows.slice(0, state.limit);
 			return rows.map((row) => ({
@@ -146,12 +149,43 @@ describe("revision download backfill", () => {
 	});
 
 	it.each([
-		{ durabilityStarted: false, verified: false, enqueued: true },
-		{ durabilityStarted: true, verified: false, enqueued: false },
-		{ durabilityStarted: false, verified: true, enqueued: false },
+		{
+			durabilityStarted: false,
+			verified: false,
+			hlsStarted: false,
+			hlsVerified: false,
+			enqueued: true,
+		},
+		{
+			durabilityStarted: true,
+			verified: true,
+			hlsStarted: false,
+			hlsVerified: false,
+			enqueued: true,
+		},
+		{
+			durabilityStarted: true,
+			verified: false,
+			hlsStarted: true,
+			hlsVerified: false,
+			enqueued: false,
+		},
+		{
+			durabilityStarted: true,
+			verified: true,
+			hlsStarted: true,
+			hlsVerified: true,
+			enqueued: false,
+		},
 	])(
 		"backfills old READY independently of legacy retry counts and preserves the durability cap: %j",
-		async ({ durabilityStarted, verified, enqueued }) => {
+		async ({
+			durabilityStarted,
+			verified,
+			hlsStarted,
+			hlsVerified,
+			enqueued,
+		}) => {
 			const row: Pending = {
 				revisionId: "old-ready",
 				videoId: "vid-old",
@@ -160,6 +194,8 @@ describe("revision download backfill", () => {
 				attempts: 3,
 				durabilityStarted,
 				verified,
+				hlsStarted,
+				hlsVerified,
 			};
 			const inserted: string[] = [];
 			await sweepRevisionDownloads(backfillDb([row], inserted), {

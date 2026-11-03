@@ -8,6 +8,7 @@ import { isViewerPrivateKey, loadEligibleLegacy } from "@/lib/flagged-unedited";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import {
 	type DownloadIdentity,
+	hlsSnapshot,
 	verifiedDownloadReceipt,
 } from "@/lib/revision-download-artifact";
 import {
@@ -541,6 +542,7 @@ export async function readCurrentDownload(
 		...identity,
 		receipt,
 		name: row.name,
+		snapshot: hlsSnapshot(snapshot),
 		publicationEpoch: Number(row.publicationEpoch),
 		policyEpoch: Number(row.policyEpoch),
 	};

@@ -27,6 +27,7 @@ vi.mock("@/lib/revision-download-artifact", async (original) => ({
 	},
 }));
 
+import type { DownloadReceipt } from "@/lib/revision-download-artifact";
 import {
 	pendingRevisionDownloads,
 	sweepRevisionDownloads as startSweep,
@@ -41,7 +42,7 @@ const identity = {
 	generation: 7,
 	sourceId: "source1234",
 };
-const receipt = {
+const receipt: DownloadReceipt = {
 	...identity,
 	validation: "verified",
 	namespace: Array(4).fill("a".repeat(64)).join("/"),
@@ -51,6 +52,20 @@ const receipt = {
 	sha256: "a".repeat(64),
 	size: 123,
 };
+receipt.hls = {
+	validation: "verified",
+	snapshot: { captionsVtt: "", chapters: [], thumbnailSha256: "" },
+	artifacts: Object.fromEntries(
+		[
+			"playlist.m3u8",
+			"init.mp4",
+			"seg/0.m4s",
+			"captions.vtt",
+			"chapters.json",
+			"thumbnail.jpg",
+		].map((name) => [name, { ...receipt }]),
+	),
+};
 
 function workerDb() {
 	const state = {
@@ -59,6 +74,7 @@ function workerDb() {
 		tokenChanged: false,
 		expired: false,
 		expireOnLock: false,
+		snapshotChanged: false,
 		ready: false,
 		receipt: undefined as unknown,
 		localReady: transfer.localReady,
@@ -151,7 +167,11 @@ function workerDb() {
 			expect(compiled.sql).toContain("'$.leaseUntilMs'");
 			expect(compiled.sql).toContain("UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3))");
 			expect(compiled.params).toContain(payload.leaseToken);
+			expect(compiled.sql).toContain("'$.captionsVtt'");
+			expect(compiled.sql).toContain("'$.chapters'");
+			expect(compiled.sql).toContain("'$.thumbnailSha256'");
 			const allowed =
+				!state.snapshotChanged &&
 				!state.tokenChanged &&
 				!state.expired &&
 				state.currentRevisionId === identity.revisionId &&
@@ -203,38 +223,42 @@ describe("post-await durable job completion fencing", () => {
 		}
 		expect(state.ready).toBe(true);
 	});
-	it.each(["revision", "generation", "lease-replaced", "lease-expired"])(
-		"cannot publish after %s changes during upload/readback",
-		async (race) => {
-			let release = () => {};
-			transfer.wait = new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			const { app, state } = workerDb();
-			const run = sweepRevisionDownloads(app, {
-				limit: 1,
-				origin: {
-					prepareRevision: vi.fn(),
-					selectFrames: vi.fn(),
-					fetchArtifact: vi.fn(),
-					requestDownload: async () => ({ status: 200 }),
-				},
-			});
-			try {
-				await vi.waitFor(() => expect(transfer.calls).toBe(1));
-				if (race === "revision") state.currentRevisionId = "newrevision";
-				if (race === "generation") state.currentGeneration += 1;
-				if (race === "lease-replaced") state.tokenChanged = true;
-				if (race === "lease-expired") state.expired = true;
-			} finally {
-				release();
-				await run;
-			}
-			expect(state.ready).toBe(false);
-			expect(state.receipt).toBeUndefined();
-			expect(state.deleted).toBe(false);
-		},
-	);
+	it.each([
+		"revision",
+		"generation",
+		"lease-replaced",
+		"lease-expired",
+		"side-snapshot",
+	])("cannot publish after %s changes during upload/readback", async (race) => {
+		let release = () => {};
+		transfer.wait = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { app, state } = workerDb();
+		const run = sweepRevisionDownloads(app, {
+			limit: 1,
+			origin: {
+				prepareRevision: vi.fn(),
+				selectFrames: vi.fn(),
+				fetchArtifact: vi.fn(),
+				requestDownload: async () => ({ status: 200 }),
+			},
+		});
+		try {
+			await vi.waitFor(() => expect(transfer.calls).toBe(1));
+			if (race === "revision") state.currentRevisionId = "newrevision";
+			if (race === "generation") state.currentGeneration += 1;
+			if (race === "lease-replaced") state.tokenChanged = true;
+			if (race === "lease-expired") state.expired = true;
+			if (race === "side-snapshot") state.snapshotChanged = true;
+		} finally {
+			release();
+			await run;
+		}
+		expect(state.ready).toBe(false);
+		expect(state.receipt).toBeUndefined();
+		expect(state.deleted).toBe(false);
+	});
 	it.each([
 		"revision",
 		"generation",

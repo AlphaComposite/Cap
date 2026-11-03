@@ -15,11 +15,25 @@ import { runtimeS3Client } from "@/lib/instant-finish-source-relocate";
 import type { OriginClient } from "@/lib/revision-publication-origin";
 import type { editRevision } from "../../../packages/database/schema";
 
-export type DownloadReceipt = NonNullable<
+type StoredDownloadReceipt = NonNullable<
 	NonNullable<
 		typeof editRevision.$inferSelect.metadataSnapshot
 	>["downloadArtifact"]
 >;
+export type HlsSnapshot = {
+	captionsVtt: string;
+	chapters: { title: string; start: number }[];
+	thumbnailSha256: string;
+};
+export type DownloadReceipt = StoredDownloadReceipt & {
+	hls?: {
+		validation: "verified";
+		snapshot: HlsSnapshot;
+		artifacts: Record<string, StoredDownloadReceipt>;
+	};
+};
+export const HLS_ARTIFACT_BYTES = 32 * 1024 * 1024;
+export const HLS_MAX_SEGMENTS = 10000;
 export type DownloadIdentity = Pick<
 	DownloadReceipt,
 	"ownerId" | "videoId" | "revisionId" | "generation" | "sourceId"
@@ -72,14 +86,24 @@ export async function persistRevisionDownload(input: {
 	signal: AbortSignal;
 	client?: S3Client;
 	bucket?: string;
+	includeHls?: HlsSnapshot;
+	artifactName?: string;
+	expectedNamespace?: string;
 }): Promise<DownloadReceipt> {
 	input.signal.throwIfAborted();
-	if (!input.origin.streamDownload)
+	if (!input.origin.streamDownload && !input.artifactName)
 		throw new Error("DownloadStreamUnavailable");
-	const response = await input.origin.streamDownload({
-		revisionId: input.identity.revisionId,
-		signal: input.signal,
-	});
+	const response = input.artifactName
+		? await input.origin.streamArtifact?.({
+				revisionId: input.identity.revisionId,
+				name: input.artifactName,
+				signal: input.signal,
+			})
+		: await input.origin.streamDownload?.({
+				revisionId: input.identity.revisionId,
+				signal: input.signal,
+			});
+	if (!response) throw new Error("ArtifactStreamUnavailable");
 	const body = response.body;
 	try {
 		const { headers } = response;
@@ -93,15 +117,17 @@ export async function persistRevisionDownload(input: {
 			headers.get("x-cap-source-id") !== input.identity.sourceId ||
 			headers.get("x-cap-generation") !== String(input.identity.generation) ||
 			!NAMESPACE.test(namespace) ||
+			(input.expectedNamespace !== undefined &&
+				namespace !== input.expectedNamespace) ||
 			!Number.isSafeInteger(size) ||
 			size <= 0 ||
-			size > PART_BYTES * 10000
+			size > (input.artifactName ? HLS_ARTIFACT_BYTES : PART_BYTES * 10000)
 		) {
 			throw new Error("DownloadIdentityMismatch");
 		}
 		const client = input.client ?? runtimeS3Client();
 		const bucket = input.bucket ?? serverEnv().CAP_AWS_BUCKET;
-		const key = `${input.identity.ownerId}/${input.identity.videoId}/private/edited/${input.identity.revisionId}/${input.identity.generation}/${randomUUID()}.mp4`;
+		const key = `${input.identity.ownerId}/${input.identity.videoId}/private/edited/${input.identity.revisionId}/${input.identity.generation}/${randomUUID()}${input.artifactName ? ".artifact" : ".mp4"}`;
 		const reader = body.getReader();
 		const cancelOrigin = () => {
 			void reader.cancel(input.signal.reason).catch(() => {});
@@ -141,7 +167,9 @@ export async function persistRevisionDownload(input: {
 						Key: key,
 						Body: uploadStream,
 						ContentLength: size,
-						ContentType: "video/mp4",
+						ContentType: input.artifactName
+							? "application/octet-stream"
+							: "video/mp4",
 					}),
 					options,
 				);
@@ -152,7 +180,9 @@ export async function persistRevisionDownload(input: {
 					new CreateMultipartUploadCommand({
 						Bucket: bucket,
 						Key: key,
-						ContentType: "video/mp4",
+						ContentType: input.artifactName
+							? "application/octet-stream"
+							: "video/mp4",
 					}),
 					options,
 				);
@@ -256,7 +286,7 @@ export async function persistRevisionDownload(input: {
 			(readback.Body as { destroy?: () => void } | undefined)?.destroy?.();
 		}
 		input.signal.throwIfAborted();
-		return {
+		const receipt: DownloadReceipt = {
 			...input.identity,
 			namespace,
 			bucket,
@@ -266,8 +296,224 @@ export async function persistRevisionDownload(input: {
 			size,
 			validation: "verified",
 		};
+		if (input.includeHls) receipt.hls = await persistHls(input, namespace);
+		return receipt;
 	} finally {
 		if (body && !body.locked) await body.cancel().catch(() => {});
+	}
+}
+
+export function hlsSnapshot(value: unknown): HlsSnapshot {
+	const snapshot = value as Partial<HlsSnapshot> | null;
+	return {
+		captionsVtt: snapshot?.captionsVtt ?? "",
+		chapters: (snapshot?.chapters ?? []).map(({ title, start }) => ({
+			title,
+			start,
+		})),
+		thumbnailSha256: snapshot?.thumbnailSha256 ?? "",
+	};
+}
+
+export function hlsArtifactNames(playlist: string): string[] {
+	const lines = playlist.trimEnd().split("\n");
+	const segments = lines.filter((line) => line && !line.startsWith("#"));
+	if (
+		lines[0] !== "#EXTM3U" ||
+		lines.at(-1) !== "#EXT-X-ENDLIST" ||
+		!lines.includes('#EXT-X-MAP:URI="init.mp4"') ||
+		lines.some(
+			(line) => line.includes("URI=") && line !== '#EXT-X-MAP:URI="init.mp4"',
+		) ||
+		segments.length === 0 ||
+		segments.length > HLS_MAX_SEGMENTS ||
+		segments.some((line, index) => line !== `seg/${index}.m4s`)
+	)
+		throw new Error("HlsPlaylistInvalid");
+	return [
+		"playlist.m3u8",
+		"init.mp4",
+		...segments,
+		"captions.vtt",
+		"chapters.json",
+		"thumbnail.jpg",
+	];
+}
+
+async function boundedBody(
+	body: ReadableStream<Uint8Array> | null,
+	limit: number,
+	signal: AbortSignal,
+): Promise<Buffer> {
+	if (!body) throw new Error("HlsBodyMissing");
+	const reader = body.getReader();
+	const abort = () => {
+		void reader.cancel(signal.reason).catch(() => {});
+	};
+	signal.addEventListener("abort", abort, { once: true });
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	try {
+		for (;;) {
+			signal.throwIfAborted();
+			const { done, value } = await reader.read();
+			signal.throwIfAborted();
+			if (done) return Buffer.concat(chunks, size);
+			size += value.byteLength;
+			if (size > limit) throw new Error("HlsBodyTooLarge");
+			chunks.push(value);
+		}
+	} finally {
+		signal.removeEventListener("abort", abort);
+		await reader.cancel().catch(() => {});
+		reader.releaseLock();
+	}
+}
+
+async function persistHls(
+	input: Parameters<typeof persistRevisionDownload>[0],
+	namespace: string,
+): Promise<NonNullable<DownloadReceipt["hls"]>> {
+	const snapshot = input.includeHls;
+	if (!snapshot || !input.origin.streamArtifact)
+		throw new Error("HlsStreamUnavailable");
+	const artifacts: Record<string, StoredDownloadReceipt> = {};
+	let names = ["playlist.m3u8"];
+	for (let index = 0; index < names.length; index++) {
+		const name = names[index];
+		if (!name) throw new Error("HlsNameMissing");
+		input.signal.throwIfAborted();
+		const response = await input.origin.streamArtifact({
+			revisionId: input.identity.revisionId,
+			name,
+			signal: input.signal,
+		});
+		const bytes = await boundedBody(
+			response.body,
+			name === "playlist.m3u8" ? 1024 * 1024 : HLS_ARTIFACT_BYTES,
+			input.signal,
+		);
+		if (name === "playlist.m3u8")
+			names = hlsArtifactNames(bytes.toString("utf8"));
+		if (
+			name === "captions.vtt" &&
+			!bytes.equals(Buffer.from(snapshot.captionsVtt))
+		)
+			throw new Error("HlsCaptionsChanged");
+		if (
+			name === "chapters.json" &&
+			JSON.stringify(
+				hlsSnapshot({ chapters: JSON.parse(bytes.toString("utf8")).chapters })
+					.chapters,
+			) !== JSON.stringify(snapshot.chapters)
+		)
+			throw new Error("HlsChaptersChanged");
+		if (
+			name === "thumbnail.jpg" &&
+			snapshot.thumbnailSha256 &&
+			createHash("sha256").update(bytes).digest("hex") !==
+				snapshot.thumbnailSha256
+		)
+			throw new Error("HlsThumbnailChanged");
+		artifacts[name] = await persistRevisionDownload({
+			identity: input.identity,
+			signal: input.signal,
+			client: input.client,
+			bucket: input.bucket,
+			artifactName: name,
+			expectedNamespace: namespace,
+			origin: {
+				...input.origin,
+				streamArtifact: async () => ({
+					...response,
+					body: new Response(new Uint8Array(bytes)).body,
+				}),
+			},
+		});
+	}
+	return { validation: "verified", snapshot, artifacts };
+}
+
+export function verifiedHlsReceipt(
+	receipt: DownloadReceipt,
+	identity: DownloadIdentity,
+	snapshot: unknown,
+): boolean {
+	const hls = receipt.hls;
+	if (
+		!verifiedDownloadReceipt(receipt, identity) ||
+		hls?.validation !== "verified" ||
+		JSON.stringify(hlsSnapshot(hls.snapshot)) !==
+			JSON.stringify(hlsSnapshot(snapshot))
+	)
+		return false;
+	const artifacts = hls.artifacts;
+	if (!artifacts || typeof artifacts !== "object") return false;
+	const names = Object.keys(artifacts);
+	const segments = names
+		.filter((name) => /^seg\/[0-9]+\.m4s$/.test(name))
+		.sort((a, b) => Number(a.slice(4, -4)) - Number(b.slice(4, -4)));
+	if (
+		!segments.length ||
+		segments.length > HLS_MAX_SEGMENTS ||
+		names.length !== segments.length + 5 ||
+		segments.some((name, index) => name !== `seg/${index}.m4s`) ||
+		![
+			"playlist.m3u8",
+			"init.mp4",
+			"captions.vtt",
+			"chapters.json",
+			"thumbnail.jpg",
+		].every((name) => Object.hasOwn(artifacts, name))
+	)
+		return false;
+	return names.every((name) => {
+		const artifact = artifacts[name];
+		return (
+			verifiedDownloadReceipt(artifact, identity) &&
+			artifact.namespace === receipt.namespace &&
+			artifact.size <= HLS_ARTIFACT_BYTES
+		);
+	});
+}
+
+export async function readDurableHlsArtifact(
+	receipt: StoredDownloadReceipt,
+	signal: AbortSignal,
+	client = runtimeS3Client(),
+): Promise<Buffer> {
+	if (receipt.size > HLS_ARTIFACT_BYTES || receipt.size <= 0)
+		throw new Error("HlsSizeInvalid");
+	const response = await client.send(
+		new GetObjectCommand({
+			Bucket: receipt.bucket,
+			Key: receipt.key,
+			VersionId: receipt.versionId,
+		}),
+		{ abortSignal: signal },
+	);
+	try {
+		if (
+			!response.Body ||
+			response.VersionId !== receipt.versionId ||
+			response.ContentLength !== receipt.size ||
+			response.$metadata.httpStatusCode !== 200 ||
+			response.ContentRange
+		)
+			throw new Error("HlsReadIdentityMismatch");
+		const bytes = await boundedBody(
+			response.Body.transformToWebStream(),
+			receipt.size,
+			signal,
+		);
+		if (
+			bytes.length !== receipt.size ||
+			createHash("sha256").update(bytes).digest("hex") !== receipt.sha256
+		)
+			throw new Error("HlsReadChecksumMismatch");
+		return bytes;
+	} finally {
+		(response.Body as { destroy?: () => void } | undefined)?.destroy?.();
 	}
 }
 
