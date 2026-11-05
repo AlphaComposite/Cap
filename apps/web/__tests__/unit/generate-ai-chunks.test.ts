@@ -146,10 +146,11 @@ vi.mock("workflow", () => ({
 vi.mock("server-only", () => ({}));
 
 function makeSelection(provider: string) {
+	const model = { provider };
 	return {
 		provider,
 		modelId: `${provider}-model`,
-		model: () => ({}),
+		model: () => model,
 		supportsStreaming: true,
 		supportsTemperature: true,
 		defaultMaxOutputTokens: 8000,
@@ -196,6 +197,7 @@ async function runWorkflow() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.spyOn(console, "error").mockImplementation(() => {});
+	vi.spyOn(console, "warn").mockImplementation(() => {});
 	setVideo({ aiGenerationStatus: "QUEUED", aiGenerationId: "generation-1" });
 	state.transcript = LONG_VTT;
 	state.updateResults = [1, 1];
@@ -208,6 +210,69 @@ beforeEach(() => {
 });
 
 describe("multi-chunk chapter evidence", () => {
+	it("saves initial combined chapters without a title after two invalid titles on A", async () => {
+		state.transcript =
+			"WEBVTT\n\n00:00:00.000 --> 00:01:30.000\nWe review the billing migration, explain the product changes, and agree on the next steps for the client rollout.";
+		if (state.video) state.video.name = "Untitled";
+		const chapters = [{ title: "Billing migration", start: 0 }];
+		generateTextMock.mockResolvedValue({
+			text: JSON.stringify({ title: " ", chapters }),
+		});
+		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		expect(generateTextMock.mock.calls[1][0].model).toBe(
+			generateTextMock.mock.calls[0][0].model,
+		);
+		expect(JSON.stringify(state.updates)).toContain("Billing migration");
+		expect(JSON.stringify(state.updates.at(-1))).not.toContain("$.aiTitle");
+		expect(state.updates.at(-1)).not.toHaveProperty("name");
+	});
+
+	it("still synthesizes required chapters after the combined title is omitted", async () => {
+		state.transcript =
+			"WEBVTT\n\n00:00:00.000 --> 00:01:00.000\nWe review the billing migration and explain the product changes.\n\n00:04:00.000 --> 00:05:00.000\nWe agree on the next steps for the client rollout.";
+		generateTextMock
+			.mockResolvedValueOnce({
+				text: '{"title":"","chapters":[{"title":"Overview","start":0}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"title":null,"chapters":[{"title":"Overview","start":0}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"chapters":[{"title":"Billing migration","start":0},{"title":"Client rollout","start":240}]}',
+			});
+		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
+		expect(generateTextMock).toHaveBeenCalledTimes(3);
+		expect(generateTextMock.mock.calls[2][0].prompt).toContain(
+			"The first analysis did not meet evidence-backed coverage",
+		);
+		expect(JSON.stringify(state.updates)).toContain("Billing migration");
+		expect(state.updates.at(-1)).not.toHaveProperty("name");
+	});
+
+	it("retains multi-section chapters after two invalid final titles without another provider or outer round", async () => {
+		if (state.video) state.video.name = "Untitled";
+		generateTextMock
+			.mockResolvedValueOnce({
+				text: '{"summary":"Opening section.","chapters":[{"title":"Billing migration","start":0}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"summary":"Later section.","chapters":[{"title":"Client rollout","start":120}]}',
+			})
+			.mockResolvedValueOnce({ text: '{"title":""}' })
+			.mockResolvedValueOnce({ text: '{"title":null}' });
+		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
+		expect(generateTextMock).toHaveBeenCalledTimes(4);
+		expect(generateTextMock.mock.calls[3][0].model).toBe(
+			generateTextMock.mock.calls[2][0].model,
+		);
+		const saved = JSON.stringify(state.updates.at(-1));
+		expect(saved).toContain("Billing migration");
+		expect(saved).toContain("Client rollout");
+		expect(saved).not.toContain("$.aiTitle");
+		expect(state.updates.at(-1)).not.toHaveProperty("name");
+	});
+
 	it("retains timestamped cues and falls back past non-cue chunk and synthesis output", async () => {
 		generateTextMock
 			.mockResolvedValueOnce({
@@ -282,7 +347,9 @@ describe("multi-chunk chapter evidence", () => {
 
 		await runWorkflow();
 
-		expect(generateTextMock.mock.calls[0]?.[0].prompt).toContain("section 1 of 4");
+		expect(generateTextMock.mock.calls[0]?.[0].prompt).toContain(
+			"section 1 of 4",
+		);
 		const saved = JSON.stringify(state.updates);
 		expect(saved).toContain("Topic 1500");
 		expect(saved).toContain("Wrap up");
@@ -300,9 +367,24 @@ describe("multi-chunk chapter evidence", () => {
 			text: JSON.stringify({ summary: "Section.", keyPoints: [], chapters }),
 		});
 		generateTextMock
-			.mockResolvedValueOnce(section([{ title: "Opening", start: 0 }, { title: "Plan", start: 300 }]))
-			.mockResolvedValueOnce(section([{ title: "Budget", start: 600 }, { title: "Stray", start: 1200 }]))
-			.mockResolvedValueOnce(section([{ title: "Hiring", start: 1200 }, { title: "Access", start: 1500 }]))
+			.mockResolvedValueOnce(
+				section([
+					{ title: "Opening", start: 0 },
+					{ title: "Plan", start: 300 },
+				]),
+			)
+			.mockResolvedValueOnce(
+				section([
+					{ title: "Budget", start: 600 },
+					{ title: "Stray", start: 1200 },
+				]),
+			)
+			.mockResolvedValueOnce(
+				section([
+					{ title: "Hiring", start: 1200 },
+					{ title: "Access", start: 1500 },
+				]),
+			)
 			.mockResolvedValueOnce(section([{ title: "Wrap up", start: 1800 }]))
 			.mockResolvedValueOnce({ text: '{"title":"Long meeting"}' });
 

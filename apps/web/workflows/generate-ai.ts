@@ -131,20 +131,53 @@ export function shouldReplaceVideoTitle({
 }
 
 export function conciseGeneratedTitleGuidance(): string {
-	return `Write a concise title of at most ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters that reflects the transcript. Do not pad the title to reach a length, and never exceed ${GENERATED_TITLE_DATABASE_MAX_LENGTH} characters.`;
+	return `Include a JSON title property containing a nonblank string of at most ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters, including spaces, naming the specific subject in the requested language. Write a concise title that reflects the transcript. Do not pad the title to reach a length, and never exceed ${GENERATED_TITLE_DATABASE_MAX_LENGTH} characters.`;
 }
 
-export function acceptGeneratedTitle(title: unknown): string {
-	if (typeof title !== "string") {
-		throw new Error("AI response did not contain a valid title");
-	}
-	const trimmed = title.trim();
-	if (
-		!trimmed ||
-		trimmed.length > GENERATED_TITLE_DATABASE_MAX_LENGTH ||
-		trimmed.length > GENERATED_TITLE_DISPLAY_MAX_LENGTH
+class InvalidAiTitleError extends Error {
+	constructor(
+		readonly reason: "missing" | "wrong-type" | "blank" | "overlong",
+		detail: string,
+		readonly characterCount?: number,
 	) {
-		throw new Error("AI response did not contain a valid title");
+		super(`AI response did not contain a valid title: ${detail}`);
+		this.name = "InvalidAiTitleError";
+	}
+}
+
+export function acceptGeneratedTitle(
+	title: unknown,
+	omitInvalidTitle = false,
+): string | undefined {
+	let error: InvalidAiTitleError | undefined;
+	const trimmed = typeof title === "string" ? title.trim() : "";
+	if (typeof title !== "string") {
+		error =
+			title === undefined
+				? new InvalidAiTitleError(
+						"missing",
+						"title property is missing. Return a JSON object with a title property containing a nonblank string of at most 60 characters, including spaces.",
+					)
+				: new InvalidAiTitleError(
+						"wrong-type",
+						`title has type ${title === null ? "null" : typeof title}, expected string. Replace it with a nonblank string naming the main subject, at most 60 characters including spaces.`,
+					);
+	} else if (!trimmed) {
+		error = new InvalidAiTitleError(
+			"blank",
+			"title is blank after trimming. Supply a nonblank title naming the main subject, at most 60 characters including spaces.",
+			0,
+		);
+	} else if (trimmed.length > GENERATED_TITLE_DISPLAY_MAX_LENGTH) {
+		error = new InvalidAiTitleError(
+			"overlong",
+			`title has ${trimmed.length} characters; maximum is 60. Shorten it to the main subject, counting spaces.`,
+			trimmed.length,
+		);
+	}
+	if (error) {
+		if (omitInvalidTitle) return undefined;
+		throw error;
 	}
 	return trimmed;
 }
@@ -884,24 +917,39 @@ function failedOnInvalidOutput(error: unknown): boolean {
 
 export async function callAiApi<T>(
 	prompt: string,
-	parse: (text: string) => T,
+	parse: (text: string, omitInvalidTitle?: boolean) => T,
 ): Promise<T> {
 	return runWithAiProviders("generation", async (selection) => {
-		const result = await generateText({
-			model: selection.model({ jsonRepair: true }),
-			prompt,
-			maxOutputTokens: selection.defaultMaxOutputTokens,
-		});
-		// Parse inside the provider loop so an empty, malformed, or truncated
-		// fulfilled response falls through to the next provider too.
-		try {
-			return parse(result.text);
-		} catch (error) {
-			throw new InvalidAiOutputError(
-				error instanceof Error ? error.message : String(error),
-				{ cause: error },
-			);
+		let nextPrompt = prompt;
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			const result = await generateText({
+				model: selection.model({ jsonRepair: true }),
+				prompt: nextPrompt,
+				maxOutputTokens: selection.defaultMaxOutputTokens,
+			});
+			try {
+				try {
+					return parse(result.text);
+				} catch (error) {
+					if (!(error instanceof InvalidAiTitleError)) throw error;
+					console.warn("[ai-title-validation]", {
+						reason: error.reason,
+						characterCount: error.characterCount,
+						attempt,
+						provider: selection.provider,
+						model: selection.modelId,
+					});
+					if (attempt === 2) return parse(result.text, true);
+					nextPrompt = `${prompt}\n\n${strictTitleRetry(error.message)}`;
+				}
+			} catch {
+				// JSON.parse errors can quote response text; never forward their cause.
+				throw new InvalidAiOutputError(
+					"AI response could not be parsed or validated",
+				);
+			}
 		}
+		throw new InvalidAiOutputError("AI title correction exhausted");
 	});
 }
 
@@ -1233,18 +1281,11 @@ Additional requirements:
 - Do not return a summary or any other public content.
 Return ONLY valid JSON without any markdown formatting or code blocks.`;
 
-	// One retry restating the limit; then keep the existing name rather than
-	// renaming the video to a placeholder.
-	for (const prompt of [
-		finalPrompt,
-		`${finalPrompt}\n\n${strictTitleRetry()}`,
-	]) {
-		try {
-			const parsed = await callAiApi(prompt, parseFinalTitle);
-			return { title: parsed.title, chapters: allChapters };
-		} catch (error) {
-			if (!failedOnInvalidOutput(error)) throw error;
-		}
+	try {
+		const parsed = await callAiApi(finalPrompt, parseFinalTitle);
+		return { ...parsed, chapters: allChapters };
+	} catch (error) {
+		if (!failedOnInvalidOutput(error)) throw error;
 	}
 	return { chapters: allChapters };
 }
@@ -1272,18 +1313,16 @@ Provide JSON: {"title": "string"}
 - ${getAiLanguageInstruction(language)}
 - ${conciseGeneratedTitleGuidance()}
 Return ONLY valid JSON without any markdown formatting or code blocks.`;
-	for (const attempt of [prompt, `${prompt}\n\n${strictTitleRetry()}`]) {
-		try {
-			return (await callAiApi(attempt, parseFinalTitle)).title;
-		} catch (error) {
-			if (!failedOnInvalidOutput(error)) throw error;
-		}
+	try {
+		return (await callAiApi(prompt, parseFinalTitle)).title ?? null;
+	} catch (error) {
+		if (!failedOnInvalidOutput(error)) throw error;
 	}
 	return null;
 }
 
-export function strictTitleRetry(): string {
-	return `Your previous title was rejected. The title MUST be ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters or fewer, counting spaces. Name only the main topic.`;
+export function strictTitleRetry(detail = ""): string {
+	return `${detail}\nThe title MUST be ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters or fewer, counting spaces. Name only the main subject. Keep the original language and JSON requirements.`;
 }
 
 // Like parseAiResponse, these throw on missing or empty required fields —
@@ -1335,14 +1374,15 @@ export function parseChunkAnalysis(content: string): {
 	};
 }
 
-export function parseFinalTitle(content: string): { title: string } {
+export function parseFinalTitle(
+	content: string,
+	omitInvalidTitle = false,
+): { title?: string } {
 	const parsed = JSON.parse(extractJsonObject(content)) as {
 		title?: unknown;
 	};
-	if (typeof parsed.title !== "string" || !parsed.title.trim()) {
-		throw new Error("AI response did not contain a valid title");
-	}
-	return { title: acceptGeneratedTitle(parsed.title) };
+	const title = acceptGeneratedTitle(parsed.title, omitInvalidTitle);
+	return title === undefined ? {} : { title };
 }
 
 export function parseChapterSynthesis(
@@ -1422,14 +1462,14 @@ export function parseChapterSynthesis(
 	return usableChapters;
 }
 
-export function parseAiResponse(content: string): AiResult {
+export function parseAiResponse(
+	content: string,
+	omitInvalidTitle = false,
+): AiResult {
 	const data = JSON.parse(extractJsonObject(content)) as {
 		title?: unknown;
 		chapters?: unknown;
 	};
-	if (typeof data.title !== "string" || !data.title.trim()) {
-		throw new Error("AI response did not contain a valid title");
-	}
 	if (!Array.isArray(data.chapters)) {
 		throw new Error("AI response did not contain a valid chapters array");
 	}
@@ -1451,8 +1491,9 @@ export function parseAiResponse(content: string): AiResult {
 		return { title: chapter.title.trim(), start: chapter.start };
 	});
 
+	const title = acceptGeneratedTitle(data.title, omitInvalidTitle);
 	return {
-		title: acceptGeneratedTitle(data.title),
+		...(title === undefined ? {} : { title }),
 		chapters,
 	};
 }

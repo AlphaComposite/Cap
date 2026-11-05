@@ -51,6 +51,8 @@ import {
 } from "@/lib/ai-chapter-validation";
 import {
 	callAiApi,
+	conciseGeneratedTitleGuidance,
+	generateTitleForChapters,
 	parseAiResponse,
 	parseChapterSynthesis,
 	parseChunkAnalysis,
@@ -58,14 +60,17 @@ import {
 	strictTitleRetry,
 } from "@/workflows/generate-ai";
 
-const makeSelection = (provider: string): AiModelSelection => ({
-	provider: provider as AiModelSelection["provider"],
-	modelId: `${provider}-model`,
-	model: () => ({}) as ReturnType<AiModelSelection["model"]>,
-	supportsStreaming: true,
-	supportsTemperature: true,
-	defaultMaxOutputTokens: 8000,
-});
+const makeSelection = (provider: string): AiModelSelection => {
+	const model = { provider } as ReturnType<AiModelSelection["model"]>;
+	return {
+		provider: provider as AiModelSelection["provider"],
+		modelId: `${provider}-model`,
+		model: () => model,
+		supportsStreaming: true,
+		supportsTemperature: true,
+		defaultMaxOutputTokens: 8000,
+	};
+};
 
 const VALID_JSON = '{"title":"Workflow review","chapters":[]}';
 
@@ -123,6 +128,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "log").mockImplementation(() => {});
 		getAiProviderChainMock.mockReturnValue([
 			makeSelection("groq"),
 			makeSelection("openai"),
@@ -169,7 +176,7 @@ describe("callAiApi provider fallback on invalid output", () => {
 		expect((error.cause as Error).name).toBe("InvalidAiOutputError");
 	});
 
-	it("falls through to the next provider when a title exceeds the display cap", async () => {
+	it("repairs a 96-character title on the same model with specific guidance", async () => {
 		generateTextMock
 			.mockResolvedValueOnce({
 				text: JSON.stringify({ title: "x".repeat(96), chapters: [] }),
@@ -181,9 +188,14 @@ describe("callAiApi provider fallback on invalid output", () => {
 			chapters: [],
 		});
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		const [first, second] = generateTextMock.mock.calls.map(([args]) => args);
+		expect(second.model).toBe(first.model);
+		expect(second.prompt).toContain("title has 96 characters; maximum is 60");
+		expect(second.prompt).toContain("Shorten it to the main subject");
+		expect(second.prompt).toContain("counting spaces");
 	});
 
-	it("falls through when valid JSON is missing required fields", async () => {
+	it("repairs a missing title on the same model", async () => {
 		generateTextMock
 			.mockResolvedValueOnce({ text: '{"chapters":[]}' })
 			.mockResolvedValueOnce({
@@ -193,6 +205,181 @@ describe("callAiApi provider fallback on invalid output", () => {
 		await expect(callAiApi("prompt", parseFinalTitle)).resolves.toEqual({
 			title: "Workflow review",
 		});
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		expect(generateTextMock.mock.calls[1][0].model).toBe(
+			generateTextMock.mock.calls[0][0].model,
+		);
+		expect(generateTextMock.mock.calls[1][0].prompt).toContain(
+			"title property is missing",
+		);
+	});
+
+	it.each([
+		[
+			{},
+			"title property is missing",
+			"Return a JSON object with a title property",
+		],
+		[
+			{ title: 42 },
+			"title has type number, expected string",
+			"Replace it with a nonblank string",
+		],
+		[
+			{ title: null },
+			"title has type null, expected string",
+			"Replace it with a nonblank string",
+		],
+		[
+			{ title: " \n	 " },
+			"title is blank after trimming",
+			"Supply a nonblank title naming the main subject",
+		],
+	])("gives safe WHY/HOW for invalid title %j", async (output, why, how) => {
+		generateTextMock
+			.mockResolvedValueOnce({ text: JSON.stringify(output) })
+			.mockResolvedValueOnce({ text: '{"title":"Billing migration"}' });
+		await expect(
+			callAiApi("Original language instruction", parseFinalTitle),
+		).resolves.toEqual({ title: "Billing migration" });
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		const [first, second] = generateTextMock.mock.calls.map(([args]) => args);
+		expect(second.model).toBe(first.model);
+		for (const detail of ["Original language instruction", why, how, "60"])
+			expect(second.prompt).toContain(detail);
+	});
+
+	it.each([parseFinalTitle, parseAiResponse])(
+		"omits only an exhausted title without selecting B (%s)",
+		async (parse) => {
+			const chapters = [{ title: "Billing migration", start: 0 }];
+			generateTextMock.mockResolvedValue({
+				text: JSON.stringify({ title: " ", chapters }),
+			});
+			await expect(callAiApi("prompt", parse)).resolves.toEqual(
+				parse === parseFinalTitle ? {} : { chapters },
+			);
+			expect(generateTextMock).toHaveBeenCalledTimes(2);
+			expect(generateTextMock.mock.calls[1][0].model).toBe(
+				generateTextMock.mock.calls[0][0].model,
+			);
+			expect(console.error).not.toHaveBeenCalled();
+		},
+	);
+
+	it("preserves the exact second response chapters when its title is rejected", async () => {
+		generateTextMock
+			.mockResolvedValueOnce({
+				text: '{"title":"","chapters":[{"title":"First","start":0}]}',
+			})
+			.mockResolvedValueOnce({
+				text: '{"title":null,"chapters":[{"title":"Second","start":30}]}',
+			});
+		await expect(callAiApi("prompt", parseAiResponse)).resolves.toEqual({
+			chapters: [{ title: "Second", start: 30 }],
+		});
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([false, true])(
+		"retains API-error fallback (during correction: %s)",
+		async (duringCorrection) => {
+			if (duringCorrection)
+				generateTextMock.mockResolvedValueOnce({ text: '{"title":""}' });
+			generateTextMock
+				.mockRejectedValueOnce(new Error("request unavailable"))
+				.mockResolvedValueOnce({ text: '{"title":"Billing migration"}' });
+			await expect(callAiApi("prompt", parseFinalTitle)).resolves.toEqual({
+				title: "Billing migration",
+			});
+			const models = generateTextMock.mock.calls.map(([args]) => args.model);
+			expect(models).toHaveLength(duringCorrection ? 3 : 2);
+			if (duringCorrection) expect(models[1]).toBe(models[0]);
+			expect(models.at(-1)).not.toBe(models[0]);
+		},
+	);
+
+	it("still falls back for invalid chapters after a title correction", async () => {
+		generateTextMock
+			.mockResolvedValueOnce({ text: '{"title":"","chapters":[]}' })
+			.mockResolvedValueOnce({
+				text: '{"title":"","chapters":[{"title":"","start":0}]}',
+			})
+			.mockResolvedValueOnce({ text: VALID_JSON });
+		await expect(callAiApi("prompt", parseAiResponse)).resolves.toEqual({
+			title: "Workflow review",
+			chapters: [],
+		});
+		expect(generateTextMock).toHaveBeenCalledTimes(3);
+		expect(generateTextMock.mock.calls[2][0].model).not.toBe(
+			generateTextMock.mock.calls[0][0].model,
+		);
+	});
+
+	it("bounds post-edit exhaustion to two calls and preserves the existing name via null", async () => {
+		generateTextMock.mockResolvedValue({ text: '{"title":""}' });
+		await expect(
+			generateTitleForChapters([{ title: "Billing", start: 0 }], "auto"),
+		).resolves.toBeNull();
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		expect(generateTextMock.mock.calls[1][0].model).toBe(
+			generateTextMock.mock.calls[0][0].model,
+		);
+	});
+
+	it("does not start another post-edit round after malformed JSON exhausts the chain", async () => {
+		generateTextMock.mockResolvedValue({
+			text: '{"title":PRIVATE_JSON_MARKER}',
+		});
+		await expect(
+			generateTitleForChapters([{ title: "Billing", start: 0 }], "auto"),
+		).resolves.toBeNull();
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		expect(generateTextMock.mock.calls[1][0].model).not.toBe(
+			generateTextMock.mock.calls[0][0].model,
+		);
+	});
+
+	it("logs only safe validation fields, never rejected content or original context", async () => {
+		const rejected = "REJECTED_PRIVATE_TITLE ".repeat(5);
+		generateTextMock.mockResolvedValue({
+			text: JSON.stringify({ title: rejected }),
+		});
+		await expect(
+			callAiApi("PRIVATE_TRANSCRIPT_MARKER", parseFinalTitle),
+		).resolves.toEqual({});
+		const logs = JSON.stringify([
+			vi.mocked(console.error).mock.calls,
+			vi.mocked(console.warn).mock.calls,
+			vi.mocked(console.log).mock.calls,
+		]);
+		expect(logs).not.toContain("REJECTED_PRIVATE_TITLE");
+		expect(logs).not.toContain("PRIVATE_TRANSCRIPT_MARKER");
+		expect(console.error).not.toHaveBeenCalled();
+		expect(console.warn).toHaveBeenCalledWith("[ai-title-validation]", {
+			reason: "overlong",
+			characterCount: rejected.trim().length,
+			attempt: 2,
+			provider: "groq",
+			model: "groq-model",
+		});
+	});
+
+	it("sanitizes JSON parser failures before provider logs and error causes", async () => {
+		generateTextMock.mockResolvedValue({
+			text: '{"title":PRIVATE_JSON_MARKER}',
+		});
+		const error = await callAiApi(
+			"PRIVATE_TRANSCRIPT_MARKER",
+			parseFinalTitle,
+		).catch((caught) => caught);
+		expect(error).toBeInstanceOf(AiUnavailableError);
+		expect(error.cause.cause).toBeUndefined();
+		expect(error.cause.message).not.toContain("PRIVATE_JSON_MARKER");
+		for (const call of vi.mocked(console.error).mock.calls) {
+			expect(String(call[1])).not.toContain("PRIVATE_JSON_MARKER");
+			expect((call[1] as Error).cause).toBeUndefined();
+		}
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
 	});
 
@@ -550,6 +737,32 @@ describe("map-reduce output parsers", () => {
 });
 
 describe("title retry", () => {
+	it("states the full contract before all title paths without outer retries", () => {
+		const guidance = conciseGeneratedTitleGuidance();
+		for (const required of [
+			"title",
+			"JSON",
+			"nonblank string",
+			"60 characters",
+			"including spaces",
+			"specific subject",
+		])
+			expect(guidance).toContain(required);
+		const source = readFileSync(
+			new URL("../../workflows/generate-ai.ts", import.meta.url),
+			"utf8",
+		);
+		for (const [name, nextName] of [
+			["generateSingleChunk", "generateMultipleChunks"],
+			["generateMultipleChunks", "generateTitleForChapters"],
+			["generateTitleForChapters", "strictTitleRetry"],
+		]) {
+			const start = source.indexOf(`function ${name}(`);
+			const body = source.slice(start, source.indexOf(`function ${nextName}(`));
+			expect(body).toContain("conciseGeneratedTitleGuidance()");
+			expect(body).not.toContain("strictTitleRetry()");
+		}
+	});
 	it("restates the 60-character limit", () => {
 		expect(strictTitleRetry()).toContain("60 characters or fewer");
 	});
