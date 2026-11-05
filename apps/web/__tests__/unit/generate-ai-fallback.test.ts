@@ -267,18 +267,49 @@ describe("callAiApi provider fallback on invalid output", () => {
 		},
 	);
 
-	it("preserves the exact second response chapters when its title is rejected", async () => {
-		generateTextMock
-			.mockResolvedValueOnce({
-				text: '{"title":"","chapters":[{"title":"First","start":0}]}',
-			})
-			.mockResolvedValueOnce({
-				text: '{"title":null,"chapters":[{"title":"Second","start":30}]}',
+	it.each([
+		{ title: "Corrected" },
+		{ title: "Corrected", chapters: [{ title: "Replacement", start: 30 }] },
+		{ title: null },
+		{ title: null, chapters: [{ title: "Replacement", start: 30 }] },
+		{ title: "Corrected", chapters: "invalid and ignored" },
+	])(
+		"retains accepted chapters through title-only correction %j",
+		async (correction) => {
+			const chapters = [{ title: "First", start: 0 }];
+			generateTextMock
+				.mockResolvedValueOnce({
+					text: JSON.stringify({ title: "", chapters }),
+				})
+				.mockResolvedValueOnce({ text: JSON.stringify(correction) });
+			await expect(callAiApi("prompt", parseAiResponse)).resolves.toEqual({
+				...(correction.title ? { title: correction.title } : {}),
+				chapters,
 			});
+			expect(generateTextMock).toHaveBeenCalledTimes(2);
+			expect(generateTextMock.mock.calls[1][0].model).toBe(
+				generateTextMock.mock.calls[0][0].model,
+			);
+			expect(generateTextMock.mock.calls[1][0].prompt).toContain(
+				"Do not regenerate chapters",
+			);
+		},
+	);
+
+	it("retains accepted chapters when a title correction request falls back", async () => {
+		const chapters = [{ title: "First", start: 0 }];
+		generateTextMock
+			.mockResolvedValueOnce({ text: JSON.stringify({ title: "", chapters }) })
+			.mockRejectedValueOnce(new Error("request unavailable"))
+			.mockResolvedValueOnce({ text: '{"title":"Corrected"}' });
 		await expect(callAiApi("prompt", parseAiResponse)).resolves.toEqual({
-			chapters: [{ title: "Second", start: 30 }],
+			title: "Corrected",
+			chapters,
 		});
-		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		expect(generateTextMock).toHaveBeenCalledTimes(3);
+		expect(generateTextMock.mock.calls[2][0].model).not.toBe(
+			generateTextMock.mock.calls[0][0].model,
+		);
 	});
 
 	it.each([false, true])(
@@ -299,9 +330,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 		},
 	);
 
-	it("still falls back for invalid chapters after a title correction", async () => {
+	it("still falls back for invalid original chapters without accepting them", async () => {
 		generateTextMock
-			.mockResolvedValueOnce({ text: '{"title":"","chapters":[]}' })
 			.mockResolvedValueOnce({
 				text: '{"title":"","chapters":[{"title":"","start":0}]}',
 			})
@@ -310,8 +340,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 			title: "Workflow review",
 			chapters: [],
 		});
-		expect(generateTextMock).toHaveBeenCalledTimes(3);
-		expect(generateTextMock.mock.calls[2][0].model).not.toBe(
+		expect(generateTextMock).toHaveBeenCalledTimes(2);
+		expect(generateTextMock.mock.calls[1][0].model).not.toBe(
 			generateTextMock.mock.calls[0][0].model,
 		);
 	});

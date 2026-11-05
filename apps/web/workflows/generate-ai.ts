@@ -135,6 +135,8 @@ export function conciseGeneratedTitleGuidance(): string {
 }
 
 class InvalidAiTitleError extends Error {
+	validatedChapters?: AiResult["chapters"];
+
 	constructor(
 		readonly reason: "missing" | "wrong-type" | "blank" | "overlong",
 		detail: string,
@@ -917,10 +919,15 @@ function failedOnInvalidOutput(error: unknown): boolean {
 
 export async function callAiApi<T>(
 	prompt: string,
-	parse: (text: string, omitInvalidTitle?: boolean) => T,
+	parse: (
+		text: string,
+		omitInvalidTitle?: boolean,
+		retainedChapters?: AiResult["chapters"],
+	) => T,
 ): Promise<T> {
+	let nextPrompt = prompt;
+	let retainedChapters: AiResult["chapters"];
 	return runWithAiProviders("generation", async (selection) => {
-		let nextPrompt = prompt;
 		for (let attempt = 1; attempt <= 2; attempt++) {
 			const result = await generateText({
 				model: selection.model({ jsonRepair: true }),
@@ -929,7 +936,7 @@ export async function callAiApi<T>(
 			});
 			try {
 				try {
-					return parse(result.text);
+					return parse(result.text, false, retainedChapters);
 				} catch (error) {
 					if (!(error instanceof InvalidAiTitleError)) throw error;
 					console.warn("[ai-title-validation]", {
@@ -939,8 +946,9 @@ export async function callAiApi<T>(
 						provider: selection.provider,
 						model: selection.modelId,
 					});
-					if (attempt === 2) return parse(result.text, true);
-					nextPrompt = `${prompt}\n\n${strictTitleRetry(error.message)}`;
+					retainedChapters ??= error.validatedChapters;
+					if (attempt === 2) return parse(result.text, true, retainedChapters);
+					nextPrompt = `${prompt}\n\n${strictTitleRetry(error.message)}${retainedChapters === undefined ? "" : '\nYour chapters have been accepted and are retained. Do not regenerate chapters. Return only a JSON object with the corrected title: {"title":"..."}.'}`;
 				}
 			} catch {
 				// JSON.parse errors can quote response text; never forward their cause.
@@ -1322,7 +1330,7 @@ Return ONLY valid JSON without any markdown formatting or code blocks.`;
 }
 
 export function strictTitleRetry(detail = ""): string {
-	return `${detail}\nThe title MUST be ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters or fewer, counting spaces. Name only the main subject. Keep the original language and JSON requirements.`;
+	return `${detail}\nThe title MUST be ${GENERATED_TITLE_DISPLAY_MAX_LENGTH} characters or fewer, counting spaces. Name only the main subject. Keep the original language and JSON title requirements.`;
 }
 
 // Like parseAiResponse, these throw on missing or empty required fields —
@@ -1465,33 +1473,42 @@ export function parseChapterSynthesis(
 export function parseAiResponse(
 	content: string,
 	omitInvalidTitle = false,
+	retainedChapters?: AiResult["chapters"],
 ): AiResult {
 	const data = JSON.parse(extractJsonObject(content)) as {
 		title?: unknown;
 		chapters?: unknown;
 	};
-	if (!Array.isArray(data.chapters)) {
-		throw new Error("AI response did not contain a valid chapters array");
-	}
-
-	const chapters = data.chapters.map((chapter, index) => {
-		if (
-			typeof chapter !== "object" ||
-			chapter === null ||
-			typeof chapter.start !== "number" ||
-			!Number.isFinite(chapter.start) ||
-			chapter.start < 0 ||
-			typeof chapter.title !== "string" ||
-			!chapter.title.trim()
-		) {
-			throw new Error(
-				`AI response contained an invalid chapter at index ${index}`,
-			);
+	let chapters = retainedChapters;
+	if (chapters === undefined) {
+		if (!Array.isArray(data.chapters)) {
+			throw new Error("AI response did not contain a valid chapters array");
 		}
-		return { title: chapter.title.trim(), start: chapter.start };
-	});
-
-	const title = acceptGeneratedTitle(data.title, omitInvalidTitle);
+		chapters = data.chapters.map((chapter, index) => {
+			if (
+				typeof chapter !== "object" ||
+				chapter === null ||
+				typeof chapter.start !== "number" ||
+				!Number.isFinite(chapter.start) ||
+				chapter.start < 0 ||
+				typeof chapter.title !== "string" ||
+				!chapter.title.trim()
+			) {
+				throw new Error(
+					`AI response contained an invalid chapter at index ${index}`,
+				);
+			}
+			return { title: chapter.title.trim(), start: chapter.start };
+		});
+	}
+	let title: string | undefined;
+	try {
+		title = acceptGeneratedTitle(data.title, omitInvalidTitle);
+	} catch (error) {
+		if (error instanceof InvalidAiTitleError)
+			error.validatedChapters = chapters;
+		throw error;
+	}
 	return {
 		...(title === undefined ? {} : { title }),
 		chapters,

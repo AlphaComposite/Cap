@@ -215,9 +215,9 @@ describe("multi-chunk chapter evidence", () => {
 			"WEBVTT\n\n00:00:00.000 --> 00:01:30.000\nWe review the billing migration, explain the product changes, and agree on the next steps for the client rollout.";
 		if (state.video) state.video.name = "Untitled";
 		const chapters = [{ title: "Billing migration", start: 0 }];
-		generateTextMock.mockResolvedValue({
-			text: JSON.stringify({ title: " ", chapters }),
-		});
+		generateTextMock
+			.mockResolvedValueOnce({ text: JSON.stringify({ title: " ", chapters }) })
+			.mockResolvedValueOnce({ text: '{"title":null}' });
 		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
 		expect(generateTextMock.mock.calls[1][0].model).toBe(
