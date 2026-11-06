@@ -52,19 +52,23 @@ export async function removeVideosFromSpace(
 		await db().transaction(async (tx) => {
 			await bumpPolicyEpochForVideos(validVideoIds, tx);
 			if (isAllSpacesEntry) {
-				await tx.delete(sharedVideos).where(
-					and(
-						eq(sharedVideos.organizationId, spaceId),
-						inArray(sharedVideos.videoId, validVideoIds),
-					),
-				);
+				await tx
+					.delete(sharedVideos)
+					.where(
+						and(
+							eq(sharedVideos.organizationId, spaceId),
+							inArray(sharedVideos.videoId, validVideoIds),
+						),
+					);
 			} else {
-				await tx.delete(spaceVideos).where(
-					and(
-						eq(spaceVideos.spaceId, spaceId),
-						inArray(spaceVideos.videoId, validVideoIds),
-					),
-				);
+				await tx
+					.delete(spaceVideos)
+					.where(
+						and(
+							eq(spaceVideos.spaceId, spaceId),
+							inArray(spaceVideos.videoId, validVideoIds),
+						),
+					);
 			}
 		});
 

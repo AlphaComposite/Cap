@@ -67,7 +67,9 @@ describe("durable video processing completion", () => {
 		await expect(waitForVideoProcessing("video")).rejects.toThrow();
 		const delays = mocks.sleep.mock.calls.map(([delay]) => delay);
 		expect(delays.slice(0, 30).every((delay) => delay === 2_000)).toBe(true);
-		expect(delays.slice(30, 36)).toEqual([5_000, 10_000, 15_000, 20_000, 25_000, 30_000]);
+		expect(delays.slice(30, 36)).toEqual([
+			5_000, 10_000, 15_000, 20_000, 25_000, 30_000,
+		]);
 	});
 
 	it("supports an explicit complete row", async () => {
