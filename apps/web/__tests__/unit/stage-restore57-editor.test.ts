@@ -138,22 +138,22 @@ describe("pending editor join", () => {
 		relocate.mockClear();
 	});
 
-	it("joins the registered warm journal key without prepare, relocate, or liveKey flip", async () => {
+	it("rejects a copied warm source until relocation completes without moving it inline", async () => {
 		const harness = editorDb({});
 		const { openInstantFinishEditor } = await import(
 			"@/lib/revision-publication-read"
 		);
-		const opened = await openInstantFinishEditor(videoId, harness.db, {
-			actionRefresh: false,
-			stageWaitMs: 0,
-			prepare,
-			relocate,
-		});
+		await expect(
+			openInstantFinishEditor(videoId, harness.db, {
+				actionRefresh: false,
+				stageWaitMs: 0,
+				prepare,
+				relocate,
+			}),
+		).rejects.toMatchObject({ status: 409 });
 		expect(journalKey).not.toBe(stablePrivateSourceKey(videoId));
 		expect(prepare).not.toHaveBeenCalled();
 		expect(relocate).not.toHaveBeenCalled();
-		expect(opened.generation).toBe(4);
-		expect(opened.draftSession).toBe("kept-session");
 		expect(
 			harness.writes.some(
 				(write) =>
@@ -305,7 +305,7 @@ describe("pending editor join", () => {
 				indexId: "bound-index",
 				warmExpiresAt: new Date(Date.now() - 60_000),
 			};
-			const harness = editorDb({ source, pending });
+			const harness = editorDb({ source, pending, stages: [] });
 			const { openInstantFinishEditor, readEditorPreparation } = await import(
 				"@/lib/revision-publication-read"
 			);

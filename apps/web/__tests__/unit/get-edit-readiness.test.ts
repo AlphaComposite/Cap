@@ -208,9 +208,9 @@ describe("owner-only read-only projection", () => {
 		video.name = "deleted playback object";
 		sourceRows = [
 			{
-				liveKey: "owner/video/result.mp4",
+				liveKey: privateKey,
 				sha256: privateSha,
-				relocationState: "LIVE",
+				relocationState: "PURGED",
 				codec: "h264",
 				timebase: "1/90000",
 				frameMode: "cfr",
@@ -224,7 +224,7 @@ describe("owner-only read-only projection", () => {
 				oldKey: "owner/video/result.mp4",
 				newKey: privateKey,
 				sha256: privateSha,
-				state: "COPIED",
+				state: "PURGED",
 			},
 		];
 		outboxRows = [
@@ -289,10 +289,21 @@ describe("owner-only read-only projection", () => {
 			const result = await getEditReadiness("video" as never);
 			if (result.status !== "ready") throw new Error("missing readiness");
 			expect(result.readiness.playbackAdmission).toBe(true);
-			expect(result.readiness.editorOpenable).toBe(warm);
-			expect(result.readiness.manualEditing).toBe(warm);
+			expect(result.readiness.editorOpenable).toBe(false);
+			expect(result.readiness.manualEditing).toBe(false);
 			expect(result.readiness.sourcePrepare).toBe("running");
 			expect(result.readiness.poll).toBe(true);
+			sourceRows[0] = {
+				...sourceRows[0],
+				liveKey: privateKey,
+				relocationState: "PURGED",
+			};
+			relocationRows[0] = { ...relocationRows[0], state: "PURGED" };
+			const completed = await getEditReadiness("video" as never, false, false);
+			if (completed.status !== "ready")
+				throw new Error("missing completed readiness");
+			expect(completed.readiness.editorOpenable).toBe(true);
+			expect(completed.readiness.manualEditing).toBe(true);
 		},
 	);
 	it("reports source exhaustion without inventing a source retry", async () => {

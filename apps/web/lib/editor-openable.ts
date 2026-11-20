@@ -35,24 +35,10 @@ export function editorOpenable(input: {
 		!source.indexId
 	)
 		return false;
-	if (
+	return (
 		source.relocationState === "PURGED" &&
+		input.relocations.every((row) => row.state === "PURGED") &&
 		source.liveKey.startsWith(`private/source/${videoId}/`) &&
 		!["*", "?", ".."].some((token) => source.liveKey.includes(token))
-	)
-		return true;
-	return (
-		input.pending &&
-		source.warmExpiresAt !== null &&
-		new Date(source.warmExpiresAt).getTime() > input.now.getTime() &&
-		input.relocations.some(
-			(row) =>
-				row.sha256 === source.sha256 &&
-				(row.oldKey === source.liveKey || row.newKey === source.liveKey) &&
-				row.newKey.startsWith(`private/source/${videoId}/`) &&
-				!["*", "?", ".."].some((token) => row.newKey.includes(token)) &&
-				!row.newKey.startsWith("/") &&
-				["COPIED", "POINTER", "PURGED"].includes(row.state),
-		)
 	);
 }
