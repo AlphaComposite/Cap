@@ -81,6 +81,8 @@ jobs:
           python-version: "3.13"
 
       - name: Native setup regression tests
+        env:
+          TMPDIR: ${{ github.workspace }}/target/setup-test-tmp
         run: node --test scripts/setup.test.mjs
 
       - name: Native dependencies
