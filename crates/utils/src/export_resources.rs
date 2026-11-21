@@ -13,7 +13,9 @@ const STOP_PREFIX: &str = "Export stopped to protect your computer: ";
 enum MemoryPressure {
     #[default]
     Unknown,
+    #[cfg(any(target_os = "macos", test))]
     Normal,
+    #[cfg(any(target_os = "macos", test))]
     Warning,
     Critical,
 }
@@ -118,10 +120,12 @@ impl ExportResources {
                 disk.description
             ));
         }
-        if matches!(
-            sample.memory,
-            MemoryPressure::Warning | MemoryPressure::Critical
-        ) {
+        if match sample.memory {
+            #[cfg(any(target_os = "macos", test))]
+            MemoryPressure::Warning => true,
+            MemoryPressure::Critical => true,
+            _ => false,
+        } {
             warnings.push("Your computer is already under memory pressure. Close other applications before exporting.".to_string());
         }
         if warnings.is_empty() {
@@ -304,6 +308,21 @@ mod tests {
             let observation = sample(Some(free), MemoryPressure::Normal);
             assert_eq!(resources.warning(&observation).is_some(), warns);
             assert_eq!(resources.disk_failure(&observation).is_some(), stops);
+        }
+    }
+
+    #[test]
+    fn memory_warnings_preserve_all_sample_states() {
+        for (pressure, warns) in [
+            (MemoryPressure::Unknown, false),
+            (MemoryPressure::Normal, false),
+            (MemoryPressure::Warning, true),
+            (MemoryPressure::Critical, true),
+        ] {
+            assert_eq!(
+                resources().warning(&sample(Some(9 * GIB), pressure)).is_some(),
+                warns
+            );
         }
     }
 
