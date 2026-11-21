@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import clsx from "clsx";
 import moment from "moment";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { editDate } from "@/actions/videos/edit-date";
 import { editTitle } from "@/actions/videos/edit-title";
@@ -39,6 +39,9 @@ export const CapCardContent: React.FC<CapContentProps> = ({
 	const [showFullDate, setShowFullDate] = useState(false);
 	const [title, setTitle] = useState(cap.name);
 	const [isEditing, setIsEditing] = useState(false);
+	const focusEditor = useCallback((element: HTMLElement | null) => {
+		element?.focus();
+	}, []);
 
 	const handleTitleBlur = async (capName: string) => {
 		if (!title || capName === title) {
@@ -143,23 +146,31 @@ export const CapCardContent: React.FC<CapContentProps> = ({
 
 			if (!hasSpaceSharing && !isPublic) {
 				return (
-					<p
-						className={baseClassName}
+					<button
+						type="button"
+						className={clsx(
+							baseClassName,
+							"p-0 border-0 bg-transparent text-left",
+						)}
 						onClick={() => setIsSharingDialogOpen(true)}
 					>
 						Not shared{" "}
 						<FontAwesomeIcon className="ml-2 size-2.5" icon={faChevronDown} />
-					</p>
+					</button>
 				);
 			} else {
 				return (
-					<p
-						className={baseClassName}
+					<button
+						type="button"
+						className={clsx(
+							baseClassName,
+							"p-0 border-0 bg-transparent text-left",
+						)}
 						onClick={() => setIsSharingDialogOpen(true)}
 					>
 						Shared{" "}
 						<FontAwesomeIcon className="ml-1 size-2.5" icon={faChevronDown} />
-					</p>
+					</button>
 				);
 			}
 		} else {
@@ -174,6 +185,8 @@ export const CapCardContent: React.FC<CapContentProps> = ({
 				{/* Fixed height container */}
 				{isEditing && !sharedCapCard ? (
 					<textarea
+						ref={focusEditor}
+						aria-label="Video title"
 						rows={1}
 						value={title}
 						onChange={(e) => setTitle(e.target.value)}
@@ -181,17 +194,16 @@ export const CapCardContent: React.FC<CapContentProps> = ({
 						onKeyDown={(e) => handleTitleKeyDown(e)}
 						className="text-md resize-none bg-transparent truncate w-full border-0 outline-0 text-gray-12 font-medium p-0 m-0 h-[1.25rem] overflow-hidden leading-[1.25rem] tracking-normal font-[inherit]"
 					/>
-				) : (
-					<p
-						className="text-md truncate leading-[1.25rem] text-gray-12 font-medium p-0 m-0 h-[1.25rem] tracking-normal"
-						onClick={() => {
-							if (!sharedCapCard) {
-								if (userId === cap.ownerId) {
-									setIsEditing(true);
-								}
-							}
-						}}
+				) : !sharedCapCard && userId === cap.ownerId ? (
+					<button
+						type="button"
+						className="block w-full bg-transparent border-0 text-left text-md truncate leading-[1.25rem] text-gray-12 font-medium p-0 m-0 h-[1.25rem] tracking-normal"
+						onClick={() => setIsEditing(true)}
 					>
+						{title}
+					</button>
+				) : (
+					<p className="text-md truncate leading-[1.25rem] text-gray-12 font-medium p-0 m-0 h-[1.25rem] tracking-normal">
 						{title}
 					</p>
 				)}
@@ -203,6 +215,8 @@ export const CapCardContent: React.FC<CapContentProps> = ({
 				{isDateEditing && !sharedCapCard ? (
 					<div className="flex items-center h-full">
 						<input
+							ref={focusEditor}
+							aria-label="Recording date"
 							type="text"
 							value={dateValue}
 							onChange={handleDateChange}
@@ -214,14 +228,15 @@ export const CapCardContent: React.FC<CapContentProps> = ({
 					</div>
 				) : (
 					<Tooltip content={`Cap created at ${effectiveDate}`}>
-						<p
-							className="text-sm truncate text-gray-10 cursor-pointer flex items-center h-full leading-[1.5rem]"
+						<button
+							type="button"
+							className="p-0 border-0 bg-transparent text-left text-sm truncate text-gray-10 cursor-pointer flex items-center h-full leading-[1.5rem]"
 							onClick={handleDateClick}
 						>
 							{showFullDate
 								? moment(effectiveDate).format("YYYY-MM-DD HH:mm:ss")
 								: moment(effectiveDate).fromNow()}
-						</p>
+						</button>
 					</Tooltip>
 				)}
 			</div>

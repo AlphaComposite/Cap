@@ -3,6 +3,7 @@
 "use client";
 
 import { Button } from "@cap/ui";
+import Image from "next/image";
 import { CommercialGetStarted } from "@/components/CommercialGetStarted";
 import { FeatureCard } from "@/components/pages/_components/FeatureCard";
 import { LogoSection } from "@/components/pages/_components/LogoSection";
@@ -46,7 +47,9 @@ export const SelfHostingPage = () => {
 						Learn More
 					</Button>
 				</div>
-				<img
+				<Image
+					width={2880}
+					height={2362}
 					src="/illustrations/mask-big-recorder.webp"
 					alt="Self-hosting Background"
 					className="absolute top-0 left-0 z-0 -mt-40 w-full h-auto pointer-events-none"

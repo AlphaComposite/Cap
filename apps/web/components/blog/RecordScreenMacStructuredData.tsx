@@ -1,6 +1,7 @@
 "use client";
 
 import Script from "next/script";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { recordScreenMacContent } from "../../content/blog-content/record-screen-mac-system-audio";
 
 // Create Article structured data for SEO
@@ -23,7 +24,7 @@ const createArticleStructuredData = () => {
 		},
 	};
 
-	return JSON.stringify(articleStructuredData);
+	return serializeStateForScript(articleStructuredData);
 };
 
 // Create FAQ structured data for SEO
@@ -41,22 +42,18 @@ const createFaqStructuredData = () => {
 		})),
 	};
 
-	return JSON.stringify(faqStructuredData);
+	return serializeStateForScript(faqStructuredData);
 };
 
 export const RecordScreenMacStructuredData = () => {
 	return (
 		<>
-			<Script
-				id="article-structured-data"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createArticleStructuredData() }}
-			/>
-			<Script
-				id="faq-structured-data"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			<Script id="article-structured-data" type="application/ld+json">
+				{createArticleStructuredData()}
+			</Script>
+			<Script id="faq-structured-data" type="application/ld+json">
+				{createFaqStructuredData()}
+			</Script>
 		</>
 	);
 };

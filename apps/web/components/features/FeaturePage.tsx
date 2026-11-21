@@ -3,6 +3,7 @@
 import Script from "next/script";
 import { type JSX, useId } from "react";
 import { SeoPageTemplate } from "@/components/seo/SeoPageTemplate";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import {
 	createFeaturePageStructuredData,
 	transformFeaturePageToSeo,
@@ -34,11 +35,9 @@ export const FeaturePage = ({
 
 	return (
 		<>
-			<Script
-				id={`faq-structured-data-${scriptId}`}
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
-			/>
+			<Script id={`faq-structured-data-${scriptId}`} type="application/ld+json">
+				{serializeStateForScript(structuredData)}
+			</Script>
 			<SeoPageTemplate
 				content={seoContent}
 				showVideo={finalShowVideo}

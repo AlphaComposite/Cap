@@ -1,6 +1,7 @@
 "use client";
 
 import Script from "next/script";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { SeoPageTemplate } from "../../seo/SeoPageTemplate";
 
 export const screenRecordMacContent = {
@@ -128,17 +129,15 @@ const createFaqStructuredData = () => {
 		})),
 	};
 
-	return JSON.stringify(faqStructuredData);
+	return serializeStateForScript(faqStructuredData);
 };
 
 export const ScreenRecordMacPage = () => {
 	return (
 		<>
-			<Script
-				id="faq-structured-data"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			<Script id="faq-structured-data" type="application/ld+json">
+				{createFaqStructuredData()}
+			</Script>
 			<SeoPageTemplate content={screenRecordMacContent} />
 		</>
 	);

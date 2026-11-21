@@ -56,18 +56,29 @@ export const useDetectPlatform = (): PlatformInfo => {
 				return;
 			}
 
+			const userAgentData =
+				"userAgentData" in navigator ? navigator.userAgentData : undefined;
 			if (
-				"userAgentData" in navigator &&
-				(navigator as any).userAgentData?.getHighEntropyValues
+				userAgentData &&
+				typeof userAgentData === "object" &&
+				"getHighEntropyValues" in userAgentData &&
+				typeof userAgentData.getHighEntropyValues === "function"
 			) {
 				try {
-					const uaData = await (
-						navigator as any
-					).userAgentData.getHighEntropyValues(["architecture"]);
+					const uaData: unknown = await userAgentData.getHighEntropyValues([
+						"architecture",
+					]);
 					if (!isMounted) return;
-					const arch = (uaData.architecture ?? "").toLowerCase();
-					if (isMounted) setIsIntel(arch !== "arm" && arch !== "arm64");
-					return;
+					if (
+						uaData &&
+						typeof uaData === "object" &&
+						"architecture" in uaData &&
+						typeof uaData.architecture === "string"
+					) {
+						const arch = uaData.architecture.toLowerCase();
+						setIsIntel(arch !== "arm" && arch !== "arm64");
+						return;
+					}
 				} catch {}
 			}
 

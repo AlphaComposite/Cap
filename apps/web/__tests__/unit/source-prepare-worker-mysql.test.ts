@@ -1,3 +1,4 @@
+import { fail } from "node:assert/strict";
 import { createHash } from "node:crypto";
 import * as schema from "@cap/database/schema";
 import { Organisation, User, Video } from "@cap/web-domain";
@@ -340,7 +341,7 @@ async function seedCurrent() {
 describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 	beforeAll(async () => {
 		vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", ownerId);
-		pool = createPool(url!);
+		pool = createPool(url ?? fail("Missing isolated MySQL URL"));
 		database = drizzle(pool);
 		for (const table of tables) {
 			const config = getTableConfig(table);
@@ -348,9 +349,10 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 				(column) =>
 					`\`${column.name}\` ${column.getSQLType()}${column.primary ? " PRIMARY KEY" : ""}${column.columnType === "MySqlInt" && "autoIncrement" in column && column.autoIncrement ? " AUTO_INCREMENT" : ""}`,
 			);
-			if (config.primaryKeys.length)
+			const [primaryKey] = config.primaryKeys;
+			if (primaryKey)
 				columns.push(
-					`PRIMARY KEY (${config.primaryKeys[0]!.columns.map((column) => `\`${column.name}\``).join(",")})`,
+					`PRIMARY KEY (${primaryKey.columns.map((column) => `\`${column.name}\``).join(",")})`,
 				);
 			await pool.query(
 				`CREATE TABLE IF NOT EXISTS \`${config.name}\` (${columns.join(",")})`,
@@ -649,7 +651,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		const [revision] = await database.select().from(schema.editRevision);
 		await database.update(schema.editRevision).set({
 			metadataSnapshot: {
-				...revision!.metadataSnapshot!,
+				...(revision?.metadataSnapshot ?? fail("Missing revision metadata")),
 				captionsVtt: "WEBVTT\n",
 			},
 		});
@@ -687,18 +689,18 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		await waitingCaptions();
 		finishInventoryProbe.getObject = async () => encryptedWords();
 		const before = (await database.select().from(schema.videoPublication))[0];
-		const beforeSnapshot = (
-			await database.select().from(schema.editRevision)
-		)[0]!.metadataSnapshot!;
+		const beforeSnapshot =
+			(await database.select().from(schema.editRevision))[0]
+				?.metadataSnapshot ?? fail("Missing revision metadata before drain");
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
 		await expectCoreAndPeaksJobs(0);
 		expect(origin.writeCaptions).toHaveBeenCalledTimes(1);
 		expect(captionBody).toContain("genuine fixture words");
 		expect(captionBody).toContain("-->");
-		const afterSnapshot = (
-			await database.select().from(schema.editRevision)
-		)[0]!.metadataSnapshot!;
+		const afterSnapshot =
+			(await database.select().from(schema.editRevision))[0]
+				?.metadataSnapshot ?? fail("Missing revision metadata after drain");
 		expect(afterSnapshot.captionsVtt).toBe(captionBody);
 		expect({
 			...afterSnapshot,
@@ -728,8 +730,8 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			await drainSourcePrepare(database as never, origin as never);
 			await expectCoreAndPeaksJobs(1);
 			expect(
-				(await database.select().from(schema.editRevision))[0]!
-					.metadataSnapshot!.captionsVtt,
+				(await database.select().from(schema.editRevision))[0]?.metadataSnapshot
+					?.captionsVtt,
 			).toBe("WEBVTT\n");
 			expect(origin.writeCaptions).not.toHaveBeenCalled();
 			expect(origin.prepareRevision).not.toHaveBeenCalled();
@@ -820,8 +822,8 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 				?.currentRevisionId,
 		).toBe("racing-cut");
 		expect(
-			(await database.select().from(schema.editRevision))[0]!.metadataSnapshot!
-				.captionsVtt,
+			(await database.select().from(schema.editRevision))[0]?.metadataSnapshot
+				?.captionsVtt,
 		).toBe("WEBVTT\n");
 		expect(
 			(await database.select().from(schema.revisionArtifactStatus)).some(
@@ -850,7 +852,9 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		await setJob({ phase: "captions", captionDeadlineMs: Date.now() - 60_000 });
 		const { drainSourcePrepare } = await import("@/lib/source-prepare-worker");
 		await drainSourcePrepare(database as never, origin as never);
-		const row = (await database.select().from(schema.revisionOutbox))[0]!;
+		const row =
+			(await database.select().from(schema.revisionOutbox))[0] ??
+			fail("Missing outbox row");
 		expect(row.payload).toMatchObject({ exhausted: true, finished: false });
 		expect(origin.writeCaptions).not.toHaveBeenCalled();
 	});
@@ -964,9 +968,10 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 
 	it("retarget preserves artifact generation, fences an in-flight cut, and preserves owner chapter deletion", async () => {
 		await retainedWithCut();
-		const before = (await database.select().from(schema.editRevision)).find(
-			(row) => row.revisionId === revisionId,
-		)!.metadataSnapshot;
+		const before =
+			(await database.select().from(schema.editRevision)).find(
+				(row) => row.revisionId === revisionId,
+			)?.metadataSnapshot ?? fail("Missing retained revision metadata");
 		const { restoreRetainedIdentity } = await import(
 			"@/lib/revision-publication"
 		);
@@ -976,9 +981,9 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			baseGeneration: 2,
 		});
 		expect(restored).toEqual({ revisionId, generation: 4 });
-		const publication = (
-			await database.select().from(schema.videoPublication)
-		)[0]!;
+		const publication =
+			(await database.select().from(schema.videoPublication))[0] ??
+			fail("Missing restored publication");
 		expect(publication.currentGeneration).toBe(1);
 		expect(publication.generation).toBe(4);
 		expect(publication.policyEpoch).toBe(3);
@@ -996,8 +1001,9 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		expect(
 			revisions.find((row) => row.revisionId === revisionId)?.metadataSnapshot,
 		).toEqual(before);
-		const metadata = (await database.select().from(schema.videos))[0]!
-			.metadata!;
+		const metadata =
+			(await database.select().from(schema.videos))[0]?.metadata ??
+			fail("Missing video metadata");
 		expect(metadata.summary).toBe("latest owner summary");
 		expect(metadata.sourceChapters).toEqual([]);
 		expect(metadata.chapters).toEqual([]);
@@ -1186,7 +1192,7 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 		const [revision] = await database.select().from(schema.editRevision);
 		await database.update(schema.editRevision).set({
 			metadataSnapshot: {
-				...revision!.metadataSnapshot!,
+				...(revision?.metadataSnapshot ?? fail("Missing revision metadata")),
 				captionsVtt: "WEBVTT\n",
 			},
 		});
@@ -1436,9 +1442,9 @@ describe.skipIf(!url)("durable source worker on an isolated real MySQL", () => {
 			sourceDuration: 20,
 		});
 		expect(baseline).toMatchObject({ autoCutsInitialized: true });
-		const publication = (
-			await database.select().from(schema.videoPublication)
-		)[0]!;
+		const publication =
+			(await database.select().from(schema.videoPublication))[0] ??
+			fail("Missing baseline publication");
 		finishInventoryProbe.listPrefix = async () => [];
 		const cut = {
 			...untouchedEditorSpec(20),

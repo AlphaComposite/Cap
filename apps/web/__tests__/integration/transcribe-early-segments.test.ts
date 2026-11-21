@@ -1,3 +1,4 @@
+import { fail } from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -468,7 +469,9 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 				expect(objects.has(`${prefix}transcription.live.json`)).toBe(false);
 				expect(
 					core
-						.parseLiveTranscript(objects.get(key)!)
+						.parseLiveTranscript(
+							objects.get(key) ?? fail("Missing transcript object"),
+						)
 						?.words.map((word) => word.text),
 				).toEqual(["accumulated", "late"]);
 			} else {

@@ -193,7 +193,9 @@ describe("recorded origin read keys", () => {
 		const liveStages = stages.map((row) => ({ ...row }));
 		await reconcileOriginReadPolicy(policyDb(sources, liveStages) as never);
 		expect(grantedKeys(policies.at(-1))).toContain(staged);
-		liveStages[0] = { ...liveStages[0]!, state: "ABORTED" };
+		const stage = liveStages[0];
+		if (!stage) throw new Error("Missing live stage fixture");
+		liveStages[0] = { ...stage, state: "ABORTED" };
 		await reconcileOriginReadPolicy(policyDb(sources, liveStages) as never);
 		expect(grantedKeys(policies.at(-1))).not.toContain(staged);
 		expect(grantedKeys(policies.at(-1))).toContain(registeredRollback);

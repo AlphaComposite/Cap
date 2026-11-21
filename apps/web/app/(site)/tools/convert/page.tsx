@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { buildMarketingMetadata } from "@/lib/og/url";
 import { createBreadcrumbSchema } from "@/utils/web-schema";
 
@@ -74,12 +75,9 @@ const breadcrumbSchema = createBreadcrumbSchema([
 export default function ConvertToolsPage() {
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
+			<script type="application/ld+json">
+				{serializeStateForScript(breadcrumbSchema)}
+			</script>
 			<div className="py-32 md:py-40">
 				<div className="wrapper">
 					<div className="mb-8">
@@ -88,6 +86,7 @@ export default function ConvertToolsPage() {
 							className="inline-flex items-center text-sm text-blue-600 hover:text-blue-800"
 						>
 							<svg
+								aria-hidden="true"
 								className="mr-1 w-5 h-5"
 								fill="none"
 								stroke="currentColor"
@@ -125,6 +124,7 @@ export default function ConvertToolsPage() {
 								<div className="flex items-center mb-4">
 									<div className="flex-shrink-0 p-2 bg-blue-100 rounded-lg">
 										<svg
+											aria-hidden="true"
 											className="w-6 h-6 text-blue-600"
 											fill="none"
 											viewBox="0 0 24 24"

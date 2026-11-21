@@ -22,14 +22,19 @@ export namespace ThumbnailRequest {
 				const requestResolver = RequestResolver.makeBatched(
 					(requests: NonEmptyArray<ThumbnailRequest>) =>
 						rpc.VideosGetThumbnails(requests.map((r) => r.videoId)).pipe(
-							Effect.flatMap(
-								// biome-ignore lint/suspicious/useIterableCallbackReturn: effect
-								Effect.forEach((result, index) =>
-									Effect.matchEffect(Effect.flatten(result), {
-										onSuccess: (v) => Request.succeed(requests[index]!, v),
-										onFailure: (e) => Request.fail(requests[index]!, e),
-									}),
-								),
+							Effect.flatMap((results) =>
+								Effect.forEach(requests, (request, index) => {
+									const result = results[index];
+									return result
+										? Effect.matchEffect(Effect.flatten(result), {
+												onSuccess: (v) => Request.succeed(request, v),
+												onFailure: (e) => Request.fail(request, e),
+											})
+										: Request.fail(
+												request,
+												new Error("Missing thumbnail response"),
+											);
+								}),
 							),
 							Effect.catchAll((error) =>
 								Effect.forEach(

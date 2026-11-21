@@ -60,8 +60,8 @@ it("retains all four startup items, consuming only an exact grant key", () => {
 	const base = "/media/v/r/new/",
 		body = new Uint8Array([3]).buffer;
 	for (const path of ["playlist.m3u8", "init.mp4", "seg/0.m4s", "seg/1.m4s"])
-		rememberPrefetchedFragment(base + path + "?t=grant", body);
-	expect(readPrefetchedFragment(base + "playlist.m3u8?t=other")).toBeNull();
+		rememberPrefetchedFragment(`${base}${path}?t=grant`, body);
+	expect(readPrefetchedFragment(`${base}playlist.m3u8?t=other`)).toBeNull();
 	for (const path of ["playlist.m3u8", "init.mp4", "seg/0.m4s", "seg/1.m4s"])
-		expect(readPrefetchedFragment(base + path + "?t=grant")).toBe(body);
+		expect(readPrefetchedFragment(`${base}${path}?t=grant`)).toBe(body);
 });

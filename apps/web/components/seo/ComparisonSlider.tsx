@@ -196,19 +196,18 @@ export const ComparisonSlider = ({
 		<div className="h-[400px] xs:h-[525px] sm:h-[600px] md:h-[700px] w-full max-w-[900px] mx-auto px-5">
 			<div
 				ref={containerRef}
-				className="overflow-hidden relative w-full h-full rounded-xl select-none"
+				className="overflow-hidden relative w-full h-full rounded-xl select-none focus-within:ring-2 focus-within:ring-blue-9"
 				style={{ userSelect: "none" }}
-				aria-label="Click anywhere on the image to move the comparison slider"
-				onKeyDown={(e) => {
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault();
-						const rect = containerRef.current?.getBoundingClientRect();
-						if (rect) {
-							setSliderPosition(50);
-						}
-					}
-				}}
 			>
+				<input
+					type="range"
+					min={0}
+					max={100}
+					value={sliderPosition}
+					aria-label={`Compare ${leftLabel} and ${rightLabel}`}
+					className="sr-only"
+					onChange={(event) => setSliderPosition(Number(event.target.value))}
+				/>
 				{/* Left Image (Base layer) */}
 				<motion.div className="flex absolute inset-0 z-[5] justify-center items-center">
 					<Image

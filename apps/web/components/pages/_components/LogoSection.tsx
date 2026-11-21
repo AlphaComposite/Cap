@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 
 export const LogoSection = () => {
@@ -10,7 +11,7 @@ export const LogoSection = () => {
 					className="inline-block w-[250px] h-auto mx-auto"
 				>
 					<svg
-						aria-label="Cap Logo"
+						aria-hidden="true"
 						xmlns="http://www.w3.org/2000/svg"
 						className="w-[250px] h-auto mx-auto"
 						fill="none"
@@ -28,7 +29,7 @@ export const LogoSection = () => {
 			<div className="flex flex-col items-center text-center lg:flex-row lg:items-center lg:justify-between lg:text-left">
 				<div className="grid grid-cols-2 gap-6 mx-auto md:grid-cols-5 lg:max-w-4xl lg:gap-10">
 					<div className="flex justify-center items-center mt-8 lg:mt-0">
-						<img
+						<Image
 							alt="Tesla Logo"
 							loading="lazy"
 							width={100}
@@ -39,7 +40,7 @@ export const LogoSection = () => {
 						/>
 					</div>
 					<div className="flex justify-center items-center mt-8 lg:mt-0">
-						<img
+						<Image
 							alt="Microsoft Logo"
 							loading="lazy"
 							width={98}
@@ -50,7 +51,7 @@ export const LogoSection = () => {
 						/>
 					</div>
 					<div className="flex justify-center items-center mt-8 lg:mt-0">
-						<img
+						<Image
 							alt="Coinbase Logo"
 							loading="lazy"
 							width={139}
@@ -61,7 +62,7 @@ export const LogoSection = () => {
 						/>
 					</div>
 					<div className="flex justify-center items-center mt-8 lg:mt-0">
-						<img
+						<Image
 							alt="IBM Logo"
 							loading="lazy"
 							width={80}
@@ -72,7 +73,7 @@ export const LogoSection = () => {
 						/>
 					</div>
 					<div className="flex justify-center items-center mt-8 lg:mt-0">
-						<img
+						<Image
 							alt="Dropbox Logo"
 							loading="lazy"
 							width={115}

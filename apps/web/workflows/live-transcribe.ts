@@ -284,7 +284,7 @@ async function processNextLiveChunk(options: {
 }): Promise<ChunkStepResult> {
 	"use step";
 
-	const { videoId, userId, lastProcessedIndex, targetSeconds } = options;
+	const { videoId, lastProcessedIndex, targetSeconds } = options;
 
 	const [video] = await db()
 		.select()

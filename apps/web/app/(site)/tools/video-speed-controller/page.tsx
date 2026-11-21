@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { SpeedController } from "@/components/tools/SpeedController";
 import { ToolsPageTemplate } from "@/components/tools/ToolsPageTemplate";
 import type { ToolPageContent } from "@/components/tools/types";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { ogImageUrl } from "@/lib/og/url";
 import { createBreadcrumbSchema } from "@/utils/web-schema";
 
@@ -204,24 +205,15 @@ export default function SpeedControllerPage() {
 
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(faqStructuredData),
-				}}
-			/>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(howToStructuredData),
-				}}
-			/>
+			<script type="application/ld+json">
+				{serializeStateForScript(breadcrumbSchema)}
+			</script>
+			<script type="application/ld+json">
+				{serializeStateForScript(faqStructuredData)}
+			</script>
+			<script type="application/ld+json">
+				{serializeStateForScript(howToStructuredData)}
+			</script>
 			<ToolsPageTemplate
 				content={pageContent}
 				toolComponent={<SpeedController />}

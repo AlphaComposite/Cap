@@ -5,7 +5,7 @@ import * as MediaParser from "@remotion/media-parser";
 import type { WebCodecsController } from "@remotion/webcodecs";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { trackEvent } from "@/app/utils/analytics";
 
 export const SUPPORTED_FORMATS = {
@@ -146,6 +146,7 @@ interface MediaFormatConverterProps {
 export const MediaFormatConverter = ({
 	initialConversionPath,
 }: MediaFormatConverterProps) => {
+	const settingsId = useId();
 	const router = useRouter();
 	const pathname = usePathname() || "";
 
@@ -357,14 +358,14 @@ export const MediaFormatConverter = ({
 			} else {
 				await convertVideoFormat(file);
 			}
-		} catch (err: any) {
+		} catch (err) {
 			console.error("Detailed conversion error:", err);
 
 			if (MediaParser.hasBeenAborted?.(err)) {
 				setError("Conversion was cancelled");
 			} else {
 				let errorMessage = "Conversion failed: ";
-				if (err.message) {
+				if (err instanceof Error && err.message) {
 					errorMessage += err.message;
 				} else if (typeof err === "string") {
 					errorMessage += err;
@@ -378,7 +379,7 @@ export const MediaFormatConverter = ({
 					conversion_path: conversionPath,
 					fileSize: file.size,
 					fileName: file.name,
-					error: err.message || "Unknown error",
+					error: err instanceof Error ? err.message : "Unknown error",
 				});
 			}
 		} finally {
@@ -640,17 +641,12 @@ export const MediaFormatConverter = ({
 
 			const outputContainer = currentTargetFormat === "webm" ? "webm" : "mp4";
 
-			let videoCodec;
-			if (outputContainer === "webm") {
-				videoCodec = "vp8";
-			} else {
-				videoCodec = "h264";
-			}
+			const videoCodec = outputContainer === "webm" ? "vp8" : "h264";
 
 			const result = await webcodecs.convertMedia({
 				src: inputFile,
-				container: outputContainer as any,
-				videoCodec: videoCodec as any,
+				container: outputContainer,
+				videoCodec,
 				onProgress,
 				controller: controller as unknown as WebCodecsController,
 				expectedDurationInSeconds: metadata.durationInSeconds || undefined,
@@ -886,7 +882,10 @@ export const MediaFormatConverter = ({
 					<h3 className="text-lg font-medium mb-3">GIF Settings</h3>
 					<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div>
-							<label className="block text-sm font-medium text-gray-700 mb-1">
+							<label
+								htmlFor={`${settingsId}-quality`}
+								className="block text-sm font-medium text-gray-700 mb-1"
+							>
 								Quality (Lower is better)
 							</label>
 							<div className="flex items-center">
@@ -894,6 +893,7 @@ export const MediaFormatConverter = ({
 									type="range"
 									min="1"
 									max="20"
+									id={`${settingsId}-quality`}
 									value={gifQuality}
 									onChange={(e) => setGifQuality(parseInt(e.target.value, 10))}
 									className="w-full"
@@ -907,7 +907,10 @@ export const MediaFormatConverter = ({
 							</p>
 						</div>
 						<div>
-							<label className="block text-sm font-medium text-gray-700 mb-1">
+							<label
+								htmlFor={`${settingsId}-fps`}
+								className="block text-sm font-medium text-gray-700 mb-1"
+							>
 								Frames Per Second
 							</label>
 							<div className="flex items-center">
@@ -915,6 +918,7 @@ export const MediaFormatConverter = ({
 									type="range"
 									min="5"
 									max="30"
+									id={`${settingsId}-fps`}
 									value={gifFps}
 									onChange={(e) => setGifFps(parseInt(e.target.value, 10))}
 									className="w-full"
@@ -926,7 +930,10 @@ export const MediaFormatConverter = ({
 							</p>
 						</div>
 						<div>
-							<label className="block text-sm font-medium text-gray-700 mb-1">
+							<label
+								htmlFor={`${settingsId}-width`}
+								className="block text-sm font-medium text-gray-700 mb-1"
+							>
 								Max Width (px)
 							</label>
 							<div className="flex items-center">
@@ -935,6 +942,7 @@ export const MediaFormatConverter = ({
 									min="240"
 									max="1280"
 									step="80"
+									id={`${settingsId}-width`}
 									value={gifMaxWidth}
 									onChange={(e) => setGifMaxWidth(parseInt(e.target.value, 10))}
 									className="w-full"
@@ -965,11 +973,20 @@ export const MediaFormatConverter = ({
 				</div>
 			)}
 
-			<div
-				className={`border-2 border-dashed rounded-lg p-8 mb-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
+			<input
+				type="file"
+				accept={getAcceptAttribute(currentSourceFormat)}
+				className="hidden"
+				onChange={handleFileChange}
+				ref={fileInputRef}
+			/>
+			<button
+				type="button"
+				aria-label={`Select ${currentSourceFormat.toUpperCase()} file`}
+				className={`w-full border-2 border-dashed rounded-lg p-8 mb-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
 					isDragging
 						? "border-blue-500 bg-blue-50"
-						: "border-gray-300 hover:border-blue-400"
+						: "bg-transparent border-gray-300 hover:border-blue-400"
 				}`}
 				onDragOver={handleDragOver}
 				onDragLeave={handleDragLeave}
@@ -977,18 +994,11 @@ export const MediaFormatConverter = ({
 				onClick={() => fileInputRef.current?.click()}
 				style={{ minHeight: "200px" }}
 			>
-				<input
-					type="file"
-					accept={getAcceptAttribute(currentSourceFormat)}
-					className="hidden"
-					onChange={handleFileChange}
-					ref={fileInputRef}
-				/>
-
-				<div className="text-center">
+				<span className="text-center">
 					{!file ? (
 						<>
 							<svg
+								aria-hidden="true"
 								className="mx-auto h-12 w-12 text-gray-400 mb-3"
 								fill="none"
 								viewBox="0 0 24 24"
@@ -1001,16 +1011,17 @@ export const MediaFormatConverter = ({
 									d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
 								/>
 							</svg>
-							<p className="text-lg font-medium text-gray-700">
+							<span className="block text-lg font-medium text-gray-700">
 								Drag and drop your {currentSourceFormat.toUpperCase()} file here
-							</p>
-							<p className="text-sm text-gray-500 mt-1">
+							</span>
+							<span className="block text-sm text-gray-500 mt-1">
 								or click to browse (max 500MB)
-							</p>
+							</span>
 						</>
 					) : (
 						<>
 							<svg
+								aria-hidden="true"
 								className="mx-auto h-12 w-12 text-green-500 mb-3"
 								fill="none"
 								viewBox="0 0 24 24"
@@ -1023,14 +1034,16 @@ export const MediaFormatConverter = ({
 									d="M5 13l4 4L19 7"
 								/>
 							</svg>
-							<p className="text-lg font-medium text-gray-700">{file.name}</p>
-							<p className="text-sm text-gray-500 mt-1">
+							<span className="block text-lg font-medium text-gray-700">
+								{file.name}
+							</span>
+							<span className="block text-sm text-gray-500 mt-1">
 								{(file.size / (1024 * 1024)).toFixed(2)} MB
-							</p>
+							</span>
 						</>
 					)}
-				</div>
-			</div>
+				</span>
+			</button>
 
 			{error && (
 				<div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-600">

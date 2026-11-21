@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { fail } from "node:assert/strict";
 import { act, createElement, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -220,11 +221,12 @@ describe.each(["share", "dashboard"])(
 						: createElement(CapCard, { cap: data, userId: "owner" } as never),
 				),
 			);
-			const edit = [...container.querySelectorAll("button")].find(
-				(e) =>
-					e.textContent?.trim() ===
-					(entry === "share" ? "Edit video" : "Edit timeline"),
-			)!;
+			const edit =
+				[...container.querySelectorAll("button")].find(
+					(e) =>
+						e.textContent?.trim() ===
+						(entry === "share" ? "Edit video" : "Edit timeline"),
+				) ?? fail("Missing edit entrypoint");
 			return {
 				edit,
 				navigationErrors,
@@ -275,7 +277,9 @@ describe.each(["share", "dashboard"])(
 				const cancel =
 					document.querySelector<HTMLButtonElement>("dialog button");
 				expect(cancel).not.toBeNull();
-				await act(async () => cancel!.click());
+				await act(async () =>
+					(cancel ?? fail("Missing Cancel button")).click(),
+				);
 				expect(document.querySelector("[data-edit-opening]")).toBeNull();
 				expect(mocks.replace).toHaveBeenCalledWith(window.location.href);
 				await act(async () => resolve());
@@ -377,7 +381,7 @@ describe("owner entrypoint presentation", () => {
 				(e) => e.textContent === "Edit timeline",
 			);
 			expect(edit).toBeDefined();
-			await act(async () => edit!.click());
+			await act(async () => (edit ?? fail("Missing edit entrypoint")).click());
 			expect(document.querySelector('[role="status"]')?.textContent).toContain(
 				"Opening editor…",
 			);

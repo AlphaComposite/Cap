@@ -72,8 +72,10 @@ const HomeIcon = forwardRef<HomeIconHandle, HomeIconProps>(
 				onMouseEnter={handleMouseEnter}
 				onMouseLeave={handleMouseLeave}
 				{...props}
+				aria-hidden="true"
 			>
 				<svg
+					aria-hidden="true"
 					xmlns="http://www.w3.org/2000/svg"
 					width={size}
 					height={size}

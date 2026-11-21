@@ -38,7 +38,7 @@ export async function GET(
 
 		const url = asset.browser_download_url;
 
-		const signatureAsset = release.assets.find(({ name }: any) =>
+		const signatureAsset = release.assets.find(({ name }) =>
 			name.endsWith(".sig"),
 		);
 

@@ -2,12 +2,13 @@
 
 import { Button, Input, Label } from "@cap/ui";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import { updateOrganizationDetails } from "@/actions/organization/update-details";
 import { useDashboardContext } from "../../../Contexts";
 
 const OrgName = () => {
+	const nameId = useId();
 	const { activeOrganization } = useDashboardContext();
 	const [orgName, setOrgName] = useState(activeOrganization?.organization.name);
 	const [saveLoading, setSaveLoading] = useState(false);
@@ -34,7 +35,7 @@ const OrgName = () => {
 	return (
 		<div className="flex-1 space-y-4">
 			<div className="space-y-1">
-				<Label htmlFor="organizationName">Name</Label>
+				<Label htmlFor={nameId}>Name</Label>
 				<p className="text-sm text-gray-10">
 					Changing the name will update how your organization appears to others
 					members.
@@ -45,7 +46,7 @@ const OrgName = () => {
 					type="text"
 					className="bg-gray-2"
 					value={orgName}
-					id="organizationName"
+					id={nameId}
 					name="organizationName"
 					onChange={(e) => {
 						setOrgName(e.target.value);

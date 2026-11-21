@@ -24,8 +24,8 @@ type Override<TTargetA, TTargetB> = {
 		: TTargetA[AKey];
 };
 
-export function makeUseEffectQuery<R>(
-	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, any>,
+export function makeUseEffectQuery<R, RuntimeError>(
+	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, RuntimeError>,
 ) {
 	return function useEffectQuery<
 		TData,
@@ -50,11 +50,11 @@ export function makeUseEffectQuery<R>(
 		const throwOnDefect = options.throwOnDefect ?? false;
 
 		const runtime = useEffectRuntime();
-		const queryFn = options.queryFn;
+		const { queryFn, ...queryOptions } = options;
 		const throwOnError = options.throwOnError;
 
 		const baseResults = useQuery<TData, TExposedError, TData, TQueryKey>({
-			...(options as any),
+			...queryOptions,
 			...(typeof queryFn === "function"
 				? {
 						queryFn: async (args) => {
@@ -171,8 +171,8 @@ export function makeUseEffectQuery<R>(
 	};
 }
 
-export function makeUseEffectMutation<R>(
-	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, any>,
+export function makeUseEffectMutation<R, RuntimeError>(
+	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, RuntimeError>,
 ) {
 	return function useEffectMutation<
 		TData,
@@ -245,7 +245,12 @@ export function makeUseEffectMutation<R>(
 
 		const runtime = useEffectRuntime();
 
-		const baseResults = useMutation({
+		const baseResults = useMutation<
+			TData,
+			Cause.Cause<TError>,
+			TVariables,
+			TContext
+		>({
 			...(options as any),
 			mutationFn:
 				typeof mutationFn === "function"
@@ -436,11 +441,27 @@ export function makeUseEffectMutation<R>(
 							: target.failureReason // if throwOnDefect is false then TExposedError is Cause<TError>, and base error is always Cause<TError>
 						: null;
 				} else if (prop === "mutate") {
-					return (variables: any, options: any) => {
+					return (
+						variables: TVariables,
+						options?: MutateOptions<
+							TData,
+							Cause.Cause<TError>,
+							TVariables,
+							TContext
+						>,
+					) => {
 						return target.mutate(variables, options);
 					};
 				} else if (prop === "mutateAsync") {
-					return (variables: any, options: any) =>
+					return (
+						variables: TVariables,
+						options?: MutateOptions<
+							TData,
+							Cause.Cause<TError>,
+							TVariables,
+							TContext
+						>,
+					) =>
 						target
 							.mutateAsync(variables, options)
 							.then((res) => Exit.succeed(res))

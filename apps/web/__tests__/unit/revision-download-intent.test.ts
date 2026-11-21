@@ -1,7 +1,11 @@
+import { fail } from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 
 const { fetch } = vi.hoisted(() => ({
-	fetch: vi.fn(async () => ({ status: 202 })),
+	fetch: vi.fn(async (_url: string, _options: RequestInit) => ({
+		status: 202,
+		text: async () => "",
+	})),
 }));
 vi.mock("undici", () => ({ Agent: class {}, fetch }));
 vi.mock("@/lib/revision-media-token", () => ({
@@ -23,10 +27,8 @@ describe("download admission intent", () => {
 			await expect(
 				client.prepareRevision({ revisionId: "revision" } as never),
 			).rejects.toThrow();
-			const [, options] = fetch.mock.calls.at(-1)! as unknown as [
-				string,
-				RequestInit,
-			];
+			const [, options] =
+				fetch.mock.calls.at(-1) ?? fail("fetch was not called");
 			expect(options.signal?.aborted).toBe(false);
 			controller.abort();
 			expect(client.signal?.aborted).toBe(true);
@@ -40,15 +42,15 @@ describe("download admission intent", () => {
 		vi.stubEnv("CAP_INSTANT_FINISH_ORIGIN_INTERNAL_URL", "http://origin.test");
 		try {
 			for (const automatic of [true, undefined]) {
-				await httpOriginClient().requestDownload!({
+				await (
+					httpOriginClient().requestDownload ?? fail("Missing download client")
+				)({
 					videoId: "video",
 					revisionId: "revision",
 					automatic,
 				});
-				const [url, options] = fetch.mock.calls.at(-1)! as unknown as [
-					string,
-					RequestInit,
-				];
+				const [url, options] =
+					fetch.mock.calls.at(-1) ?? fail("fetch was not called");
 				expect(url).toBe(
 					"http://origin.test/internal/revisions/revision/download",
 				);
@@ -73,9 +75,12 @@ describe("download admission intent", () => {
 				fetch.mockResolvedValueOnce({
 					status,
 					text: async () => body,
-				} as never);
+				});
 				expect(
-					await httpOriginClient().requestDownload!({
+					await (
+						httpOriginClient().requestDownload ??
+						fail("Missing download client")
+					)({
 						videoId: "video",
 						revisionId: "revision",
 						automatic: true,
