@@ -260,6 +260,30 @@ test("ONNX setup uses the same pinned versions from official NuGet rather than u
 	);
 });
 
+test("Intel macOS keeps its exact runtime version on a verified official package", async (t) => {
+	const directory = await temporaryDirectory(t);
+	const urls = [];
+	t.mock.method(globalThis, "fetch", async (url) => {
+		urls.push(url);
+		throw new Error("stop before downloading Intel package");
+	});
+	await assert.rejects(
+		setupMacOSOnnxRuntime(directory, "x86_64"),
+		/stop before downloading Intel package/,
+	);
+	assert.deepEqual(urls, [
+		"https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg",
+	]);
+	const plan = onnxRuntimeAsset("darwin", "x86_64");
+	assert.equal(plan.version, "1.23.2");
+	assert.equal(plan.runtimeId, "osx-x64");
+	assert.equal(
+		plan.sha256,
+		"25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a",
+	);
+	assert.deepEqual(plan.files, ["libonnxruntime.dylib"]);
+});
+
 test("the existing downloader accepts hash-pinned NuGet ZIP bytes", async (t) => {
 	const directory = await temporaryDirectory(t);
 	t.mock.method(globalThis, "fetch", async () => new Response(zipBytes));
@@ -300,7 +324,7 @@ test("NuGet targets retain pinned versions, exact RIDs, companion libraries and 
 	assert.throws(() => onnxRuntimeAsset("linux", "../x64"), /Unsupported/);
 	assert.throws(() => onnxRuntimeAsset("linux", "constructor"), /Unsupported/);
 	assert.throws(() => onnxRuntimeAsset("constructor", "x86_64"), /Unsupported/);
-	assert.throws(() => onnxRuntimeAsset("darwin", "x86_64"), /Unsupported/);
+	assert.throws(() => onnxRuntimeAsset("darwin", "../x64"), /Unsupported/);
 });
 
 test("NuGet runtime layout stages exactly the selected architecture and rejects incomplete input before replacement", async (t) => {
@@ -312,6 +336,7 @@ test("NuGet runtime layout stages exactly the selected architecture and rejects 
 		["win32", "x86_64"],
 		["win32", "aarch64"],
 		["darwin", "aarch64"],
+		["darwin", "x86_64"],
 	]) {
 		const plan = onnxRuntimeAsset(platform, architecture);
 		const source = path.join(extracted, "runtimes", plan.runtimeId, "native");

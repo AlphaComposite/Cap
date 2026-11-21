@@ -419,44 +419,7 @@ export async function setupMacOSOnnxRuntime(
 	directory = targetDir,
 	architecture = arch,
 ) {
-	if (architecture === "aarch64")
-		return setupPackagedOnnxRuntime("darwin", architecture, directory);
-	if (architecture !== "x86_64")
-		throw new Error(`Unsupported macOS arch for ONNX Runtime: ${architecture}`);
-	const asset = {
-		version: "1.23.2",
-		name: "onnxruntime-osx-x86_64-1.23.2.tgz",
-	};
-	const url = `https://github.com/microsoft/onnxruntime/releases/download/v${asset.version}/${asset.name}`;
-	const archivePath = path.join(directory, asset.name);
-	const extractDir = path.join(directory, asset.name.replace(/\.tgz$/, ""));
-	const outputDir = path.join(directory, "native-deps", "onnxruntime", "lib");
-	const outputPath = path.join(outputDir, "libonnxruntime.dylib");
-	const markerPath = path.join(outputDir, "asset.txt");
-	const marker = await fs
-		.readFile(markerPath, "utf-8")
-		.then((value) => value.trim())
-		.catch(() => null);
-
-	await downloadVerifiedAsset({ ...asset, url }, directory);
-
-	if (!(await fileExists(outputPath)) || marker !== asset.name) {
-		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await execFile("tar", ["xf", archivePath, "-C", directory]);
-		await fs.mkdir(outputDir, { recursive: true });
-		await fs.copyFile(
-			path.join(extractDir, "lib", "libonnxruntime.dylib"),
-			outputPath,
-		);
-		await signMacOSDylib(outputPath);
-		await fs.writeFile(markerPath, asset.name);
-		console.log("Prepared ONNX Runtime dylib");
-	} else {
-		console.log("Using cached ONNX Runtime dylib");
-		if (env.APPLE_SIGNING_IDENTITY) await signMacOSDylib(outputPath);
-	}
-
-	return outputPath;
+	return setupPackagedOnnxRuntime("darwin", architecture, directory);
 }
 
 export async function setupWindowsOnnxRuntime(
@@ -509,15 +472,16 @@ export function onnxRuntimeAsset(platform, architecture) {
 				: platform === "darwin"
 					? "osx"
 					: null;
-	if (
-		!runtimeArch ||
-		!runtimePlatform ||
-		(platform === "darwin" && architecture !== "aarch64")
-	)
+	if (!runtimeArch || !runtimePlatform)
 		throw new Error(
 			`Unsupported NuGet ONNX Runtime target: ${platform}/${architecture}`,
 		);
-	const version = platform === "linux" ? "1.24.3" : "1.24.2";
+	const version =
+		platform === "linux"
+			? "1.24.3"
+			: platform === "darwin" && architecture === "x86_64"
+				? "1.23.2"
+				: "1.24.2";
 	const name = `microsoft.ml.onnxruntime.${version}.nupkg`;
 	const files =
 		platform === "linux"
@@ -537,7 +501,9 @@ export function onnxRuntimeAsset(platform, architecture) {
 		sha256:
 			platform === "linux"
 				? "e4ab3b236c1b803e1e7167fe9a75caa1b82a2fd4ae82abbd130937c07517bcdb"
-				: "782564d3d68e87269ea1812cc94710ad06fe014faf093f01a6f89d0bd58719d3",
+				: version === "1.23.2"
+					? "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a"
+					: "782564d3d68e87269ea1812cc94710ad06fe014faf093f01a6f89d0bd58719d3",
 		runtimeId: `${runtimePlatform}-${runtimeArch}`,
 		files,
 	};
