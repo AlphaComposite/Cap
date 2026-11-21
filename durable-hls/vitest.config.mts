@@ -1,14 +1,16 @@
-import { mergeConfig } from "/srv/styrir/apps/cap/node_modules/vitest/dist/config.js";
+import { fileURLToPath } from "node:url";
+import { mergeConfig } from "vitest/config";
 import base from "../apps/web/vitest.config";
 
 export default mergeConfig(base, {
-	root: "/srv/styrir/worktrees/cap-vk24-durable-hls/apps/web",
+	root: fileURLToPath(new URL("../apps/web", import.meta.url)),
 	resolve: {
 		alias: [
 			{
 				find: "@cap/database/schema",
-				replacement:
-					"/srv/styrir/worktrees/cap-vk24-durable-hls/packages/database/schema.ts",
+				replacement: fileURLToPath(
+					new URL("../packages/database/schema.ts", import.meta.url),
+				),
 			},
 		],
 	},
