@@ -89,6 +89,7 @@ vi.mock("@cap/database", async () => {
 	};
 });
 vi.mock("@/lib/revision-media-grant", () => ({
+	readPublication: async () => null,
 	revisionArtifactUrl: mocks.revisionArtifactUrl,
 	ownerOriginalPath: (id: string) => `/api/media/original?videoId=${id}`,
 	mintRevisionMediaGrant: async () => null,
