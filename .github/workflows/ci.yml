@@ -19,7 +19,7 @@ jobs:
     name: Public repository hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - run: bash scripts/check-public-hygiene.sh
         env:
           PUBLIC_HYGIENE_EXTRA_PATTERN: ${{ secrets.PUBLIC_HYGIENE_EXTRA_PATTERN }}
@@ -34,7 +34,7 @@ jobs:
       branch: ${{ steps.branch.outputs.branch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Check for changes
         uses: dorny/paths-filter@v2
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - uses: ./.github/actions/setup-js
 
@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - uses: ./.github/actions/setup-js
 
@@ -152,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Biome
         uses: biomejs/setup-biome@v2
@@ -169,7 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
@@ -195,7 +195,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Rust setup
         uses: dtolnay/rust-toolchain@1.88.0
@@ -239,7 +239,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Biome
         uses: biomejs/setup-biome@v2
@@ -269,7 +269,7 @@ jobs:
       TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Test desktop build preparation
         run: node --test scripts/prepare-gpui-dependency.test.mjs scripts/build-macos-packages.test.mjs
@@ -365,7 +365,7 @@ jobs:
     if: needs.changes.outputs.tauri-plugins == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - uses: ./.github/actions/setup-js
 
@@ -392,7 +392,7 @@ jobs:
       RUST_TARGET_TRIPLE: ${{ matrix.settings.target }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Rust setup
         uses: dtolnay/rust-toolchain@1.88.0
@@ -406,9 +406,10 @@ jobs:
           save-cache: true
 
       - name: Setup node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
+          package-manager-cache: false
 
       - run: node scripts/setup.js
 
