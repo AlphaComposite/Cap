@@ -94,7 +94,7 @@ export const DownloadPage = () => {
 						</div>
 
 						<div className="text-sm text-gray-10">
-							{getVersionText(platform)}
+							{getVersionText(platform, isIntel)}
 						</div>
 
 						{/* Windows SmartScreen video and instructions */}

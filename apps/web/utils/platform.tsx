@@ -75,9 +75,14 @@ export const getPlatformIcon = (platform: string | null): React.ReactNode => {
 	}
 };
 
-export const getVersionText = (platform: string | null): React.ReactNode => {
+export const getVersionText = (
+	platform: string | null,
+	isIntel = false,
+): React.ReactNode => {
 	if (platform === "macos") {
-		return "Apple Silicon • macOS 14.0 or later";
+		return isIntel
+			? "Unsupported Intel history • see each release's original requirements"
+			: "Apple Silicon • macOS 14.0 or later";
 	} else if (platform === "windows") {
 		return "Windows 10+ recommended";
 	} else if (platform === "linux") {
