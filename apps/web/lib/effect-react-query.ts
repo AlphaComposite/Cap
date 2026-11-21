@@ -283,6 +283,12 @@ export function makeUseEffectMutation<R, RuntimeError>(
 						}
 					: mutationFn,
 			throwOnError: (cause) => {
+				if (
+					typeof throwOnError === "function" &&
+					Cause.isDieType(cause) &&
+					Cause.isUnknownException(cause.defect)
+				)
+					return true;
 				const failureOrCause = Cause.failureOrCause(cause);
 				if (throwOnDefect && Either.isRight(failureOrCause)) return true;
 				const error = (throwOnDefect && Either.isLeft(failureOrCause)

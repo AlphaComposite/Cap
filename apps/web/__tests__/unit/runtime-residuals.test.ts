@@ -276,6 +276,32 @@ describe("effect mutation runtime contract", () => {
 		},
 	);
 
+	it("preserves synchronous-throw escalation with a throwOnError predicate", async () => {
+		const predicate = vi.fn(() => false);
+		const view = await renderHook(() =>
+			useMutation({
+				mutationFn: () => {
+					throw new Error("sync");
+				},
+				throwOnError: predicate,
+			}),
+		);
+		let caught: unknown;
+		try {
+			await act(async () => {
+				await view.current.mutateAsync(undefined);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			});
+		} catch (error) {
+			caught = error;
+		}
+		expect(Cause.isCause(caught)).toBe(true);
+		if (!Cause.isCause(caught) || !Cause.isDieType(caught))
+			throw new Error("Expected a defect cause");
+		expect(Cause.isUnknownException(caught.defect)).toBe(true);
+		expect(predicate).not.toHaveBeenCalled();
+	});
+
 	it("returns adapter callback rejections unchanged to TanStack", async () => {
 		const rejection = new Error("callback rejection");
 		const failure = "typed";
