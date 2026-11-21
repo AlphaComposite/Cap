@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
+
 import * as path from "node:path";
 import { test } from "node:test";
-import {
+import * as setup from "./setup.js";
+
+const {
 	downloadVerifiedAsset,
 	installFfmpegRoot,
+	onnxRuntimeAsset,
+	setupLinuxOnnxRuntime,
 	setupMacOSOnnxRuntime,
-} from "./setup.js";
+	setupWindowsOnnxRuntime,
+	stageOnnxRuntime,
+} = setup;
 
 async function temporaryDirectory(t) {
-	const directory = await fs.mkdtemp(
-		path.join(os.tmpdir(), "cap-native-setup-"),
-	);
+	const base = process.env.TMPDIR ?? path.resolve("target");
+	await fs.mkdir(base, { recursive: true });
+	const directory = await fs.mkdtemp(path.join(base, "cap-native-setup-"));
 	t.after(() => fs.rm(directory, { recursive: true, force: true }));
 	return directory;
 }
@@ -224,4 +230,110 @@ test("FFmpeg validation rejects directory links outside its extracted root", asy
 		await fs.readFile(path.join(outside, "ffmpeg.exe"), "utf8"),
 		"fixture",
 	);
+});
+
+test("ONNX setup uses the same pinned versions from official NuGet rather than unavailable GitHub releases", async (t) => {
+	const directory = await temporaryDirectory(t);
+	const urls = [];
+	t.mock.method(globalThis, "fetch", async (url) => {
+		urls.push(url);
+		throw new Error("stop before downloading test package");
+	});
+	await assert.rejects(
+		setupMacOSOnnxRuntime(directory, "aarch64"),
+		/stop before downloading test package/,
+	);
+	await assert.rejects(
+		setupWindowsOnnxRuntime(directory, "x86_64"),
+		/stop before downloading test package/,
+	);
+	await assert.rejects(
+		setupLinuxOnnxRuntime(directory, "x86_64"),
+		/stop before downloading test package/,
+	);
+	assert.deepEqual(
+		urls,
+		["1.24.2", "1.24.2", "1.24.3"].map(
+			(version) =>
+				`https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${version}/microsoft.ml.onnxruntime.${version}.nupkg`,
+		),
+	);
+});
+
+test("the existing downloader accepts hash-pinned NuGet ZIP bytes", async (t) => {
+	const directory = await temporaryDirectory(t);
+	t.mock.method(globalThis, "fetch", async () => new Response(zipBytes));
+	const archive = await downloadVerifiedAsset(
+		{ ...asset, name: "runtime.nupkg" },
+		directory,
+	);
+	assert.deepEqual(await fs.readFile(archive), zipBytes);
+});
+
+test("NuGet targets retain pinned versions, exact RIDs, companion libraries and byte hashes", () => {
+	for (const [platform, architecture, runtimeId, version] of [
+		["linux", "x86_64", "linux-x64", "1.24.3"],
+		["linux", "aarch64", "linux-arm64", "1.24.3"],
+		["win32", "x86_64", "win-x64", "1.24.2"],
+		["win32", "aarch64", "win-arm64", "1.24.2"],
+		["darwin", "aarch64", "osx-arm64", "1.24.2"],
+	]) {
+		const plan = onnxRuntimeAsset(platform, architecture);
+		assert.equal(plan.runtimeId, runtimeId);
+		assert.equal(plan.version, version);
+		assert.equal(
+			plan.sha256,
+			version === "1.24.3"
+				? "e4ab3b236c1b803e1e7167fe9a75caa1b82a2fd4ae82abbd130937c07517bcdb"
+				: "782564d3d68e87269ea1812cc94710ad06fe014faf093f01a6f89d0bd58719d3",
+		);
+		assert.ok(
+			plan.files.includes(
+				platform === "linux"
+					? "libonnxruntime_providers_shared.so"
+					: platform === "win32"
+						? "onnxruntime_providers_shared.dll"
+						: "libonnxruntime.dylib",
+			),
+		);
+	}
+	assert.throws(() => onnxRuntimeAsset("linux", "../x64"), /Unsupported/);
+	assert.throws(() => onnxRuntimeAsset("linux", "constructor"), /Unsupported/);
+	assert.throws(() => onnxRuntimeAsset("constructor", "x86_64"), /Unsupported/);
+	assert.throws(() => onnxRuntimeAsset("darwin", "x86_64"), /Unsupported/);
+});
+
+test("NuGet runtime layout stages exactly the selected architecture and rejects incomplete input before replacement", async (t) => {
+	const directory = await temporaryDirectory(t);
+	const extracted = path.join(directory, "extract");
+	for (const [platform, architecture] of [
+		["linux", "x86_64"],
+		["linux", "aarch64"],
+		["win32", "x86_64"],
+		["win32", "aarch64"],
+		["darwin", "aarch64"],
+	]) {
+		const plan = onnxRuntimeAsset(platform, architecture);
+		const source = path.join(extracted, "runtimes", plan.runtimeId, "native");
+		await fs.mkdir(source, { recursive: true });
+		for (const name of plan.files)
+			await fs.writeFile(path.join(source, name), plan.runtimeId);
+		const output = path.join(directory, plan.runtimeId);
+		await stageOnnxRuntime(extracted, output, platform, architecture);
+		assert.deepEqual((await fs.readdir(output)).sort(), [...plan.files].sort());
+		for (const name of plan.files)
+			assert.equal(
+				await fs.readFile(path.join(output, name), "utf8"),
+				plan.runtimeId,
+			);
+		await fs.writeFile(path.join(source, plan.files.at(-1)), "");
+		await assert.rejects(
+			stageOnnxRuntime(extracted, output, platform, architecture),
+			/ONNX Runtime package/,
+		);
+		assert.equal(
+			await fs.readFile(path.join(output, plan.files[0]), "utf8"),
+			plan.runtimeId,
+		);
+	}
 });
