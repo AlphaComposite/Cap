@@ -39,7 +39,9 @@ describe("finalized origin download stream transport", () => {
 		});
 		const buffer = vi.spyOn(upstream, "arrayBuffer");
 		transport.fetch.mockResolvedValue(upstream);
-		const signal = new AbortController().signal;
+		const controller = new AbortController();
+		const signal = controller.signal;
+		const deadline = vi.spyOn(AbortSignal, "timeout");
 		const client = httpOriginClient();
 		if (!client.streamDownload) throw new Error("Missing stream transport");
 		const response = await client.streamDownload({
@@ -55,7 +57,12 @@ describe("finalized origin download stream transport", () => {
 		expect(url).toBe(
 			"http://origin.test/internal/revisions/revision1234/download",
 		);
-		expect(options.signal).toBe(signal);
+		expect(deadline).toHaveBeenCalledWith(45 * 60 * 1000);
+		expect(options.signal.aborted).toBe(false);
+		controller.abort("caller-cancelled");
+		expect(options.signal.aborted).toBe(true);
+		expect(options.signal.reason).toBe("caller-cancelled");
+		deadline.mockRestore();
 		expect(
 			verifyInternalServiceRequest(
 				options.headers[ORIGIN_SERVICE_HEADER] ?? "",
