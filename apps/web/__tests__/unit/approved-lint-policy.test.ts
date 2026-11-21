@@ -26,11 +26,17 @@ describe("per-site lint policy", () => {
 
 	it("documents exactly the narrow rule-specific sites, with meaningful reasons", () => {
 		expect(sources).toHaveLength(24);
+		const retainedChangelogException =
+			"// biome-ignore lint/suspicious/noArrayIndexKey: gaps are positional";
+		expect(
+			read("apps/web/app/(site)/changelog/_components/ChangelogView.tsx").split(
+				retainedChangelogException,
+			).length,
+		).toBe(2);
 		const counts: Record<string, number> = {};
 		for (const source of sources) {
-			for (const match of read(source).matchAll(
-				/biome-ignore ([^:]+): ([^\n]+)/g,
-			)) {
+			const content = read(source).replace(retainedChangelogException, "");
+			for (const match of content.matchAll(/biome-ignore ([^:]+): ([^\n]+)/g)) {
 				const [, rule, reason] = match;
 				if (!rule || !reason)
 					throw new Error("Missing per-site rule or reason");
