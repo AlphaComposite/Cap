@@ -12,6 +12,17 @@ import { createLinuxBundleConfig } from "./linux-bundle-config.mjs";
 const exec = promisify(execCb);
 const execFile = promisify(execFileCb);
 
+export async function extractWindowsArchive(
+	archivePath,
+	destination,
+	execute = execFile,
+) {
+	return execute(
+		path.win32.join(env.SystemRoot || "C:\\Windows", "System32", "tar.exe"),
+		["xf", archivePath, "-C", destination],
+	);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -151,12 +162,7 @@ async function main() {
 				path.join(targetDir, "ffmpeg-extract-"),
 			);
 			try {
-				await execFile("powershell.exe", [
-					"-NoProfile",
-					"-NonInteractive",
-					"-Command",
-					`Expand-Archive -LiteralPath '${ffmpegZipPath.replaceAll("'", "''")}' -DestinationPath '${extractDir.replaceAll("'", "''")}' -Force -ErrorAction Stop`,
-				]);
+				await extractWindowsArchive(ffmpegZipPath, extractDir);
 				await installFfmpegRoot(extractDir, ffmpegDir);
 			} finally {
 				await fs.rm(extractDir, { recursive: true, force: true });
@@ -561,17 +567,20 @@ async function setupPackagedOnnxRuntime(platform, architecture, directory) {
 			path.join(directory, "onnxruntime-extract-"),
 		);
 		try {
-			if (process.platform === "linux" && !(await findExecutable("bsdtar")))
+			if (process.platform === "win32")
+				await extractWindowsArchive(archivePath, extractDir);
+			else if (
+				process.platform === "linux" &&
+				!(await findExecutable("bsdtar"))
+			)
 				await execFile("unzip", ["-q", archivePath, "-d", extractDir]);
 			else
-				await execFile(
-					process.platform === "win32"
-						? path.join(env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
-						: process.platform === "linux"
-							? "bsdtar"
-							: "tar",
-					["xf", archivePath, "-C", extractDir],
-				);
+				await execFile(process.platform === "linux" ? "bsdtar" : "tar", [
+					"xf",
+					archivePath,
+					"-C",
+					extractDir,
+				]);
 			await stageOnnxRuntime(extractDir, outputDir, platform, architecture);
 			if (platform === "darwin") {
 				await execFile("install_name_tool", [
@@ -634,10 +643,8 @@ async function setupWindowsDxc() {
 
 	if (currentMarker !== marker || missingAssets.length > 0) {
 		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await exec(
-			`Expand-Archive -Path "${archivePath}" -DestinationPath "${extractDir}" -Force`,
-			{ shell: "powershell.exe" },
-		);
+		await fs.mkdir(extractDir, { recursive: true });
+		await extractWindowsArchive(archivePath, extractDir);
 		await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
 		await fs.mkdir(outputDir, { recursive: true });
 		for (const file of files)

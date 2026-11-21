@@ -260,6 +260,37 @@ test("ONNX setup uses the same pinned versions from official NuGet rather than u
 	);
 });
 
+test("Windows archives avoid the broken PowerShell extraction path", async () => {
+	const source = await fs.readFile(
+		new URL("./setup.js", import.meta.url),
+		"utf8",
+	);
+	assert.doesNotMatch(source, /\bExpand-Archive\b/);
+	const { extractWindowsArchive } = await import("./setup.js");
+	const calls = [];
+	await extractWindowsArchive(
+		"C:\\archive with spaces\\runtime.zip",
+		"C:\\output [native]",
+		async (...args) => {
+			calls.push(args);
+		},
+	);
+	assert.equal(calls.length, 1);
+	assert.match(calls[0][0], /\\System32\\tar\.exe$/i);
+	assert.deepEqual(calls[0][1], [
+		"xf",
+		"C:\\archive with spaces\\runtime.zip",
+		"-C",
+		"C:\\output [native]",
+	]);
+	await assert.rejects(
+		extractWindowsArchive("archive.zip", "output", async () => {
+			throw new Error("tar extraction failed");
+		}),
+		/tar extraction failed/,
+	);
+});
+
 test("Intel macOS keeps its exact runtime version on a verified official package", async (t) => {
 	const directory = await temporaryDirectory(t);
 	const urls = [];
