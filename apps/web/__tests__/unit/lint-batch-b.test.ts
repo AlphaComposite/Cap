@@ -291,7 +291,9 @@ describe("lint batch B behavior", () => {
 			handleClientScriptLoad(
 				DailyStandupSoftwarePage().props.children[0].props,
 			);
-			const script = document.getElementById("faq-structured-data");
+			const script = document.getElementById(
+				"solutions-daily-standup-software-faq-structured-data",
+			);
 			expect(script?.getAttribute("type")).toBe("application/ld+json");
 			expect(script?.textContent).not.toContain("</script>");
 			expect(JSON.parse(script?.textContent ?? "").mainEntity[0].name).toBe(
@@ -301,7 +303,9 @@ describe("lint batch B behavior", () => {
 				DailyStandupSoftwarePage().props.children[0].props,
 			);
 			expect(
-				document.querySelectorAll('[id="faq-structured-data"]'),
+				document.querySelectorAll(
+					'[id="solutions-daily-standup-software-faq-structured-data"]',
+				),
 			).toHaveLength(1);
 		} finally {
 			faq.question = original;

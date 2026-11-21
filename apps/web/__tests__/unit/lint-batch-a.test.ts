@@ -307,7 +307,9 @@ describe("lint batch A semantics", () => {
 					throw new Error("Expected a script");
 				handleClientScriptLoad(script.props);
 			}
-			const script = document.getElementById("article-structured-data");
+			const script = document.getElementById(
+				"blog-record-screen-mac-system-audio-article-structured-data",
+			);
 			expect(script?.getAttribute("type")).toBe("application/ld+json");
 			const text = script?.textContent ?? "";
 			expect(JSON.parse(text).headline).toBe(hostile);
@@ -331,7 +333,9 @@ describe("lint batch A semantics", () => {
 				handleClientScriptLoad(script.props);
 			}
 			expect(
-				document.querySelectorAll("#article-structured-data"),
+				document.querySelectorAll(
+					"#blog-record-screen-mac-system-audio-article-structured-data",
+				),
 			).toHaveLength(1);
 		} finally {
 			recordScreenMacContent.title = title;
