@@ -318,7 +318,9 @@ mod tests {
             (MemoryPressure::Critical, true),
         ] {
             assert_eq!(
-                resources().warning(&sample(Some(9 * GIB), pressure)).is_some(),
+                resources()
+                    .warning(&sample(Some(9 * GIB), pressure))
+                    .is_some(),
                 warns
             );
         }
