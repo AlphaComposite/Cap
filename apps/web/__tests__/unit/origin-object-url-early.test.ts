@@ -188,7 +188,7 @@ describe("original source-prepare per-key URLs", () => {
 		for (const [field, value] of [
 			["videoId", "other"],
 			["job", "prepare"],
-		]) {
+		] as const) {
 			jobs = [{ ...structuredClone(original), [field]: value }];
 			await denied();
 		}

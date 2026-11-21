@@ -816,7 +816,11 @@ async function extractAudioFromSegmentsImpl(
 			// contract is untouched.
 			const audioBuffer = await fs.readFile(concatPath);
 
-			const audioKey = transcribeTempAudioKey(userId, videoId, tempAudioFilename);
+			const audioKey = transcribeTempAudioKey(
+				userId,
+				videoId,
+				tempAudioFilename,
+			);
 			await bucket
 				.putObject(audioKey, audioBuffer, {
 					contentType: "audio/mp4",
@@ -984,11 +988,16 @@ async function saveTranscription(
 			.pipe(runWorkflowPromise);
 	}
 
-  const {enqueueSourceCaptionsAfterTranscript} = await import("@/lib/source-prepare-worker");
-  await db().transaction(async tx=>{
-    await tx.update(videos).set({transcriptionStatus:"COMPLETE"}).where(eq(videos.id,videoId as Video.VideoId));
-    await enqueueSourceCaptionsAfterTranscript(tx,videoId);
-  });
+	const { enqueueSourceCaptionsAfterTranscript } = await import(
+		"@/lib/source-prepare-worker"
+	);
+	await db().transaction(async (tx) => {
+		await tx
+			.update(videos)
+			.set({ transcriptionStatus: "COMPLETE" })
+			.where(eq(videos.id, videoId as Video.VideoId));
+		await enqueueSourceCaptionsAfterTranscript(tx, videoId);
+	});
 
 	// The canonical transcript supersedes the provisional live transcript, so
 	// drop the artifact and its metadata flag. Never fatal: a leftover live

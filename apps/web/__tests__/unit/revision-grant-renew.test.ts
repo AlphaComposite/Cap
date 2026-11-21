@@ -92,7 +92,7 @@ describe("revision grant loader", () => {
 		);
 		const loader = new Loader() as unknown as Base;
 		loader.load({
-			url: "https://cap.styrir.com/media/v/r/rev/seg/45.m4s?t=OLD",
+			url: "https://cap.example.com/media/v/r/rev/seg/45.m4s?t=OLD",
 		});
 		loader.load({ url: "/media/v/r/rev/init.mp4?t=OLD&x=1" });
 		loader.load({ url: "https://cdn.example.com/other.m4s?t=OLD" });

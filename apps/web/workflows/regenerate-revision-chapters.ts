@@ -22,8 +22,8 @@ import {
 import { loadStoredEditTranscript } from "@/lib/revision-publication";
 import { deriveRevisionCaptions } from "@/lib/revision-publication-metadata";
 import { captionsHaveCues } from "@/lib/source-prepare";
-import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
 import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
+import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
 import {
 	generateChaptersForTranscript,
 	generateTitleForChapters,
@@ -101,7 +101,9 @@ export async function regenerateRevisionChapters({
 			parseAiGenerationLanguage(row.settings?.aiGenerationLanguage),
 		);
 
-		const language = parseAiGenerationLanguage(row.settings?.aiGenerationLanguage);
+		const language = parseAiGenerationLanguage(
+			row.settings?.aiGenerationLanguage,
+		);
 		let savedChapters: { title: string; start: number }[] | null = null;
 		const saved = await app.transaction(async (tx) => {
 			// Same lock order as publication and saveResults: videos, then publication.
@@ -128,7 +130,10 @@ export async function regenerateRevisionChapters({
 			});
 			const chapters = projectSourceChapters(sourceChapters, spec);
 			// Never trade the projected chapters for a lone one on a real meeting.
-			if (chapters.length === 0 || (chapters.length < 2 && snapshot.durationSeconds >= 120))
+			if (
+				chapters.length === 0 ||
+				(chapters.length < 2 && snapshot.durationSeconds >= 120)
+			)
 				return false;
 			savedChapters = chapters;
 			await tx
@@ -222,6 +227,10 @@ async function refreshRevisionTitle(
 		}
 	} catch (error) {
 		// Chapters are already saved; a failed retitle keeps the old title.
-		console.warn("Revision title refresh failed", { videoId: id, revisionId, error });
+		console.warn("Revision title refresh failed", {
+			videoId: id,
+			revisionId,
+			error,
+		});
 	}
 }

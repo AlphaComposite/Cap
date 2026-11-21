@@ -193,23 +193,19 @@ describe("early source prepare joins verified copy before identity", () => {
 			sourceKey: ORIGINAL,
 		});
 		const f = fixture();
-		f.rows
-			.get(schema.sourceObject)!
-			.push({
-				videoId: VIDEO,
-				liveKey: ORIGINAL,
-				sha256: SHA,
-				relocationState: "LIVE",
-			});
-		f.rows
-			.get(schema.sourceRelocation)!
-			.push({
-				videoId: VIDEO,
-				oldKey: ORIGINAL,
-				newKey: PRIVATE,
-				sha256: SHA,
-				state: "COPIED",
-			});
+		f.rows.get(schema.sourceObject)!.push({
+			videoId: VIDEO,
+			liveKey: ORIGINAL,
+			sha256: SHA,
+			relocationState: "LIVE",
+		});
+		f.rows.get(schema.sourceRelocation)!.push({
+			videoId: VIDEO,
+			oldKey: ORIGINAL,
+			newKey: PRIVATE,
+			sha256: SHA,
+			state: "COPIED",
+		});
 		await drainSourcePrepare(f.app, {});
 		expect(runtime.prepare).toHaveBeenLastCalledWith({
 			videoId: VIDEO,

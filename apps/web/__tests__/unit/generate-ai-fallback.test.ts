@@ -206,10 +206,10 @@ describe("callAiApi provider fallback on invalid output", () => {
 			title: "Workflow review",
 		});
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
-		expect(generateTextMock.mock.calls[1][0].model).toBe(
-			generateTextMock.mock.calls[0][0].model,
+		expect(generateTextMock.mock.calls[1]?.[0].model).toBe(
+			generateTextMock.mock.calls[0]?.[0].model,
 		);
-		expect(generateTextMock.mock.calls[1][0].prompt).toContain(
+		expect(generateTextMock.mock.calls[1]?.[0].prompt).toContain(
 			"title property is missing",
 		);
 	});
@@ -260,8 +260,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 				parse === parseFinalTitle ? {} : { chapters },
 			);
 			expect(generateTextMock).toHaveBeenCalledTimes(2);
-			expect(generateTextMock.mock.calls[1][0].model).toBe(
-				generateTextMock.mock.calls[0][0].model,
+			expect(generateTextMock.mock.calls[1]?.[0].model).toBe(
+				generateTextMock.mock.calls[0]?.[0].model,
 			);
 			expect(console.error).not.toHaveBeenCalled();
 		},
@@ -287,10 +287,10 @@ describe("callAiApi provider fallback on invalid output", () => {
 				chapters,
 			});
 			expect(generateTextMock).toHaveBeenCalledTimes(2);
-			expect(generateTextMock.mock.calls[1][0].model).toBe(
-				generateTextMock.mock.calls[0][0].model,
+			expect(generateTextMock.mock.calls[1]?.[0].model).toBe(
+				generateTextMock.mock.calls[0]?.[0].model,
 			);
-			expect(generateTextMock.mock.calls[1][0].prompt).toContain(
+			expect(generateTextMock.mock.calls[1]?.[0].prompt).toContain(
 				"Do not regenerate chapters",
 			);
 		},
@@ -307,8 +307,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 			chapters,
 		});
 		expect(generateTextMock).toHaveBeenCalledTimes(3);
-		expect(generateTextMock.mock.calls[2][0].model).not.toBe(
-			generateTextMock.mock.calls[0][0].model,
+		expect(generateTextMock.mock.calls[2]?.[0].model).not.toBe(
+			generateTextMock.mock.calls[0]?.[0].model,
 		);
 	});
 
@@ -341,8 +341,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 			chapters: [],
 		});
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
-		expect(generateTextMock.mock.calls[1][0].model).not.toBe(
-			generateTextMock.mock.calls[0][0].model,
+		expect(generateTextMock.mock.calls[1]?.[0].model).not.toBe(
+			generateTextMock.mock.calls[0]?.[0].model,
 		);
 	});
 
@@ -352,8 +352,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 			generateTitleForChapters([{ title: "Billing", start: 0 }], "auto"),
 		).resolves.toBeNull();
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
-		expect(generateTextMock.mock.calls[1][0].model).toBe(
-			generateTextMock.mock.calls[0][0].model,
+		expect(generateTextMock.mock.calls[1]?.[0].model).toBe(
+			generateTextMock.mock.calls[0]?.[0].model,
 		);
 	});
 
@@ -365,8 +365,8 @@ describe("callAiApi provider fallback on invalid output", () => {
 			generateTitleForChapters([{ title: "Billing", start: 0 }], "auto"),
 		).resolves.toBeNull();
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
-		expect(generateTextMock.mock.calls[1][0].model).not.toBe(
-			generateTextMock.mock.calls[0][0].model,
+		expect(generateTextMock.mock.calls[1]?.[0].model).not.toBe(
+			generateTextMock.mock.calls[0]?.[0].model,
 		);
 	});
 

@@ -399,14 +399,44 @@ describe("revision download exhaustion", () => {
 	});
 
 	it("marks outbox exports automatic and skips an origin supersession race", async () => {
-		const artifact: Artifact = { revisionId: "rev-race", videoId: "vid-race", state: "PENDING", attempts: 0, heartbeatAt: null, current: true };
-		const jobs: Job[] = [{ id: 9, revisionId: artifact.revisionId, videoId: artifact.videoId, createdAt: new Date(0), payload: { job: "download", revisionId: artifact.revisionId, videoId: artifact.videoId, attempts: DOWNLOAD_MAX_FAILURES } }];
+		const artifact: Artifact = {
+			revisionId: "rev-race",
+			videoId: "vid-race",
+			state: "PENDING",
+			attempts: 0,
+			heartbeatAt: null,
+			current: true,
+		};
+		const jobs: Job[] = [
+			{
+				id: 9,
+				revisionId: artifact.revisionId,
+				videoId: artifact.videoId,
+				createdAt: new Date(0),
+				payload: {
+					job: "download",
+					revisionId: artifact.revisionId,
+					videoId: artifact.videoId,
+					attempts: DOWNLOAD_MAX_FAILURES,
+				},
+			},
+		];
 		const requestDownload = vi.fn(async () => ({ status: 409 }));
 		await sweepRevisionDownloads(workerDb([artifact], jobs, []), {
-			origin: { prepareRevision: vi.fn(), selectFrames: vi.fn(), fetchArtifact: vi.fn(), requestDownload },
-			now: new Date(1_000_000), limit: 1,
+			origin: {
+				prepareRevision: vi.fn(),
+				selectFrames: vi.fn(),
+				fetchArtifact: vi.fn(),
+				requestDownload,
+			},
+			now: new Date(1_000_000),
+			limit: 1,
 		});
-		expect(requestDownload).toHaveBeenCalledWith({ videoId: artifact.videoId, revisionId: artifact.revisionId, automatic: true });
+		expect(requestDownload).toHaveBeenCalledWith({
+			videoId: artifact.videoId,
+			revisionId: artifact.revisionId,
+			automatic: true,
+		});
 		expect(jobs).toHaveLength(0);
 		expect(artifact.state).toBe("PENDING");
 		expect(artifact.attempts).toBe(0);
@@ -470,47 +500,53 @@ describe("revision download exhaustion", () => {
 		[500, false, false],
 		[503, true, false],
 		[503, false, false, false],
-	])("origin %i at exhaustion (earlier real failure: %s) keeps the failed cycle count: %s", async (status, hardFailure, kept, busy = true) => {
-		const artifact: Artifact = {
-			revisionId: "rev-busy",
-			videoId: "vid-busy",
-			state: "PENDING",
-			attempts: MAX_FAILED_CYCLES - 1,
-			heartbeatAt: null,
-			current: true,
-		};
-		const jobs: Job[] = [
-			{
-				id: 4,
-				revisionId: artifact.revisionId,
-				videoId: artifact.videoId,
-				createdAt: new Date(0),
-				payload: {
-					job: "download",
+	])(
+		"origin %i at exhaustion (earlier real failure: %s) keeps the failed cycle count: %s",
+		async (status, hardFailure, kept, busy = true) => {
+			const artifact: Artifact = {
+				revisionId: "rev-busy",
+				videoId: "vid-busy",
+				state: "PENDING",
+				attempts: MAX_FAILED_CYCLES - 1,
+				heartbeatAt: null,
+				current: true,
+			};
+			const jobs: Job[] = [
+				{
+					id: 4,
 					revisionId: artifact.revisionId,
 					videoId: artifact.videoId,
-					polls: 1,
-					attempts: DOWNLOAD_MAX_FAILURES,
-					hardFailure,
+					createdAt: new Date(0),
+					payload: {
+						job: "download",
+						revisionId: artifact.revisionId,
+						videoId: artifact.videoId,
+						polls: 1,
+						attempts: DOWNLOAD_MAX_FAILURES,
+						hardFailure,
+					},
 				},
-			},
-		];
-		const database = workerDb([artifact], jobs, []);
-		await sweepRevisionDownloads(database, {
-			origin: {
-				prepareRevision: vi.fn(),
-				selectFrames: vi.fn(),
-				fetchArtifact: vi.fn(),
-				requestDownload: async () => ({ status, busy: busy && status === 503 }),
-			},
-			now: new Date(5_000),
-			limit: 1,
-		});
-		expect(artifact.state).toBe("FAILED");
-		// busy (503) must not spend a cycle; real errors (500) must
-		expect(artifact.attempts === MAX_FAILED_CYCLES - 1).toBe(kept);
-		expect(artifact.heartbeatAt).toEqual(new Date(5_000));
-	});
+			];
+			const database = workerDb([artifact], jobs, []);
+			await sweepRevisionDownloads(database, {
+				origin: {
+					prepareRevision: vi.fn(),
+					selectFrames: vi.fn(),
+					fetchArtifact: vi.fn(),
+					requestDownload: async () => ({
+						status,
+						busy: busy && status === 503,
+					}),
+				},
+				now: new Date(5_000),
+				limit: 1,
+			});
+			expect(artifact.state).toBe("FAILED");
+			// busy (503) must not spend a cycle; real errors (500) must
+			expect(artifact.attempts === MAX_FAILED_CYCLES - 1).toBe(kept);
+			expect(artifact.heartbeatAt).toEqual(new Date(5_000));
+		},
+	);
 	it("re-enqueues a cooled FAILED current download at most three cycles", async () => {
 		const now = new Date(10_000_000);
 		const cooled = new Date(now.getTime() - COOLDOWN_MS - 1);

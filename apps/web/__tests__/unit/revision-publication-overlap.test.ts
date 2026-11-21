@@ -217,41 +217,75 @@ afterEach(() => {
 
 describe("publication independent transcript read", () => {
 	it.each([
-		[new DOMException("This operation was aborted", "AbortError"), true, "SUPERSEDED"],
-		[new DOMException("This operation was aborted", "AbortError"), false, "FAILED"],
-		[new DOMException("This operation was aborted", "AbortError"), undefined, "FAILED"],
-		[new Error("transport", { cause: new DOMException("aborted", "AbortError") }), false, "FAILED"],
+		[
+			new DOMException("This operation was aborted", "AbortError"),
+			true,
+			"SUPERSEDED",
+		],
+		[
+			new DOMException("This operation was aborted", "AbortError"),
+			false,
+			"FAILED",
+		],
+		[
+			new DOMException("This operation was aborted", "AbortError"),
+			undefined,
+			"FAILED",
+		],
+		[
+			new Error("transport", {
+				cause: new DOMException("aborted", "AbortError"),
+			}),
+			false,
+			"FAILED",
+		],
 		[new Error("encoder failed"), true, "FAILED"],
 		[new Error("encoder failed"), false, "FAILED"],
-	])("retains only causally linked cancellation separately from failure (%#)", async (error, aborted, state) => {
-		const { database, rows, origin, input } = fixture();
-		const controller = new AbortController();
-		if (aborted !== undefined) Object.assign(origin, { signal: controller.signal });
-		finishInventoryProbe.getObject = async () => transcript;
-		finishInventoryProbe.listPrefix = async () => [];
-		vi.mocked(origin.prepareRevision).mockImplementationOnce(async () => {
-			if (aborted) controller.abort();
-			throw error;
-		});
-		await expect(prepareInstantFinishRevision(database, input, {
-			origin, randomRevisionId: () => "revision",
-		})).rejects.toThrow();
-		expect(rows.get(editRevision)?.[0]?.state).toBe(state);
-		expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
-	});
+	])(
+		"retains only causally linked cancellation separately from failure (%#)",
+		async (error, aborted, state) => {
+			const { database, rows, origin, input } = fixture();
+			const controller = new AbortController();
+			if (aborted !== undefined)
+				Object.assign(origin, { signal: controller.signal });
+			finishInventoryProbe.getObject = async () => transcript;
+			finishInventoryProbe.listPrefix = async () => [];
+			vi.mocked(origin.prepareRevision).mockImplementationOnce(async () => {
+				if (aborted) controller.abort();
+				throw error;
+			});
+			await expect(
+				prepareInstantFinishRevision(database, input, {
+					origin,
+					randomRevisionId: () => "revision",
+				}),
+			).rejects.toThrow();
+			expect(rows.get(editRevision)?.[0]?.state).toBe(state);
+			expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
+		},
+	);
 	it("allocates the sealed revision while the independent transcript read is pending", async () => {
 		const { database, rows, origin, input } = fixture();
 		const read = deferred();
 		finishInventoryProbe.listPrefix = async () => [];
-		finishInventoryProbe.getObject = async () => { await read.promise; return transcript; };
+		finishInventoryProbe.getObject = async () => {
+			await read.promise;
+			return transcript;
+		};
 		const pending = publishInstantFinishRevision(database, input, {
-			origin, randomRevisionId: () => "revision",
+			origin,
+			randomRevisionId: () => "revision",
 		});
 		try {
-			await vi.waitFor(() => expect(rows.get(editRevision)?.[0]?.state).toBe("PREPARING"));
+			await vi.waitFor(() =>
+				expect(rows.get(editRevision)?.[0]?.state).toBe("PREPARING"),
+			);
 			expect(origin.prepareRevision).not.toHaveBeenCalled();
 			expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
-		} finally { read.resolve(); await pending; }
+		} finally {
+			read.resolve();
+			await pending;
+		}
 		expect(origin.prepareRevision).toHaveBeenCalledOnce();
 		expect(rows.get(editRevision)?.[0]?.state).toBe("CURRENT");
 	});

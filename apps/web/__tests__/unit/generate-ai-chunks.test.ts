@@ -220,8 +220,8 @@ describe("multi-chunk chapter evidence", () => {
 			.mockResolvedValueOnce({ text: '{"title":null}' });
 		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
 		expect(generateTextMock).toHaveBeenCalledTimes(2);
-		expect(generateTextMock.mock.calls[1][0].model).toBe(
-			generateTextMock.mock.calls[0][0].model,
+		expect(generateTextMock.mock.calls[1]?.[0].model).toBe(
+			generateTextMock.mock.calls[0]?.[0].model,
 		);
 		expect(JSON.stringify(state.updates)).toContain("Billing migration");
 		expect(JSON.stringify(state.updates.at(-1))).not.toContain("$.aiTitle");
@@ -243,7 +243,7 @@ describe("multi-chunk chapter evidence", () => {
 			});
 		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
 		expect(generateTextMock).toHaveBeenCalledTimes(3);
-		expect(generateTextMock.mock.calls[2][0].prompt).toContain(
+		expect(generateTextMock.mock.calls[2]?.[0].prompt).toContain(
 			"The first analysis did not meet evidence-backed coverage",
 		);
 		expect(JSON.stringify(state.updates)).toContain("Billing migration");
@@ -263,8 +263,8 @@ describe("multi-chunk chapter evidence", () => {
 			.mockResolvedValueOnce({ text: '{"title":null}' });
 		await expect(runWorkflow()).resolves.toMatchObject({ success: true });
 		expect(generateTextMock).toHaveBeenCalledTimes(4);
-		expect(generateTextMock.mock.calls[3][0].model).toBe(
-			generateTextMock.mock.calls[2][0].model,
+		expect(generateTextMock.mock.calls[3]?.[0].model).toBe(
+			generateTextMock.mock.calls[2]?.[0].model,
 		);
 		const saved = JSON.stringify(state.updates.at(-1));
 		expect(saved).toContain("Billing migration");

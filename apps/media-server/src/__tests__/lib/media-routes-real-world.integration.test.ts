@@ -395,7 +395,8 @@ beforeAll(async () => {
 									? join(tempDir, "chrome.webm")
 									: url.pathname === "/fixtures/chrome-h264-opus-fragmented.mp4"
 										? join(FIXTURES_DIR, "chrome-h264-opus-fragmented.mp4")
-										: url.pathname === "/fixtures/chrome-fragmented-empty-traf.mp4"
+										: url.pathname ===
+												"/fixtures/chrome-fragmented-empty-traf.mp4"
 											? join(FIXTURES_DIR, "chrome-fragmented-empty-traf.mp4")
 											: null;
 

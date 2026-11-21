@@ -3,13 +3,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-	outputChaptersToSource,
-	projectSourceChapters,
-} from "@/lib/revision-chapter-source";
-import {
 	restoredEditorSpec,
 	selectEditorBaselineSpec,
 } from "@/lib/editor-baseline";
+import {
+	outputChaptersToSource,
+	projectSourceChapters,
+} from "@/lib/revision-chapter-source";
 import {
 	parseTimelineDraft,
 	serializeTimelineDraft,

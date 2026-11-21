@@ -41,7 +41,6 @@ import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Suspense, use, useEffect, useRef, useState } from "react";
-import { useOpenEditor } from "../../../../hooks/use-open-editor";
 import { toast } from "sonner";
 import {
 	hideShareableLinkCapLogo,
@@ -60,6 +59,7 @@ import {
 } from "@/lib/video-share-clipboard";
 import { usePublicEnv } from "@/utils/public-env";
 import { useEditReadiness } from "../../../../hooks/use-edit-readiness";
+import { useOpenEditor } from "../../../../hooks/use-open-editor";
 import type { SharePageBranding, VideoData } from "../types";
 import { ProcessingStatusPanel } from "./ProcessingStatusPanel";
 import { describeShareAudience } from "./share-audience";
