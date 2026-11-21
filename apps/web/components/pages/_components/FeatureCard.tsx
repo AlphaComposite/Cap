@@ -1,3 +1,5 @@
+import Image from "next/image";
+
 interface FeatureCardProps {
 	title: string;
 	description: string;
@@ -24,11 +26,15 @@ export const FeatureCard: React.FC<FeatureCardProps> = ({
 			}}
 			className={`bg-gray-2 rounded-xl border border-gray-4 p-8 pt-0 h-full backdrop-blur-md relative z-10 flex flex-col overflow-hidden ${className}`}
 		>
-			<img
-				src={imagePath}
-				alt={imageAlt || title}
-				className={`object-contain mt-10 mb-6 w-full rounded-lg ${imageHeight}`}
-			/>
+			<div className={`relative mt-10 mb-6 w-full rounded-lg ${imageHeight}`}>
+				<Image
+					src={imagePath}
+					alt={imageAlt || title}
+					fill
+					sizes="(max-width: 768px) 100vw, 65vw"
+					className="object-contain rounded-lg"
+				/>
+			</div>
 			<h3 className="text-[1.25rem] leading-[1.5rem] font-semibold mb-1">
 				{title}
 			</h3>

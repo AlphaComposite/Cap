@@ -246,8 +246,7 @@ a.bg-primary:hover {
 		stroke-dasharray: 100;
 		stroke-dashoffset: 100;
 	}
-	50% {
-	}
+
 	100% {
 		stroke-dashoffset: 0;
 	}

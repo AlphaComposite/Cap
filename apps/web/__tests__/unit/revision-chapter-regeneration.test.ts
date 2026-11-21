@@ -1,6 +1,8 @@
+import assert from "node:assert/strict";
 import { editRevision, videoPublication, videos } from "@cap/database/schema";
 import type { VideoEditSpecV2 } from "@cap/database/types";
 import { defaultAutoCuts } from "@cap/web-backend/src/identity-edit-spec";
+import type { SQL } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as chapterSource from "@/lib/revision-chapter-source";
@@ -168,11 +170,11 @@ function select(locked = false) {
 const tx = {
 	select: () => select(true),
 	update: (table: unknown) => ({
-		set: (value: { metadata?: never; metadataSnapshot?: never }) => ({
-			where: async (condition: never) => {
-				const query = dialect.sqlToQuery(
-					value.metadata ?? value.metadataSnapshot!,
-				);
+		set: (value: { metadata?: SQL; metadataSnapshot?: SQL }) => ({
+			where: async (condition: SQL) => {
+				const metadata = value.metadata ?? value.metadataSnapshot;
+				assert(metadata, "Expected a metadata SQL update");
+				const query = dialect.sqlToQuery(metadata);
 				const name = (value as { name?: string }).name;
 				if (name) query.params.push(name);
 				if (!query.sql.includes("'$.chapters'")) {
@@ -188,9 +190,11 @@ const tx = {
 					const arrays = query.params.filter(
 						(p): p is string => typeof p === "string" && p.startsWith("["),
 					);
+					const [chapters, sourceChapters] = arrays;
+					assert(chapters && sourceChapters, "Expected both chapter arrays");
 					saved = {
-						chapters: JSON.parse(arrays[0]!),
-						sourceChapters: JSON.parse(arrays[1]!),
+						chapters: JSON.parse(chapters),
+						sourceChapters: JSON.parse(sourceChapters),
 						chaptersRevisionId: payload.revisionId,
 					};
 				}
@@ -247,8 +251,9 @@ describe("published edit chapter regeneration", () => {
 			}),
 		});
 		expect(await workflow.regenerateRevisionChapters(payload)).toBe(true);
+		assert(saved.sourceChapters, "Expected saved source chapters");
 		expect(saved.chapters).toEqual(
-			chapterSource.projectSourceChapters(saved.sourceChapters!, spec),
+			chapterSource.projectSourceChapters(saved.sourceChapters, spec),
 		);
 		expect(saved.chapters).toEqual([
 			{ title: "B", start: 0 },
@@ -428,8 +433,9 @@ describe("published edit chapter regeneration", () => {
 			{ title: "Apple and DUNS", start: 400 },
 		]);
 		expect(saved.chapters?.map((c) => c.start)).toEqual([0, 100, 200]);
+		assert(saved.sourceChapters, "Expected saved source chapters");
 		expect(
-			chapterSource.projectSourceChapters(saved.sourceChapters!, spec),
+			chapterSource.projectSourceChapters(saved.sourceChapters, spec),
 		).toEqual(saved.chapters);
 	});
 
@@ -461,7 +467,8 @@ describe("published edit chapter regeneration", () => {
 			saved.sourceChapters?.find((c) => c.title === "Airtable and Android")
 				?.start,
 		).toBeCloseTo(633.186, 3);
-		const snapshotWrite = writes.find((w) => w.table === editRevision)!;
+		const snapshotWrite = writes.find((w) => w.table === editRevision);
+		assert(snapshotWrite, "Expected revision snapshot write");
 		expect(snapshotWrite.query).toContain("$.chapters");
 		expect(snapshotWrite.params).toContain(JSON.stringify(saved.chapters));
 		expect(
@@ -469,8 +476,8 @@ describe("published edit chapter regeneration", () => {
 				(w) => !w.query.includes("$.summary") && !w.query.includes("$.aiTitle"),
 			),
 		).toBe(true);
-		expect(mocks.ai.mock.calls[0]![0].prompt).toContain("326.6");
-		expect(mocks.ai.mock.calls[0]![0].prompt).not.toContain(
+		expect(mocks.ai.mock.calls[0]?.[0].prompt).toContain("326.6");
+		expect(mocks.ai.mock.calls[0]?.[0].prompt).not.toContain(
 			'"title": "string (concise',
 		);
 	});
@@ -592,10 +599,10 @@ describe("published edit chapter regeneration", () => {
 			payload.videoId,
 			spec,
 		);
-		expect(mocks.ai.mock.calls[0]![0].prompt).toContain(
+		expect(mocks.ai.mock.calls[0]?.[0].prompt).toContain(
 			"[100] Airtable migration",
 		);
-		expect(mocks.ai.mock.calls[0]![0].prompt).not.toContain("[6:40]");
+		expect(mocks.ai.mock.calls[0]?.[0].prompt).not.toContain("[6:40]");
 	});
 
 	it("reuses section analysis and synthesis for long edits without requesting a title", async () => {
@@ -673,13 +680,13 @@ describe("published edit chapter regeneration", () => {
 		}));
 		videoName = "Leave title alone";
 		expect(await workflow.regenerateRevisionChapters(payload)).toBe(true);
-		expect(titleCall()![0].prompt).toContain("- Airtable and Android");
+		expect(titleCall()?.[0].prompt).toContain("- Airtable and Android");
 		// The transcript sample keeps the specifics (names, products) in the title.
-		expect(titleCall()![0].prompt).toContain(
+		expect(titleCall()?.[0].prompt).toContain(
 			"Airtable migration and Android release",
 		);
 		expect(retitled()).toHaveLength(1);
-		expect(retitled()[0]!.guard).toContain("titleManuallyEdited");
+		expect(retitled()[0]?.guard).toContain("titleManuallyEdited");
 
 		mocks.ai.mockClear();
 		markerWrites = [];
@@ -700,7 +707,7 @@ describe("published edit chapter regeneration", () => {
 			{ title: "Apple", start: 200 },
 		]);
 		expect(mocks.ai).toHaveBeenCalledOnce();
-		expect(mocks.ai.mock.calls[0]![0].prompt).toContain("326.6-second video");
+		expect(mocks.ai.mock.calls[0]?.[0].prompt).toContain("326.6-second video");
 	});
 
 	it("labels single-section cues in absolute seconds, the unit chapter starts use", async () => {
@@ -708,7 +715,7 @@ describe("published edit chapter regeneration", () => {
 			text: '{"chapters":[{"title":"Website","start":0},{"title":"Apple","start":200}]}',
 		});
 		await generation.generateChaptersForTranscript(vtt, 326.6, "auto");
-		const prompt = mocks.ai.mock.calls[0]![0].prompt as string;
+		const prompt = mocks.ai.mock.calls[0]?.[0].prompt as string;
 		// m:ss labels ("[3:20]") made the model return wrong starts in seconds.
 		expect(prompt).toContain("[200] Finally the Apple enrollment");
 		expect(prompt).not.toContain("[3:20]");

@@ -328,18 +328,12 @@ const createSoftwareAppStructuredData = () => {
 export const ScreenRecordWindowsPage = () => {
 	return (
 		<>
-			<Script
-				id="faq-structured-data"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
-			<Script
-				id="software-app-structured-data"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: createSoftwareAppStructuredData(),
-				}}
-			/>
+			<Script id="faq-structured-data" type="application/ld+json">
+				{createFaqStructuredData().replace(/</g, "\\u003c")}
+			</Script>
+			<Script id="software-app-structured-data" type="application/ld+json">
+				{createSoftwareAppStructuredData().replace(/</g, "\\u003c")}
+			</Script>
 			<SeoPageTemplate content={screenRecordWindowsContent} />
 		</>
 	);

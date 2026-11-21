@@ -222,11 +222,9 @@ const createFaqStructuredData = () => {
 export const DailyStandupSoftwarePage = () => {
 	return (
 		<>
-			<Script
-				id="faq-structured-data"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			<Script id="faq-structured-data" type="application/ld+json">
+				{createFaqStructuredData().replace(/</g, "\\u003c")}
+			</Script>
 			<SeoPageTemplate content={dailyStandupSoftwareContent} />
 		</>
 	);

@@ -132,7 +132,9 @@ export function CustomDomain() {
 
 								{orgCustomDomain && (
 									<Tooltip content="Remove custom domain">
-										<div
+										<button
+											type="button"
+											aria-label="Remove custom domain"
 											onClick={(e) => {
 												e.preventDefault();
 												setConfirmOpen(true);
@@ -143,7 +145,7 @@ export function CustomDomain() {
 												icon={faX}
 												className="text-gray-12 size-[10px]"
 											/>
-										</div>
+										</button>
 									</Tooltip>
 								)}
 							</div>

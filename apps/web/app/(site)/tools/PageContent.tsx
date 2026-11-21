@@ -74,6 +74,7 @@ export function PageContent() {
 							<div className="flex flex-col items-center text-center">
 								<div className="flex-shrink-0 p-3 bg-blue-100 rounded-xl mb-4 sm:mb-5">
 									<svg
+										aria-hidden="true"
 										className="w-7 h-7 sm:w-8 sm:h-8 text-blue-600"
 										fill="none"
 										viewBox="0 0 24 24"

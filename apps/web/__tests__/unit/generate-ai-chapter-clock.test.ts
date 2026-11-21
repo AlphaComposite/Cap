@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	editIntent,
 	editRevision,
@@ -662,7 +663,8 @@ describe("AI generation save chapter clock", () => {
 			const regenerated = [{ title: "Regenerated edited chapter", start: 0 }];
 			const source = [{ title: "Regenerated canonical chapter", start: 12 }];
 			aiChapterSaveProbe.afterEarlyRead = async () => {
-				const video = state.videos[0]!;
+				const video = state.videos[0];
+				assert(video, "Expected video fixture");
 				// The regeneration writer commits this state before saveResults locks it.
 				video.metadata = {
 					...video.metadata,
@@ -705,14 +707,17 @@ describe("AI generation save chapter clock", () => {
 	it.each(["regeneration first", "full generation first"])(
 		"keeps regenerated chapters when %s commits",
 		async (order) => {
-			state.intents[0]!.canonicalSpec = {
+			const intent = state.intents[0];
+			const revision = state.revisions[0];
+			assert(intent && revision, "Expected edit fixtures");
+			intent.canonicalSpec = {
 				...EDITED_SPEC,
 				version: 2,
 				manualKeepRanges: EDITED_SPEC.keepRanges,
 				autoCuts: defaultAutoCuts(),
 			};
-			state.revisions[0]!.state = "CURRENT";
-			state.revisions[0]!.metadataSnapshot.captionsVtt = TRANSCRIPT;
+			revision.state = "CURRENT";
+			revision.metadataSnapshot.captionsVtt = TRANSCRIPT;
 			const regenerated = [
 				{ title: "Edited opening", start: 0 },
 				{ title: "Edited ending", start: 40 },
@@ -744,9 +749,11 @@ describe("AI generation save chapter clock", () => {
 				aiGenerationStatus: "COMPLETE",
 				summary: "Saved summary",
 			});
+			const sourceChapters = state.videos[0]?.metadata.sourceChapters;
+			assert(sourceChapters, "Expected canonical source chapters");
 			expect(
 				projectSourceChapters(
-					state.videos[0]!.metadata.sourceChapters!,
+					sourceChapters,
 					parseRenderedCanonicalSpec(EDITED_SPEC),
 				),
 			).toEqual(regenerated);

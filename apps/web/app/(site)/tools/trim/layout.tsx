@@ -15,12 +15,9 @@ export default function TrimLayout({
 }) {
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
+			<script type="application/ld+json">
+				{JSON.stringify(breadcrumbSchema).replace(/</g, "\\u003c")}
+			</script>
 			{children}
 		</>
 	);

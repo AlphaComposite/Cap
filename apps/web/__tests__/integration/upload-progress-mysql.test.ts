@@ -1,5 +1,5 @@
 import * as Db from "@cap/database/schema";
-import { Database } from "@cap/web-backend/src/Database";
+import { Database, type DbClient } from "@cap/web-backend/src/Database";
 import { OrganisationsRepo } from "@cap/web-backend/src/Organisations/OrganisationsRepo";
 import { SpacesRepo } from "@cap/web-backend/src/Spaces/SpacesRepo";
 import { Storage } from "@cap/web-backend/src/Storage";
@@ -31,7 +31,7 @@ import {
 } from "vitest";
 
 const state = vi.hoisted(() => ({
-	database: undefined as any,
+	database: undefined as MySql2Database<typeof Db> | undefined,
 	owner: "stuck_owner",
 }));
 vi.mock("server-only", () => ({}));
@@ -60,7 +60,10 @@ vi.mock("@/lib/google-drive-storage-quota", () => ({
 	invalidateGoogleDriveStorageQuotaCache: vi.fn(),
 }));
 vi.mock("../../app/api/utils", () => ({
-	withAuth: async (c: any, next: () => Promise<void>) => {
+	withAuth: async (
+		c: { set: (key: "user", value: { id: string }) => void },
+		next: () => Promise<void>,
+	) => {
 		c.set("user", { id: state.owner });
 		await next();
 	},
@@ -95,7 +98,7 @@ function dependencies() {
 			use: (cb) =>
 				Effect.tryPromise({
 					try: async () => {
-						const result = await cb(database as any);
+						const result = await cb(database as unknown as DbClient);
 						const hook = afterRead;
 						afterRead = undefined;
 						if (hook) await hook();
@@ -168,7 +171,8 @@ const cleanup = () =>
 // Tables are cloned from the capb2 schema by the runner, never from production.
 describe.skipIf(!url)("real upload progress handlers / MySQL", () => {
 	beforeAll(async () => {
-		pool = createPool(url!);
+		if (!url) throw new Error("Owned MySQL test URL is required");
+		pool = createPool(url);
 		database = drizzle(pool, { schema: Db, mode: "default" });
 		state.database = database;
 		desktop = (await import("../../app/api/desktop/[...route]/video")).app;

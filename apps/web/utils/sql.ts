@@ -3,7 +3,7 @@ import type { MySqlColumn } from "drizzle-orm/mysql-core";
 
 export function jsonExtractString<
 	C extends ColumnBaseConfig<"json", "MySqlJson"> & { data: T },
-	T extends Record<string, any>,
+	T extends object,
 	F extends keyof T,
 >(column: MySqlColumn<C>, field: F) {
 	const jsonParam = `$.${field as string}`;

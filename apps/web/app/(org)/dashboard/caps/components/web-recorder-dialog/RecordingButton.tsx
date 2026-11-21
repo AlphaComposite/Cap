@@ -12,6 +12,7 @@ interface RecordingButtonProps {
 
 const InstantIcon = ({ className, ...props }: SVGProps<SVGSVGElement>) => (
 	<svg
+		aria-hidden="true"
 		width="152"
 		height="223"
 		viewBox="0 0 152 223"

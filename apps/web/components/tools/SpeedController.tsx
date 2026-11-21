@@ -132,11 +132,11 @@ export const SpeedController = () => {
 			const fileUrl = URL.createObjectURL(file);
 			await adjustVideoSpeed(fileUrl);
 			URL.revokeObjectURL(fileUrl);
-		} catch (err: any) {
+		} catch (err) {
 			console.error("Detailed processing error:", err);
 
 			let errorMessage = "Processing failed: ";
-			if (err.message) {
+			if (err instanceof Error && err.message) {
 				errorMessage += err.message;
 			} else if (typeof err === "string") {
 				errorMessage += err;
@@ -150,7 +150,7 @@ export const SpeedController = () => {
 				action,
 				fileSize: file.size,
 				fileName: file.name,
-				error: err.message || "Unknown error",
+				error: err instanceof Error ? err.message : "Unknown error",
 				speedFactor: selectedSpeed,
 			});
 		} finally {
@@ -490,13 +490,15 @@ export const SpeedController = () => {
 				{selectedSpeed < 1 ? "Slow Down" : "Speed Up"} Your Video
 			</h2>
 
-			<div className="mb-6">
-				<label className="block text-sm font-medium text-gray-700 mb-2">
+			<fieldset className="mb-6">
+				<legend className="block text-sm font-medium text-gray-700 mb-2">
 					Select Speed
-				</label>
+				</legend>
 				<div className="flex flex-wrap gap-2 justify-center">
 					{SPEED_OPTIONS.map((option) => (
 						<button
+							type="button"
+							aria-pressed={selectedSpeed === option.value}
 							key={option.value}
 							onClick={() => setSelectedSpeed(option.value)}
 							className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -509,10 +511,19 @@ export const SpeedController = () => {
 						</button>
 					))}
 				</div>
-			</div>
+			</fieldset>
 
-			<div
-				className={`border-2 border-dashed rounded-lg p-8 mb-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
+			<input
+				type="file"
+				accept="video/*"
+				className="hidden"
+				onChange={handleFileChange}
+				ref={fileInputRef}
+			/>
+			<button
+				type="button"
+				aria-label="Drop video here or click to select"
+				className={`w-full border-2 border-dashed rounded-lg p-8 mb-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
 					isDragging
 						? "border-blue-500 bg-blue-50"
 						: "border-gray-300 hover:border-blue-400"
@@ -523,18 +534,11 @@ export const SpeedController = () => {
 				onClick={() => fileInputRef.current?.click()}
 				style={{ minHeight: "200px" }}
 			>
-				<input
-					type="file"
-					accept="video/*"
-					className="hidden"
-					onChange={handleFileChange}
-					ref={fileInputRef}
-				/>
-
 				<div className="text-center">
 					{!file ? (
 						<>
 							<svg
+								aria-hidden="true"
 								className="mx-auto h-12 w-12 text-gray-400 mb-3"
 								fill="none"
 								viewBox="0 0 24 24"
@@ -557,6 +561,7 @@ export const SpeedController = () => {
 					) : (
 						<>
 							<svg
+								aria-hidden="true"
 								className="mx-auto h-12 w-12 text-green-500 mb-3"
 								fill="none"
 								viewBox="0 0 24 24"
@@ -585,7 +590,7 @@ export const SpeedController = () => {
 						</>
 					)}
 				</div>
-			</div>
+			</button>
 
 			{error && (
 				<div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-600">

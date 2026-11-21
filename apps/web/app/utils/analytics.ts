@@ -61,10 +61,7 @@ export function resetUser() {
 	}
 }
 
-export function trackEvent(
-	eventName: string,
-	properties?: Record<string, any>,
-) {
+export function trackEvent(eventName: string, properties?: TrackProperties) {
 	try {
 		const op = getOpenPanel();
 		if (!op) return;

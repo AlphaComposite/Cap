@@ -190,7 +190,9 @@ describe("direct editor admission before mutations", () => {
 			);
 			expect(mocks.open).not.toHaveBeenCalled();
 		} finally {
-			release.forEach((resolve) => resolve());
+			release.forEach((resolve) => {
+				resolve();
+			});
 		}
 		expect((await pending).type).toBe(EditVideoClient);
 	});

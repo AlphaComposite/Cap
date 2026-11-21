@@ -1160,8 +1160,10 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				.select()
 				.from(editRevision)
 				.where(eq(editRevision.revisionId, prepared.revisionId));
-			const snapshot = row!.metadataSnapshot!;
-			const body = JSON.parse(snapshot.attestationBody!);
+			const snapshot = row?.metadataSnapshot;
+			if (!snapshot?.attestationBody)
+				throw new Error("Expected stored attestation");
+			const body = JSON.parse(snapshot.attestationBody);
 			expect(body.segmentPlanVersion).toBe(3);
 			if (plan === undefined) delete body.segmentPlanVersion;
 			else body.segmentPlanVersion = plan;
@@ -1239,10 +1241,11 @@ describe.skipIf(!databaseUrl)("revision publication fence", () => {
 				.from(videoPublication)
 				.where(eq(videoPublication.videoId, videoId as never));
 			expect(after?.currentRevisionId).toBe(before?.currentRevisionId);
+			if (!after) throw new Error("Expected publication after failed prepare");
 			const [failed] = await database
 				.select()
 				.from(editRevision)
-				.where(eq(editRevision.generation, after!.generation));
+				.where(eq(editRevision.generation, after.generation));
 			expect(failed?.state).toBe("FAILED");
 		},
 	);

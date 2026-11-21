@@ -1887,7 +1887,7 @@ export async function restoreRetainedIdentity(
 			!media.every(
 				(artifact) => artifact.status === 200 && artifact.body.length > 0,
 			) ||
-			!media[0]!.body.toString("utf8").startsWith("#EXTM3U")
+			!media[0]?.body.toString("utf8").startsWith("#EXTM3U")
 		)
 			continue;
 		identity = candidate;

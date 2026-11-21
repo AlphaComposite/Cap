@@ -100,12 +100,9 @@ export default function MP4ToWebMPage() {
 
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
+			<script type="application/ld+json">
+				{JSON.stringify(breadcrumbSchema).replace(/</g, "\\u003c")}
+			</script>
 			<ToolsPageTemplate
 				content={pageContent}
 				toolComponent={

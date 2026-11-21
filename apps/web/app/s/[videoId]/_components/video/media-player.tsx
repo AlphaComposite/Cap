@@ -245,10 +245,10 @@ function createStore(
 			listenersRef.current?.add(cb);
 			return () => listenersRef.current?.delete(cb);
 		},
-		getState: () => stateRef.current!,
+		getState: () => stateRef.current,
 		setState: (key, value) => {
 			if (Object.is(stateRef.current?.[key], value)) return;
-			stateRef.current![key] = value;
+			stateRef.current[key] = value;
 			onValueChange?.[key]?.(value, store);
 			store.notify();
 		},
@@ -1147,7 +1147,9 @@ function MediaPlayerLoading(props: MediaPlayerLoadingProps) {
 				className,
 			)}
 		>
-			<Loader2Icon className="size-20 animate-spin stroke-[.0938rem] text-white" />
+			{children ?? (
+				<Loader2Icon className="size-20 animate-spin stroke-[.0938rem] text-white" />
+			)}
 		</LoadingPrimitive>
 	);
 }
@@ -1453,6 +1455,7 @@ function MediaPlayerPlay(props: MediaPlayerPlayProps) {
 				type="button"
 				aria-controls={context.mediaId}
 				aria-label={mediaPaused ? "Play" : "Pause"}
+				asChild={asChild}
 				aria-pressed={!mediaPaused}
 				data-disabled={isDisabled ? "" : undefined}
 				data-slot="media-player-play-button"
@@ -1525,6 +1528,7 @@ function MediaPlayerSeekBackward(props: MediaPlayerSeekBackwardProps) {
 				type="button"
 				aria-controls={context.mediaId}
 				aria-label={`Back ${seconds} seconds`}
+				asChild={asChild}
 				data-disabled={isDisabled ? "" : undefined}
 				data-slot="media-player-seek-backward"
 				disabled={isDisabled}
@@ -1602,6 +1606,7 @@ function MediaPlayerSeekForward(props: MediaPlayerSeekForwardProps) {
 				type="button"
 				aria-controls={context.mediaId}
 				aria-label={`Forward ${seconds} seconds`}
+				asChild={asChild}
 				data-disabled={isDisabled ? "" : undefined}
 				data-slot="media-player-seek-forward"
 				disabled={isDisabled}
@@ -3230,11 +3235,12 @@ function MediaPlayerPiP(props: MediaPlayerPiPProps) {
 				className={cn("size-8", className)}
 				onClick={onPictureInPicture}
 			>
-				{isPictureInPicture ? (
-					<PictureInPicture2Icon />
-				) : (
-					<PictureInPictureIcon />
-				)}
+				{children ??
+					(isPictureInPicture ? (
+						<PictureInPicture2Icon />
+					) : (
+						<PictureInPictureIcon />
+					))}
 			</PlayerButton>
 		</MediaPlayerTooltip>
 	);

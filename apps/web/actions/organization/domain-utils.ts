@@ -86,7 +86,8 @@ export const getRequiredConfig = async (domain: string) => {
 
 		if (recordsResponse.records) {
 			const aRecord = recordsResponse.records.find(
-				(record: any) => record.type === "A" && record.name === "",
+				(record: { type: string; name: string; value: string }) =>
+					record.type === "A" && record.name === "",
 			);
 
 			if (aRecord) {
@@ -132,7 +133,7 @@ export const getRequiredConfig = async (domain: string) => {
 
 		if (projectResponse.domains) {
 			const projectDomain = projectResponse.domains.find(
-				(d: any) => d.name === domain,
+				(d: { name: string; apexValue?: string }) => d.name === domain,
 			);
 			if (projectDomain?.apexValue) {
 				response.aValues = [projectDomain.apexValue];

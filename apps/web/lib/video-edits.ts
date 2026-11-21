@@ -901,7 +901,8 @@ export function normalizeTimelineState(
 		deletedRanges,
 		autoCuts,
 		selectedSegmentId,
-		...(selectedTimelineKeeps({
+		...(state.renderedKeeps &&
+		selectedTimelineKeeps({
 			...state,
 			duration,
 			trimStart: start,
@@ -911,8 +912,8 @@ export function normalizeTimelineState(
 		})
 			? {
 					renderedKeeps: {
-						policyKey: state.renderedKeeps!.policyKey,
-						keepRanges: state.renderedKeeps!.keepRanges.map((range) => ({
+						policyKey: state.renderedKeeps.policyKey,
+						keepRanges: state.renderedKeeps.keepRanges.map((range) => ({
 							...range,
 						})),
 					},

@@ -111,7 +111,7 @@ function parseScoutResult(out) {
 		if (!lines[i].startsWith("{")) continue;
 		try {
 			const o = JSON.parse(lines[i]);
-			if (o && o.scout) return o;
+			if (o?.scout) return o;
 		} catch {}
 	}
 	return null;

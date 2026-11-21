@@ -24,7 +24,10 @@ const VIDEO = "videourlearly01",
 	OWNER = "ownerurlearly01",
 	KEY = `${OWNER}/${VIDEO}/result.mp4`;
 const path = "/api/internal/origin/object-url";
-let sources: any[], stages: any[], jobs: any[], owners: any[];
+let sources: Record<string, unknown>[],
+	stages: Record<string, unknown>[],
+	owners: Record<string, unknown>[];
+let jobs: { videoId: string; job: string; payload: Record<string, unknown> }[];
 function request(key: unknown = KEY, prepareVideoId: unknown = VIDEO) {
 	const body = JSON.stringify({ key, prepareVideoId });
 	return new Request(`http://web${path}`, {
@@ -83,8 +86,8 @@ beforeEach(() => {
 							: table === schema.revisionOutbox
 								? jobs
 								: [];
-			const result = Promise.resolve(rows) as any;
-			result.where = () => result;
+			const promise = Promise.resolve(rows);
+			const result = Object.assign(promise, { where: () => promise });
 			return result;
 		},
 	}));
@@ -136,7 +139,7 @@ describe("original source-prepare per-key URLs", () => {
 			null,
 		])
 			await denied(key);
-		for (const video of ["another", "*", "../" + VIDEO, null])
+		for (const video of ["another", "*", `../${VIDEO}`, null])
 			await denied(KEY, video);
 	});
 	it("revokes original URLs after any journalled stage or non-LIVE source, even before pointer relocation", async () => {
@@ -169,10 +172,11 @@ describe("original source-prepare per-key URLs", () => {
 	it("requires current owner and exact active leased job; finished/exhausted/peaks jobs grant nothing", async () => {
 		await allowedControl();
 		const original = structuredClone(jobs[0]);
+		if (!original) throw new Error("Active job fixture missing");
 		for (const [field, value] of [
 			["videoId", "other"],
 			["ownerId", "other"],
-			["sourceObjectKey", KEY + "/other"],
+			["sourceObjectKey", `${KEY}/other`],
 			["leaseToken", ""],
 			["leaseToken", null],
 			["leaseUntilMs", 0],
@@ -181,8 +185,9 @@ describe("original source-prepare per-key URLs", () => {
 			["exhausted", true],
 			["peaksOnly", true],
 		] as const) {
-			jobs = [structuredClone(original)];
-			jobs[0].payload[field] = value;
+			const job = structuredClone(original);
+			job.payload[field] = value;
+			jobs = [job];
 			await denied();
 		}
 		for (const [field, value] of [

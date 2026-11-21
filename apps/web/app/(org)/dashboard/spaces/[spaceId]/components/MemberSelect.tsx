@@ -65,7 +65,7 @@ export const MemberSelect = forwardRef<HTMLDivElement, MemberSelectProps>(
 
 		const containerRef = useRef<HTMLDivElement>(null);
 		const triggerWidth = useRef<number>(0);
-		const triggerRef = useRef<HTMLDivElement>(null);
+		const triggerRef = useRef<HTMLButtonElement>(null);
 		const { activeOrganization } = useDashboardContext();
 
 		// Generate options from organization members if no external options provided
@@ -159,14 +159,13 @@ export const MemberSelect = forwardRef<HTMLDivElement, MemberSelectProps>(
 					>
 						<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 							<DropdownMenuTrigger asChild>
-								<div
+								<button
+									type="button"
+									disabled={disabled}
 									ref={triggerRef}
 									className="flex flex-1 items-center px-2 h-full rounded-xl border transition-colors cursor-pointer bg-gray-3 border-gray-4 hover:bg-gray-5 group hover:border-gray-6"
 								>
-									<div
-										onClick={() => setIsOpen(true)}
-										className="flex flex-1 justify-between items-center p-0 h-full bg-transparent border-0 placeholder:text-gray-10 w-fit group-hover:placeholder:text-gray-12"
-									>
+									<div className="flex flex-1 justify-between items-center p-0 h-full bg-transparent border-0 placeholder:text-gray-10 w-fit group-hover:placeholder:text-gray-12">
 										<p className="text-[13px] text-gray-12">{placeholder}</p>
 										<ChevronDown
 											className={clsx(
@@ -177,7 +176,7 @@ export const MemberSelect = forwardRef<HTMLDivElement, MemberSelectProps>(
 											tabIndex={-1}
 										/>
 									</div>
-								</div>
+								</button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent
 								style={{

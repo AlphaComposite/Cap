@@ -51,12 +51,15 @@ const CapIcon = forwardRef<CapIconHandle, CapIconProps>(
 		);
 		return (
 			<div
+				role="img"
+				aria-label="Caps"
 				className={cn(className)}
 				onMouseEnter={handleMouseEnter}
 				onMouseLeave={handleMouseLeave}
 				{...props}
 			>
 				<motion.svg
+					aria-hidden="true"
 					width={size}
 					height={size}
 					transition={{ type: "spring", stiffness: 50, damping: 10 }}

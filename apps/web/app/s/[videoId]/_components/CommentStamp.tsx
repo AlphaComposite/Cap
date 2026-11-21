@@ -43,6 +43,9 @@ const CommentStamp: React.FC<CommentStampsProps> = ({
 			{/* Comment marker */}
 			<button
 				type="button"
+				aria-label={`Seek to comment by ${comment.authorName || "Anonymous"}: ${comment.content}`}
+				onFocus={() => handleMouseEnter(comment.id)}
+				onBlur={handleMouseLeave}
 				onClick={() => {
 					if (onSeek && comment.timestamp !== null) {
 						onSeek(Number(comment.timestamp));
