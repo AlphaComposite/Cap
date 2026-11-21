@@ -135,7 +135,10 @@ const createFaqStructuredData = () => {
 export const ScreenRecordMacPage = () => {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="screen-recorder-mac-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData()}
 			</Script>
 			<SeoPageTemplate content={screenRecordMacContent} />

@@ -227,7 +227,10 @@ const createFaqStructuredData = () => {
 export const EmployeeOnboardingPlatformPage = () => {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="solutions-employee-onboarding-platform-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData()}
 			</Script>
 			<SeoPageTemplate content={employeeOnboardingContent} />

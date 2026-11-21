@@ -223,7 +223,10 @@ const createFaqStructuredData = () => {
 export const RemoteTeamCollaborationPage = () => {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="solutions-remote-team-collaboration-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData().replace(/</g, "\\u003c")}
 			</Script>
 			<SeoPageTemplate content={remoteTeamCollaborationContent} />

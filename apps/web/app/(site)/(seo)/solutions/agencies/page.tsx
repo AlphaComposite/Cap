@@ -125,10 +125,16 @@ export const metadata: Metadata = {
 export default function Page() {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="solutions-agencies-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData()}
 			</Script>
-			<Script id="software-structured-data" type="application/ld+json">
+			<Script
+				id="solutions-agencies-software-structured-data"
+				type="application/ld+json"
+			>
 				{createSoftwareStructuredData()}
 			</Script>
 			<AgenciesPage />

@@ -48,10 +48,16 @@ const createFaqStructuredData = () => {
 export const RecordScreenMacStructuredData = () => {
 	return (
 		<>
-			<Script id="article-structured-data" type="application/ld+json">
+			<Script
+				id="blog-record-screen-mac-system-audio-article-structured-data"
+				type="application/ld+json"
+			>
 				{createArticleStructuredData()}
 			</Script>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="blog-record-screen-mac-system-audio-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData()}
 			</Script>
 		</>

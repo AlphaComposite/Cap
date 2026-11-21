@@ -215,7 +215,10 @@ const createFaqStructuredData = () => {
 export const ScreenRecordingSoftwarePage = () => {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="screen-recording-software-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData().replace(/</g, "\\u003c")}
 			</Script>
 			<SeoPageTemplate content={screenRecordingSoftwareContent} />

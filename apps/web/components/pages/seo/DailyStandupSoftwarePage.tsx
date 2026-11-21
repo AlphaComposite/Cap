@@ -222,7 +222,10 @@ const createFaqStructuredData = () => {
 export const DailyStandupSoftwarePage = () => {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="solutions-daily-standup-software-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData().replace(/</g, "\\u003c")}
 			</Script>
 			<SeoPageTemplate content={dailyStandupSoftwareContent} />

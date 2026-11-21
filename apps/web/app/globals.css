@@ -900,15 +900,6 @@ footer a {
 	bottom: 64px;
 }
 
-/* Safari-specific styles using CSS hacks */
-@media screen and (-webkit-min-device-pixel-ratio: 0) {
-	_::-webkit-full-page-media,
-	_:future,
-	:root #video-container {
-		height: calc(100% - 1.7rem);
-	}
-}
-
 @layer base {
 	:root {
 		--background: 0 0% 100%;

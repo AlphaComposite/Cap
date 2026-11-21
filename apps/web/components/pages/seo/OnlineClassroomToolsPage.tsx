@@ -223,7 +223,10 @@ const createFaqStructuredData = () => {
 export const OnlineClassroomToolsPage = () => {
 	return (
 		<>
-			<Script id="faq-structured-data" type="application/ld+json">
+			<Script
+				id="solutions-online-classroom-tools-faq-structured-data"
+				type="application/ld+json"
+			>
 				{createFaqStructuredData()}
 			</Script>
 			<SeoPageTemplate content={onlineClassroomToolsContent} />
