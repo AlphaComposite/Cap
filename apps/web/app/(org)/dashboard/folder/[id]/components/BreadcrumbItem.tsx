@@ -78,6 +78,7 @@ export function BreadcrumbItem({
 
 	if (isLast) {
 		return (
+			// biome-ignore lint/a11y/noStaticElementInteractions: Drop enhancement only; the source card's keyboard Move dialog reaches this folder under the same location and permission gates.
 			<div
 				className="flex gap-1.5 px-2 items-center"
 				onDragOver={handleDragOver}
@@ -97,6 +98,7 @@ export function BreadcrumbItem({
 	}
 
 	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: Drop enhancement only; the source card's keyboard Move dialog reaches this ancestor under the same location and permission gates.
 		<div
 			onDragOver={handleDragOver}
 			onDragLeave={handleDragLeave}

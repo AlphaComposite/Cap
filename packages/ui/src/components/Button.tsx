@@ -1,5 +1,5 @@
 import { classNames } from "@cap/utils/helpers";
-import { Slot } from "@radix-ui/react-slot";
+import { Slot, Slottable } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 import { LoadingSpinner } from "./LoadingSpinner";
@@ -76,14 +76,12 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 		},
 		ref,
 	) => {
-		const Comp = href ? "a" : asChild ? Slot : ("button" as any);
+		const Comp = href || asChild ? Slot : "button";
 		return (
 			<Comp
 				className={classNames(buttonVariants({ variant, size, className }))}
-				ref={ref as any}
-				target={target || undefined}
-				href={href || undefined}
-				{...props}
+				ref={ref}
+				{...{ target: target || undefined, ...props }}
 			>
 				{spinner && (
 					<LoadingSpinner
@@ -94,7 +92,15 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 					/>
 				)}
 				{icon && icon}
-				{props.children}
+				<Slottable>
+					{href ? (
+						<a href={href} target={target || undefined}>
+							{props.children}
+						</a>
+					) : (
+						props.children
+					)}
+				</Slottable>
 				{kbd && (
 					<kbd className="hidden justify-center items-center ml-1 text-xs rounded-full border md:flex size-5 bg-gray-11 border-gray-10">
 						{kbd}

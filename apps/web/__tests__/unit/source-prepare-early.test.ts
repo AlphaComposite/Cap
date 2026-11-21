@@ -1,3 +1,4 @@
+import { fail } from "node:assert/strict";
 import * as schema from "@cap/database/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drainSourcePrepare } from "@/lib/source-prepare-worker";
@@ -35,7 +36,10 @@ function deferred<T>() {
 	return { promise, resolve, reject };
 }
 function fixture() {
-	const rows = new Map<unknown, any[]>([
+	type FixtureRow = Record<string, unknown> & {
+		payload?: Record<string, unknown>;
+	};
+	const rows = new Map<unknown, FixtureRow[]>([
 		[schema.videos, [{ id: VIDEO, ownerId: OWNER, duration: 2 }]],
 		[
 			schema.revisionOutbox,
@@ -61,35 +65,50 @@ function fixture() {
 			schema.editIntent,
 			schema.editRevision,
 			schema.videoEdits,
-		].map((table) => [table, []] as [unknown, any[]]),
+		].map((table): [unknown, FixtureRow[]] => [table, []]),
 	]);
-	const identityWrites: any[] = [];
-	const query = (values: any[]) => {
-		const promise = Promise.resolve(values) as any;
-		for (const name of ["where", "for", "orderBy", "limit"])
-			promise[name] = () => promise;
+	const identityWrites: FixtureRow[] = [];
+	type Query = Promise<FixtureRow[]> & {
+		where: () => Query;
+		for: () => Query;
+		orderBy: () => Query;
+		limit: () => Query;
+	};
+	const query = (values: FixtureRow[]) => {
+		const promise: Query = Object.assign(Promise.resolve(values), {
+			where: () => promise,
+			for: () => promise,
+			orderBy: () => promise,
+			limit: () => promise,
+		});
 		return promise;
 	};
-	const app: any = {
+	const app = {
 		select: () => ({ from: (table: unknown) => query(rows.get(table) ?? []) }),
 		insert: (table: unknown) => ({
-			values: async (value: any) => {
-				rows.get(table)!.push(value);
+			values: async (value: FixtureRow) => {
+				(rows.get(table) ?? fail("Missing fixture table")).push(value);
 			},
 		}),
 		update: (table: unknown) => ({
-			set: (value: any) => ({
+			set: (value: FixtureRow) => ({
 				where: async () => {
 					if (table === schema.sourceObject && value.a1Digest)
 						identityWrites.push(value);
-					Object.assign(rows.get(table)![0], value);
+					Object.assign(
+						rows.get(table)?.[0] ?? fail("Missing fixture row"),
+						value,
+					);
 				},
 			}),
 		}),
 		delete: (table: unknown) => ({ where: async () => rows.set(table, []) }),
-		transaction: async (fn: any) => fn(app),
 	};
-	return { app, rows, identityWrites };
+	const database = {
+		...app,
+		transaction: async <T>(fn: (tx: typeof app) => Promise<T>) => fn(app),
+	};
+	return { app: database, rows, identityWrites };
 }
 
 beforeEach(() => {
@@ -140,7 +159,7 @@ describe("early source prepare joins verified copy before identity", () => {
 			key: PRIVATE,
 			sha256: SHA,
 		});
-		expect(f.rows.get(schema.sourceRelocation)?.[0].state).toBe("COPIED");
+		expect(f.rows.get(schema.sourceRelocation)?.[0]?.state).toBe("COPIED");
 	});
 
 	it.each(["sha mismatch", "copy failure", "origin failure"])(
@@ -148,7 +167,7 @@ describe("early source prepare joins verified copy before identity", () => {
 		async (failure) => {
 			const f = fixture(),
 				copy = deferred<void>(),
-				prepare = deferred<any>();
+				prepare = deferred<Record<string, string>>();
 			runtime.copy.mockReturnValue(copy.promise);
 			runtime.prepare.mockReturnValue(prepare.promise);
 			const run = drainSourcePrepare(f.app, {});
@@ -180,7 +199,7 @@ describe("early source prepare joins verified copy before identity", () => {
 			}
 			expect(f.identityWrites).toEqual([]);
 			expect(runtime.publish).not.toHaveBeenCalled();
-			expect(f.rows.get(schema.revisionOutbox)?.[0].payload.attempts).toBe(1);
+			expect(f.rows.get(schema.revisionOutbox)?.[0]?.payload?.attempts).toBe(1);
 		},
 	);
 
@@ -193,23 +212,21 @@ describe("early source prepare joins verified copy before identity", () => {
 			sourceKey: ORIGINAL,
 		});
 		const f = fixture();
-		f.rows
-			.get(schema.sourceObject)!
-			.push({
-				videoId: VIDEO,
-				liveKey: ORIGINAL,
-				sha256: SHA,
-				relocationState: "LIVE",
-			});
-		f.rows
-			.get(schema.sourceRelocation)!
-			.push({
-				videoId: VIDEO,
-				oldKey: ORIGINAL,
-				newKey: PRIVATE,
-				sha256: SHA,
-				state: "COPIED",
-			});
+		(f.rows.get(schema.sourceObject) ?? fail("Missing source table")).push({
+			videoId: VIDEO,
+			liveKey: ORIGINAL,
+			sha256: SHA,
+			relocationState: "LIVE",
+		});
+		(
+			f.rows.get(schema.sourceRelocation) ?? fail("Missing relocation table")
+		).push({
+			videoId: VIDEO,
+			oldKey: ORIGINAL,
+			newKey: PRIVATE,
+			sha256: SHA,
+			state: "COPIED",
+		});
 		await drainSourcePrepare(f.app, {});
 		expect(runtime.prepare).toHaveBeenLastCalledWith({
 			videoId: VIDEO,

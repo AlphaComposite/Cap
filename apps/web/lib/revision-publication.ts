@@ -23,12 +23,14 @@ import {
 	parseEditTranscript,
 } from "@/lib/edit-transcript";
 import { decryptEditTranscriptObject } from "@/lib/edit-transcript-storage";
-import { runtimeObjectStore, runtimeS3Client } from "@/lib/instant-finish-source-relocate";
+import {
+	runtimeObjectStore,
+	runtimeS3Client,
+} from "@/lib/instant-finish-source-relocate";
 import {
 	deriveRevisionChapterState,
 	projectSourceChapters,
 } from "@/lib/revision-chapter-source";
-import { isAbortLike } from "@/lib/revision-request-error";
 import { sweepRevisionDownloads } from "@/lib/revision-download-job";
 import {
 	PLAYLIST_ORIGIN_SLACK_SECONDS,
@@ -71,6 +73,7 @@ import {
 	type RevisionPrepareResult,
 } from "@/lib/revision-publication-origin";
 import { SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
+import { isAbortLike } from "@/lib/revision-request-error";
 import { writeRevisionThumbnailSha } from "@/lib/revision-snapshot-patch";
 import {
 	isVerifiedJpeg,
@@ -721,7 +724,11 @@ export async function prepareInstantFinishRevision(
 	assertServableEncoderProfile(ENCODER_PROFILE);
 	const now = deps.now ?? (() => new Date());
 	const sealed = await canonicalizeKeepRanges(
-		app, input, authored, deps.origin, now(),
+		app,
+		input,
+		authored,
+		deps.origin,
+		now(),
 	);
 	const spec = sealed.spec;
 	await expireAbandonedPreparedRevisions(app, now());
@@ -776,8 +783,19 @@ export async function prepareInstantFinishRevision(
 	} catch (error) {
 		if (deps.origin.signal?.aborted && isAbortLike(error)) {
 			// A replaced editor intent is cancellation, not failed publication.
-			await transition(app, allocated.revisionId, "SUPERSEDED", now(), "PREPARING");
-			throw new RevisionPublicationError(499, "Prepare aborted", allocated.generation, allocated.revisionId);
+			await transition(
+				app,
+				allocated.revisionId,
+				"SUPERSEDED",
+				now(),
+				"PREPARING",
+			);
+			throw new RevisionPublicationError(
+				499,
+				"Prepare aborted",
+				allocated.generation,
+				allocated.revisionId,
+			);
 		}
 		await failOpenRevision(app, allocated.revisionId, error, now());
 		if (error instanceof RevisionPublicationError) throw error;
@@ -867,7 +885,13 @@ export async function publishInstantFinishRevision(
 	// Stored words use the source clock; only captions need to await this read.
 	const transcript = loadStoredEditTranscript(app, input.videoId, authored);
 	void transcript.catch(() => {}); // Observe early rejection; await below still fails closed.
-	const sealed = await canonicalizeKeepRanges(app, input, authored, deps.origin, now());
+	const sealed = await canonicalizeKeepRanges(
+		app,
+		input,
+		authored,
+		deps.origin,
+		now(),
+	);
 	const spec = sealed.spec;
 	timing("canonicalized");
 	const reused = await reuseVerifiedReady(
@@ -1863,7 +1887,7 @@ export async function restoreRetainedIdentity(
 			!media.every(
 				(artifact) => artifact.status === 200 && artifact.body.length > 0,
 			) ||
-			!media[0]!.body.toString("utf8").startsWith("#EXTM3U")
+			!media[0]?.body.toString("utf8").startsWith("#EXTM3U")
 		)
 			continue;
 		identity = candidate;

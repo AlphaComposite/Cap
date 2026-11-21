@@ -10,6 +10,12 @@ export interface ReleaseDownloads {
 
 export const releasesRevalidateSeconds = 60;
 
+export const lastIntelMacRelease = {
+	version: "0.6.3",
+	url: "https://cdn.crabnebula.app/asset/01M767VMABJC5GKYFH5874WX5W",
+	releaseUrl: "https://github.com/CapSoftware/Cap/releases/tag/cap-v0.6.3",
+};
+
 export type ReleaseDownloadKey = keyof ReleaseDownloads;
 type ReleaseDownloadJsonKey = ReleaseDownloadKey | "linux";
 

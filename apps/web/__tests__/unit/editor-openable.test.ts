@@ -34,13 +34,38 @@ describe("editor source admission", () => {
 			editorOpenable({ ...facts, source: { ...source, warmExpiresAt: null } }),
 		).toBe(false);
 	});
-	it("admits a warm registered source with matching relocation", () => {
-		expect(editorOpenable(facts)).toBe(true);
-	});
+	it.each(["COPIED", "POINTER", "DELETED"])(
+		"does not admit an editor while the source move is %s",
+		(state) => {
+			expect(
+				editorOpenable({
+					...facts,
+					relocations: [{ ...relocation, state }],
+				}),
+			).toBe(false);
+		},
+	);
+	it.each(["COPIED", "POINTER", "DELETED"])(
+		"keeps a moved source gated while another relocation is %s",
+		(state) => {
+			expect(
+				editorOpenable({
+					...facts,
+					source: {
+						...source,
+						relocationState: "PURGED",
+						liveKey: relocation.newKey,
+					},
+					relocations: [{ ...relocation, state }],
+				}),
+			).toBe(false);
+		},
+	);
 	it("admits a registered PURGED source after the outbox is gone", () => {
 		expect(
 			editorOpenable({
 				...facts,
+				relocations: [{ ...relocation, state: "PURGED" }],
 				pending: false,
 				source: {
 					...source,
@@ -54,6 +79,7 @@ describe("editor source admission", () => {
 		expect(
 			editorOpenable({
 				...facts,
+				relocations: [{ ...relocation, state: "PURGED" }],
 				source: {
 					...source,
 					relocationState: "PURGED",

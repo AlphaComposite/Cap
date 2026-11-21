@@ -33,9 +33,10 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import Link from "next/link";
+import type { ComponentProps } from "react";
 
 interface Feature {
-	icon: any;
+	icon: ComponentProps<typeof FontAwesomeIcon>["icon"];
 	title: string;
 	description: string;
 	category: "recording" | "ai" | "sharing" | "editing" | "platform" | "privacy";
@@ -384,7 +385,7 @@ export const FeaturesPage = () => {
 
 			<div className="pb-32 wrapper">
 				<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 auto-rows-[minmax(200px,_auto)] grid-flow-dense">
-					{features.map((feature, index) => {
+					{features.map((feature) => {
 						const sizeClasses = {
 							small: "col-span-1",
 							medium: "col-span-1 md:col-span-2",
@@ -393,7 +394,7 @@ export const FeaturesPage = () => {
 
 						return (
 							<div
-								key={index}
+								key={feature.title}
 								className={`
                   ${sizeClasses[feature.size || "small"]}
                   group relative overflow-hidden rounded-xl border p-6

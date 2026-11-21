@@ -3,71 +3,10 @@
 import { Button } from "@cap/ui";
 import Link from "next/link";
 import { type ReactNode, useEffect } from "react";
+import { renderRichText } from "@/components/RichText";
 import type { ToolPageContent } from "@/components/tools/types";
 
-const renderHTML = (content: string) => {
-	const styledContent = content.replace(
-		/<a\s/g,
-		'<a class="font-semibold text-blue-500 transition-colors hover:text-blue-600" ',
-	);
-
-	return <span dangerouslySetInnerHTML={{ __html: styledContent }} />;
-};
-
-const _LeftBlueHue = () => {
-	return (
-		<svg
-			className="absolute top-0 -left-24 z-0 opacity-20 pointer-events-none md:opacity-40"
-			width="1000"
-			height="500"
-			viewBox="0 0 1276 690"
-			fill="none"
-			xmlns="http://www.w3.org/2000/svg"
-		>
-			<g filter="url(#blue-hue-filter)">
-				<ellipse
-					cx="592"
-					cy="339"
-					rx="584"
-					ry="251"
-					transform="rotate(180 592 339)"
-					fill="url(#blue-hue-gradient)"
-				/>
-			</g>
-			<defs>
-				<filter
-					id="blue-hue-filter"
-					x="-92"
-					y="-12"
-					width="1368"
-					height="702"
-					filterUnits="userSpaceOnUse"
-					colorInterpolationFilters="sRGB"
-				>
-					<feFlood floodOpacity="0" result="BackgroundImageFix" />
-					<feBlend
-						mode="normal"
-						in="SourceGraphic"
-						in2="BackgroundImageFix"
-						result="shape"
-					/>
-					<feGaussianBlur stdDeviation="50" result="blur-effect" />
-				</filter>
-				<linearGradient
-					id="blue-hue-gradient"
-					x1="1102.5"
-					y1="339"
-					x2="157.5"
-					y2="375.5"
-					gradientUnits="userSpaceOnUse"
-				>
-					<stop stopColor="#75A3FE" />
-					<stop offset="1" stopColor="white" stopOpacity="0" />
-				</linearGradient>
-			</defs>
-		</svg>
-	);
-};
+const renderHTML = (content: string) => <span>{renderRichText(content)}</span>;
 
 export const ToolsPageTemplate = ({
 	content,
@@ -78,8 +17,8 @@ export const ToolsPageTemplate = ({
 }) => {
 	useEffect(() => {
 		const animateClouds = () => {
-			const cloud4 = document.getElementById("cloud-4");
-			const cloud5 = document.getElementById("cloud-5");
+			const cloud4 = document.querySelector('[data-commercial-cloud="4"]');
+			const cloud5 = document.querySelector('[data-commercial-cloud="5"]');
 
 			if (cloud4 && cloud5) {
 				cloud4.animate(
@@ -165,7 +104,7 @@ export const ToolsPageTemplate = ({
 									index: number,
 								) => (
 									<div
-										key={index}
+										key={feature.title}
 										className="p-5 bg-white rounded-xl border border-gray-100 shadow-sm transition-all duration-300 sm:p-6 hover:shadow-md hover:border-blue-100"
 									>
 										<div className="flex justify-center items-center mb-4 w-10 h-10 bg-blue-50 rounded-full">
@@ -195,12 +134,9 @@ export const ToolsPageTemplate = ({
 							</div>
 							<div className="mx-auto mb-10 max-w-3xl">
 								{content.faqs.map(
-									(
-										faq: { question: string; answer: string },
-										index: number,
-									) => (
+									(faq: { question: string; answer: string }) => (
 										<div
-											key={index}
+											key={faq.question}
 											className="p-4 my-3 bg-white rounded-xl border border-gray-100 shadow-sm transition-all duration-300 sm:p-5 sm:my-4 hover:shadow-md"
 										>
 											<h2 className="mb-2 text-base font-semibold text-gray-800 sm:text-lg">

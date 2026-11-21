@@ -10,7 +10,7 @@ import {
 	resolveMacosDeploymentTarget,
 } from "./build-macos-packages.mjs";
 
-const target = "x86_64-apple-darwin";
+const target = "aarch64-apple-darwin";
 const config = ["--config", "src-tauri/tauri.prod.conf.json"];
 const intelTimestampFailure = [
 	"/Users/runner/work/Cap/Cap/target/x86_64-apple-darwin/release/bundle/macos/Cap.app/Contents/Frameworks/Spacedrive.framework/Versions/Current/Libraries/libavdevice.61.3.100.dylib: replacing existing signature",
@@ -60,9 +60,9 @@ function harness(results) {
 	};
 }
 
-test("macOS packaging uses the ScreenCaptureKit minimum across both app manifests", () => {
+test("macOS packaging uses the packaged ARM runtime minimum across both app manifests", () => {
 	const minimum = resolveMacosDeploymentTarget();
-	assert.equal(minimum, "12.3");
+	assert.equal(minimum, "14.0");
 	assert.equal(resolveMacosDeploymentTarget(""), minimum);
 	const cargo = readFileSync(
 		new URL("../apps/desktop-gpui/Cargo.toml", import.meta.url),
@@ -85,10 +85,10 @@ test("macOS packaging uses the ScreenCaptureKit minimum across both app manifest
 });
 
 test("macOS deployment targets preserve compatible overrides and reject unsafe versions", () => {
-	for (const version of ["12.3", "12.3.0", "12.3.1", "12.10", "13", "15.7"]) {
+	for (const version of ["14.0", "14.0.0", "14.0.1", "14.10", "15", "15.7"]) {
 		assert.equal(resolveMacosDeploymentTarget(version), version);
 	}
-	for (const version of ["10.13", "11.0", "12", "12.2.99"]) {
+	for (const version of ["10.13", "11.0", "12.3", "13.4", "13.99.99"]) {
 		assert.throws(
 			() => resolveMacosDeploymentTarget(version),
 			/below Cap's minimum/,
@@ -109,20 +109,20 @@ test("macOS deployment targets preserve compatible overrides and reject unsafe v
 });
 
 test("a higher macOS target reaches every build and rebundle with matching installer metadata", async () => {
-	for (const architecture of [target, "aarch64-apple-darwin"]) {
+	for (const architecture of [target]) {
 		const fixture = harness([
 			{ code: 1, output: intelTimestampFailure },
 			{ code: 0 },
 		]);
-		fixture.options.env.MACOSX_DEPLOYMENT_TARGET = "14.0";
+		fixture.options.env.MACOSX_DEPLOYMENT_TARGET = "15.0";
 		assert.equal(
 			(await buildMacosPackages(architecture, config, fixture.options)).code,
 			0,
 		);
 		for (const call of fixture.calls) {
-			assert.equal(call.env.MACOSX_DEPLOYMENT_TARGET, "14.0");
+			assert.equal(call.env.MACOSX_DEPLOYMENT_TARGET, "15.0");
 			assert.deepEqual(JSON.parse(call.args.at(-1)), {
-				bundle: { macOS: { minimumSystemVersion: "14.0" } },
+				bundle: { macOS: { minimumSystemVersion: "15.0" } },
 			});
 		}
 		assert.equal(fixture.options.env.RUST_TARGET_TRIPLE, "previous-target");
@@ -134,7 +134,7 @@ test("an unsupported macOS override fails before starting a compiler or packager
 	fixture.options.env.MACOSX_DEPLOYMENT_TARGET = "10.13";
 	await assert.rejects(
 		buildMacosPackages(target, config, fixture.options),
-		/below Cap's minimum macOS version 12.3/,
+		/below Cap's minimum macOS version 14.0/,
 	);
 	assert.deepEqual(fixture.calls, []);
 });
@@ -164,13 +164,13 @@ test("caller configs cannot lower the validated build target in final bundle met
 				"--config",
 				JSON.stringify({
 					bundle: {
-						macOS: { minimumSystemVersion: deploymentTarget ?? "12.3" },
+						macOS: { minimumSystemVersion: deploymentTarget ?? "14.0" },
 					},
 				}),
 			]);
 			assert.equal(
 				call.env.MACOSX_DEPLOYMENT_TARGET,
-				deploymentTarget ?? "12.3",
+				deploymentTarget ?? "14.0",
 			);
 		}
 	}
@@ -236,7 +236,7 @@ test("timestamp retries only rebundle and preserve the target, config and signin
 	assert.equal(result.code, 0);
 	const minimumConfig = [
 		"--config",
-		JSON.stringify({ bundle: { macOS: { minimumSystemVersion: "12.3" } } }),
+		JSON.stringify({ bundle: { macOS: { minimumSystemVersion: "14.0" } } }),
 	];
 	const bundleArguments = [
 		"dotenv",
@@ -264,7 +264,7 @@ test("timestamp retries only rebundle and preserve the target, config and signin
 		assert.deepEqual(call.env, {
 			...fixture.options.env,
 			RUST_TARGET_TRIPLE: target,
-			MACOSX_DEPLOYMENT_TARGET: "12.3",
+			MACOSX_DEPLOYMENT_TARGET: "14.0",
 		});
 	}
 	assert.deepEqual(fixture.delays, [15_000, 30_000]);
@@ -473,6 +473,7 @@ test("unsupported platforms and arguments fail before executing bun", async () =
 		["win32", target, config],
 		["linux", target, config],
 		["darwin", "x86_64-pc-windows-msvc", config],
+		["darwin", "x86_64-apple-darwin", config],
 		["darwin", target, ["--config"]],
 		["darwin", target, ["--target", "aarch64-apple-darwin"]],
 		["darwin", target, ["--skip-stapling"]],

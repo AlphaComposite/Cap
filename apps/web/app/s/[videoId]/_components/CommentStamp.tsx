@@ -28,6 +28,7 @@ const CommentStamp: React.FC<CommentStampsProps> = ({
 	hoveredComment,
 }: CommentStampsProps) => {
 	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: The native button provides focus, Enter/Space seeking and tooltip access; outer hover ownership preserves traversal into the tooltip.
 		<div
 			key={comment.id}
 			data-comment-stamp=""
@@ -43,6 +44,9 @@ const CommentStamp: React.FC<CommentStampsProps> = ({
 			{/* Comment marker */}
 			<button
 				type="button"
+				aria-label={`Seek to comment by ${comment.authorName || "Anonymous"}: ${comment.content}`}
+				onFocus={() => handleMouseEnter(comment.id)}
+				onBlur={handleMouseLeave}
 				onClick={() => {
 					if (onSeek && comment.timestamp !== null) {
 						onSeek(Number(comment.timestamp));

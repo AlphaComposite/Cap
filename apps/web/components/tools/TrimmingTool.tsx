@@ -1,12 +1,14 @@
 "use client";
 
 import { Button } from "@cap/ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { trackEvent } from "@/app/utils/analytics";
 
 const SUPPORTED_VIDEO_FORMATS = ["mp4", "webm", "mov", "avi", "mkv"];
 
 export const TrimmingTool = () => {
+	const startTimeId = useId();
+	const endTimeId = useId();
 	const [fileState, setFileState] = useState<{
 		file: File | null;
 		isLoading: boolean;
@@ -74,10 +76,6 @@ export const TrimmingTool = () => {
 	};
 
 	const cleanupResources = () => {
-		if (fileState.videoSrc) {
-			URL.revokeObjectURL(fileState.videoSrc);
-		}
-
 		setFileState((prev) => ({
 			...prev,
 			videoSrc: null,
@@ -292,11 +290,11 @@ export const TrimmingTool = () => {
 
 		try {
 			await processTrim();
-		} catch (err: any) {
+		} catch (err) {
 			console.error("Detailed processing error:", err);
 
 			let errorMessage = "Trimming failed: ";
-			if (err.message) {
+			if (err instanceof Error && err.message) {
 				errorMessage += err.message;
 			} else if (typeof err === "string") {
 				errorMessage += err;
@@ -312,7 +310,7 @@ export const TrimmingTool = () => {
 			trackEvent("trimming_tool_trim_failed", {
 				fileSize: fileState.file.size,
 				fileName: fileState.file.name,
-				error: err.message || "Unknown error",
+				error: err instanceof Error ? err.message : "Unknown error",
 				startTime: trimState.startTime,
 				endTime: trimState.endTime,
 			});
@@ -410,14 +408,26 @@ export const TrimmingTool = () => {
 				video.muted = false;
 				if (includeAudio) {
 					try {
+						const audioVideo = video as HTMLVideoElement & {
+							mozHasAudio?: boolean;
+							webkitAudioDecodedByteCount?: number;
+							audioTracks?: { length: number };
+						};
 						if (
-							(video as any).mozHasAudio ||
-							Boolean((video as any).webkitAudioDecodedByteCount) ||
-							Boolean((video as any).audioTracks?.length)
+							audioVideo.mozHasAudio ||
+							Boolean(audioVideo.webkitAudioDecodedByteCount) ||
+							Boolean(audioVideo.audioTracks?.length)
 						) {
-							const audioContext = new (
-								window.AudioContext || (window as any).webkitAudioContext
-							)();
+							const AudioContextClass =
+								window.AudioContext ||
+								(
+									window as Window & {
+										webkitAudioContext?: typeof AudioContext;
+									}
+								).webkitAudioContext;
+							if (!AudioContextClass)
+								throw new Error("AudioContext is not supported");
+							const audioContext = new AudioContextClass();
 							const source = audioContext.createMediaElementSource(video);
 							const destination = audioContext.createMediaStreamDestination();
 
@@ -715,14 +725,24 @@ export const TrimmingTool = () => {
 		window.addEventListener("drop", preventDefaults);
 
 		return () => {
-			cleanupResources();
-			if (processingState.outputUrl) {
-				URL.revokeObjectURL(processingState.outputUrl);
-			}
 			window.removeEventListener("dragover", preventDefaults);
 			window.removeEventListener("drop", preventDefaults);
 		};
-	}, [cleanupResources, processingState.outputUrl]);
+	}, []);
+
+	useEffect(() => {
+		const source = fileState.videoSrc;
+		return () => {
+			if (source) URL.revokeObjectURL(source);
+		};
+	}, [fileState.videoSrc]);
+
+	useEffect(() => {
+		const output = processingState.outputUrl;
+		return () => {
+			if (output) URL.revokeObjectURL(output);
+		};
+	}, [processingState.outputUrl]);
 
 	return (
 		<div className="w-full">
@@ -737,6 +757,7 @@ export const TrimmingTool = () => {
 						: "bg-black rounded-lg overflow-hidden mb-4"
 				}
 			>
+				{/* biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: the local source preview lacks caption import; see docs/LINT_EXCEPTIONS.md. */}
 				<video
 					ref={videoPreviewRef}
 					src={fileState.videoSrc || undefined}
@@ -751,22 +772,7 @@ export const TrimmingTool = () => {
 			</div>
 
 			{!fileState.file && (
-				<div
-					className={`border-2 border-dashed rounded-lg p-8 mb-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
-						isDragging
-							? "border-blue-500 bg-blue-50"
-							: "border-gray-300 hover:border-blue-400"
-					}`}
-					onDragOver={handleDragOver}
-					onDragLeave={handleDragLeave}
-					onDrop={handleDrop}
-					onDragEnter={handleDragOver}
-					onClick={() => fileInputRef.current?.click()}
-					style={{ minHeight: "200px" }}
-					role="button"
-					tabIndex={0}
-					aria-label="Drop video here or click to select"
-				>
+				<>
 					<input
 						type="file"
 						accept="video/*"
@@ -774,32 +780,48 @@ export const TrimmingTool = () => {
 						onChange={handleFileChange}
 						ref={fileInputRef}
 					/>
-
-					<div className="text-center">
-						<svg
-							className="mx-auto h-12 w-12 text-gray-400 mb-3"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke="currentColor"
-						>
-							<path
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								strokeWidth={2}
-								d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-							/>
-						</svg>
-						<p className="text-lg font-medium text-gray-700">
-							Drag and drop your video file here
-						</p>
-						<p className="text-sm text-gray-500 mt-1">
-							or click to browse (max 500MB)
-						</p>
-						<p className="text-xs text-blue-600 mt-2">
-							Supported formats: {SUPPORTED_VIDEO_FORMATS.join(", ")}
-						</p>
-					</div>
-				</div>
+					<button
+						type="button"
+						className={`w-full border-2 border-dashed rounded-lg p-8 mb-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
+							isDragging
+								? "border-blue-500 bg-blue-50"
+								: "border-gray-300 hover:border-blue-400"
+						}`}
+						onDragOver={handleDragOver}
+						onDragLeave={handleDragLeave}
+						onDrop={handleDrop}
+						onDragEnter={handleDragOver}
+						onClick={() => fileInputRef.current?.click()}
+						style={{ minHeight: "200px" }}
+						aria-label="Drop video here or click to select"
+					>
+						<div className="text-center">
+							<svg
+								aria-hidden="true"
+								className="mx-auto h-12 w-12 text-gray-400 mb-3"
+								fill="none"
+								viewBox="0 0 24 24"
+								stroke="currentColor"
+							>
+								<path
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									strokeWidth={2}
+									d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+								/>
+							</svg>
+							<p className="text-lg font-medium text-gray-700">
+								Drag and drop your video file here
+							</p>
+							<p className="text-sm text-gray-500 mt-1">
+								or click to browse (max 500MB)
+							</p>
+							<p className="text-xs text-blue-600 mt-2">
+								Supported formats: {SUPPORTED_VIDEO_FORMATS.join(", ")}
+							</p>
+						</div>
+					</button>
+				</>
 			)}
 
 			{fileState.isLoading && (
@@ -836,11 +858,15 @@ export const TrimmingTool = () => {
 
 							<div className="flex items-center space-x-4 mb-4">
 								<div className="flex-1">
-									<label className="block text-sm font-medium text-gray-700 mb-1">
+									<label
+										htmlFor={startTimeId}
+										className="block text-sm font-medium text-gray-700 mb-1"
+									>
 										Start Time: {formatTime(trimState.startTime)}
 									</label>
 									<div className="flex items-center space-x-2">
 										<input
+											id={startTimeId}
 											type="range"
 											min="0"
 											max={videoState.info ? videoState.info.duration : 0}
@@ -850,11 +876,13 @@ export const TrimmingTool = () => {
 											className="flex-1"
 										/>
 										<button
+											type="button"
 											onClick={seekToStartTime}
 											className="p-1 bg-gray-200 rounded hover:bg-gray-300"
 											title="Seek to start time"
 										>
 											<svg
+												aria-hidden="true"
 												xmlns="http://www.w3.org/2000/svg"
 												className="h-4 w-4"
 												fill="none"
@@ -870,6 +898,7 @@ export const TrimmingTool = () => {
 											</svg>
 										</button>
 										<button
+											type="button"
 											onClick={setCurrentPositionAsStart}
 											className="p-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
 											title="Set current position as start"
@@ -880,11 +909,15 @@ export const TrimmingTool = () => {
 								</div>
 
 								<div className="flex-1">
-									<label className="block text-sm font-medium text-gray-700 mb-1">
+									<label
+										htmlFor={endTimeId}
+										className="block text-sm font-medium text-gray-700 mb-1"
+									>
 										End Time: {formatTime(trimState.endTime)}
 									</label>
 									<div className="flex items-center space-x-2">
 										<input
+											id={endTimeId}
 											type="range"
 											min={trimState.startTime}
 											max={videoState.info ? videoState.info.duration : 0}
@@ -894,11 +927,13 @@ export const TrimmingTool = () => {
 											className="flex-1"
 										/>
 										<button
+											type="button"
 											onClick={seekToEndTime}
 											className="p-1 bg-gray-200 rounded hover:bg-gray-300"
 											title="Seek to end time"
 										>
 											<svg
+												aria-hidden="true"
 												xmlns="http://www.w3.org/2000/svg"
 												className="h-4 w-4"
 												fill="none"
@@ -914,6 +949,7 @@ export const TrimmingTool = () => {
 											</svg>
 										</button>
 										<button
+											type="button"
 											onClick={setCurrentPositionAsEnd}
 											className="p-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
 											title="Set current position as end"
@@ -982,6 +1018,7 @@ export const TrimmingTool = () => {
 					<p className="text-green-700 font-medium mb-3">
 						Video trimmed successfully!
 					</p>
+					{/* biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: trimmed output lacks caption clipping/rebasing; see docs/LINT_EXCEPTIONS.md. */}
 					<video
 						ref={outputVideoRef}
 						src={processingState.outputUrl}

@@ -9,6 +9,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { motion } from "framer-motion";
+import Image from "next/image";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -194,7 +195,9 @@ export const StudentDiscountPage = () => {
 						</Button>
 					</motion.div>
 				</motion.div>
-				<img
+				<Image
+					width={2880}
+					height={2362}
 					src="/illustrations/mask-big-recorder.webp"
 					alt="Student Background"
 					className="absolute top-0 left-0 z-0 -mt-40 w-full h-auto pointer-events-none opacity-30"

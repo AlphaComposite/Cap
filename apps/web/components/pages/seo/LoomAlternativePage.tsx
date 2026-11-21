@@ -248,11 +248,13 @@ const createFaqStructuredData = () => {
 export const LoomAlternativePage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical Loom-alternative FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
-				id="faq-structured-data"
+				id="loom-alternative-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData().replace(/</g, "\\u003c")}
+			</Script>
 			<SeoPageTemplate
 				showLogosInHeader
 				showLoomComparisonSlider

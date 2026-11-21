@@ -2,6 +2,7 @@ import { Clapperboard, Zap } from "lucide-react";
 import Script from "next/script";
 import { SeoPageTemplate } from "@/components/seo/SeoPageTemplate";
 import type { SeoPageContent } from "@/components/seo/types";
+import { serializeStateForScript } from "@/lib/desktop-session";
 
 export const employeeOnboardingContent: SeoPageContent = {
 	title: "Employee Onboarding Platform: Streamline New-Hire Training with Cap",
@@ -220,17 +221,19 @@ const createFaqStructuredData = () => {
 		})),
 	};
 
-	return JSON.stringify(faqStructuredData);
+	return serializeStateForScript(faqStructuredData);
 };
 
 export const EmployeeOnboardingPlatformPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical onboarding FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
-				id="faq-structured-data"
+				id="solutions-employee-onboarding-platform-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData()}
+			</Script>
 			<SeoPageTemplate content={employeeOnboardingContent} />
 		</>
 	);

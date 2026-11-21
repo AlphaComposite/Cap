@@ -16,9 +16,12 @@ function OpeningEditor({ href, cancel }: { href: string; cancel: () => void }) {
 	const dialog = useRef<HTMLDialogElement>(null);
 	const [stalled, setStalled] = useState(false);
 	useLayoutEffect(() => {
-		const element = dialog.current!;
+		const element = dialog.current;
+		if (!element) return;
 		element.showModal();
-		element.querySelector<HTMLElement>('[role="status"]')?.focus();
+		element
+			.querySelector<HTMLElement>("main[data-edit-opening-focus]")
+			?.focus();
 		return () => element.close();
 	}, []);
 	useEffect(() => {

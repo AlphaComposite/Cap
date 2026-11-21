@@ -223,11 +223,13 @@ const createFaqStructuredData = () => {
 export const RemoteTeamCollaborationPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical remote-team FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
-				id="faq-structured-data"
+				id="solutions-remote-team-collaboration-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData().replace(/</g, "\\u003c")}
+			</Script>
 			<SeoPageTemplate content={remoteTeamCollaborationContent} />
 		</>
 	);

@@ -4,7 +4,7 @@ import { Button, Dialog, DialogContent, Input, Logo } from "@cap/ui";
 import type { Video } from "@cap/web-domain";
 import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import { verifyVideoPassword } from "@/actions/videos/password";
 
@@ -17,6 +17,7 @@ export const PasswordOverlay: React.FC<PasswordOverlayProps> = ({
 	isOpen,
 	videoId,
 }) => {
+	const passwordId = useId();
 	const [password, setPassword] = useState("");
 	const router = useRouter();
 
@@ -55,13 +56,13 @@ export const PasswordOverlay: React.FC<PasswordOverlayProps> = ({
 					<div className="w-full space-y-3 sm:space-y-4">
 						<div className="space-y-2">
 							<label
-								htmlFor="password"
+								htmlFor={passwordId}
 								className="text-sm font-medium text-gray-12"
 							>
 								Password
 							</label>
 							<Input
-								id="password"
+								id={passwordId}
 								type="password"
 								value={password}
 								onChange={(e) => setPassword(e.target.value)}

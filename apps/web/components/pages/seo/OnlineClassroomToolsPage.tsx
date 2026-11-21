@@ -2,6 +2,7 @@ import { Clapperboard, Zap } from "lucide-react";
 import Script from "next/script";
 import { SeoPageTemplate } from "@/components/seo/SeoPageTemplate";
 import type { SeoPageContent } from "@/components/seo/types";
+import { serializeStateForScript } from "@/lib/desktop-session";
 
 export const onlineClassroomToolsContent: SeoPageContent = {
 	title: "Online Classroom Tools: Empower Remote Teaching with Cap",
@@ -216,17 +217,19 @@ const createFaqStructuredData = () => {
 		})),
 	};
 
-	return JSON.stringify(faqStructuredData);
+	return serializeStateForScript(faqStructuredData);
 };
 
 export const OnlineClassroomToolsPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical classroom FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
-				id="faq-structured-data"
+				id="solutions-online-classroom-tools-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData()}
+			</Script>
 			<SeoPageTemplate content={onlineClassroomToolsContent} />
 		</>
 	);

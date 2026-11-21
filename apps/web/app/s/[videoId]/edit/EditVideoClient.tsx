@@ -57,7 +57,11 @@ import {
 	restoreRoute,
 } from "@/lib/revision-done";
 import { createPrepareOnce, prepareSpecKey } from "@/lib/revision-prepare-once";
-import { postRevisionRoute, RevisionRouteError, SOURCE_RELOCATION_PENDING_MESSAGE } from "@/lib/revision-publish-client";
+import {
+	postRevisionRoute,
+	RevisionRouteError,
+	SOURCE_RELOCATION_PENDING_MESSAGE,
+} from "@/lib/revision-publish-client";
 import {
 	acceptSettledPrepare,
 	beginDoneFence,
@@ -1403,7 +1407,8 @@ export function EditVideoClient({
 		const draftSession = readOrCreateDraftSession(draftStorage, video.id);
 		const sessionMatches = () =>
 			!draftStorage ||
-			draftStorage.getItem(`cap:edit-draft-session:${video.id}`) === draftSession;
+			draftStorage.getItem(`cap:edit-draft-session:${video.id}`) ===
+				draftSession;
 		// Like Done's wait bound, limit new sends, not a request already in flight.
 		const deadline = performance.now() + 60_000;
 		let active = true;
@@ -1416,9 +1421,13 @@ export function EditVideoClient({
 		};
 		const fire = () => {
 			if (
-				!active || savingRef.current || started.controller.signal.aborted ||
-				!sessionMatches() || performance.now() >= deadline
-			) return;
+				!active ||
+				savingRef.current ||
+				started.controller.signal.aborted ||
+				!sessionMatches() ||
+				performance.now() >= deadline
+			)
+				return;
 			if (prepareTrackRef.current?.requestId !== requestId) return;
 			if (prepareTrackRef.current.sent) return;
 			prepareTrackRef.current.sent = true;
@@ -1437,7 +1446,8 @@ export function EditVideoClient({
 				started.controller.signal,
 			)
 				.then((prepared) => {
-					if (!active || !sessionMatches() || started.controller.signal.aborted) return;
+					if (!active || !sessionMatches() || started.controller.signal.aborted)
+						return;
 					if (!acceptSettledPrepare(requestId, settleRequestRef.current)) {
 						return;
 					}
@@ -1461,9 +1471,13 @@ export function EditVideoClient({
 						error.message !== SOURCE_RELOCATION_PENDING_MESSAGE ||
 						!acceptSettledPrepare(requestId, settleRequestRef.current) ||
 						prepareTrackRef.current?.requestId !== requestId ||
-						started.controller.signal.aborted || savingRef.current ||
-						!active || !sessionMatches() || performance.now() >= deadline
-					) return;
+						started.controller.signal.aborted ||
+						savingRef.current ||
+						!active ||
+						!sessionMatches() ||
+						performance.now() >= deadline
+					)
+						return;
 					// Relocation is still progressing; retry the same fenced intent.
 					prepareTrackRef.current.sent = false;
 					once.forgetSent(key);

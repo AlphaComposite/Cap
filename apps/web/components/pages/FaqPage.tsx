@@ -25,7 +25,7 @@ const faqContent: FaqItem[] = [
 	{
 		title: "Which platforms does Cap support?",
 		answer:
-			"Cap is cross-platform and works on macOS (both Apple Silicon and Intel) and Windows. For macOS, we recommend version 13.1 or newer. For Windows, we recommend Windows 10 or newer.",
+			"Future Cap Mac releases require Apple Silicon and macOS 14.0 or newer. Historical Intel Mac releases remain available but are unsupported. Windows 10 or newer and Linux x86_64 remain supported.",
 	},
 	{
 		title: "What makes Cap different from Loom?",

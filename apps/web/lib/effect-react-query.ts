@@ -24,8 +24,8 @@ type Override<TTargetA, TTargetB> = {
 		: TTargetA[AKey];
 };
 
-export function makeUseEffectQuery<R>(
-	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, any>,
+export function makeUseEffectQuery<R, RuntimeError>(
+	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, RuntimeError>,
 ) {
 	return function useEffectQuery<
 		TData,
@@ -50,11 +50,11 @@ export function makeUseEffectQuery<R>(
 		const throwOnDefect = options.throwOnDefect ?? false;
 
 		const runtime = useEffectRuntime();
-		const queryFn = options.queryFn;
+		const { queryFn, ...queryOptions } = options;
 		const throwOnError = options.throwOnError;
 
 		const baseResults = useQuery<TData, TExposedError, TData, TQueryKey>({
-			...(options as any),
+			...queryOptions,
 			...(typeof queryFn === "function"
 				? {
 						queryFn: async (args) => {
@@ -171,9 +171,10 @@ export function makeUseEffectQuery<R>(
 	};
 }
 
-export function makeUseEffectMutation<R>(
-	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, any>,
+export function makeUseEffectMutation<R, RuntimeError>(
+	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, RuntimeError>,
 ) {
+	const synchronousThrows = new WeakSet<object>();
 	return function useEffectMutation<
 		TData,
 		TError,
@@ -235,18 +236,24 @@ export function makeUseEffectMutation<R>(
 			) => void;
 		}
 	> {
-		const mutationFn = options.mutationFn;
-		const throwOnDefect = options.throwOnDefect ?? false;
-		const throwOnError = options.throwOnError;
-		const _onMutate = options.onMutate;
-		const _onSuccess = options.onSuccess;
-		const _onError = options.onError;
-		const _onSettled = options.onSettled;
+		const {
+			mutationFn,
+			throwOnDefect = false,
+			throwOnError,
+			onError,
+			onSettled,
+			...mutationOptions
+		} = options;
 
 		const runtime = useEffectRuntime();
 
-		const baseResults = useMutation({
-			...(options as any),
+		const baseResults = useMutation<
+			TData,
+			Cause.Cause<TError>,
+			TVariables,
+			TContext
+		>({
+			...mutationOptions,
 			mutationFn:
 				typeof mutationFn === "function"
 					? async (variables: TVariables) => {
@@ -254,7 +261,11 @@ export function makeUseEffectMutation<R>(
 							try {
 								mutationEffect = mutationFn(variables);
 							} catch (e) {
-								throw new Cause.UnknownException(e, "mutationFn threw");
+								const cause = Cause.die(
+									new Cause.UnknownException(e, "mutationFn threw"),
+								);
+								synchronousThrows.add(cause);
+								throw cause;
 							}
 							const effectToRun = mutationEffect;
 							// .pipe(
@@ -265,7 +276,7 @@ export function makeUseEffectMutation<R>(
 							//   })
 							// );
 							const result = await runtime.runPromiseExit(effectToRun);
-							console.log({ result });
+
 							if (Exit.isFailure(result)) {
 								// we always throw the cause
 								throw result.cause;
@@ -274,42 +285,39 @@ export function makeUseEffectMutation<R>(
 							}
 						}
 					: mutationFn,
-			throwOnError:
-				typeof throwOnError === "function"
-					? (error: Cause.Cause<TError>) => {
-							// this is safe because internally when we call useQuery we always throw the full cause or UnknownException
-							const cause = error as
-								| Cause.Cause<TError>
-								| Cause.UnknownException;
-
-							// if the cause is UnknownException, we always return true and throw it
-							if (Cause.isUnknownException(cause)) {
-								return true;
-							}
-
-							const failureOrCause = Cause.failureOrCause(cause);
-
-							if (throwOnDefect) {
-								// in this case options.throwOnError expects a TError
-
-								// the cause was a fail, so we have TError
-								if (Either.isLeft(failureOrCause)) {
-									// this is safe because if throwOnDefect is true then TExposedError is TError
-									const exposedError =
-										failureOrCause.left as unknown as TExposedError;
-									return throwOnError(exposedError);
-								} else {
-									// the cause was a die or interrupt, so we return true
-									return true;
-								}
-							} else {
-								// in this case options.throwOnError expects a Cause<TError>
-								// this is safe because if throwOnDefect is false then TExposedError is Cause<TError>
-								const exposedError = cause as unknown as TExposedError;
-								return throwOnError(exposedError);
-							}
-						}
-					: throwOnError,
+			throwOnError: (cause) => {
+				if (typeof throwOnError === "function" && synchronousThrows.has(cause))
+					return true;
+				const failureOrCause = Cause.failureOrCause(cause);
+				if (throwOnDefect && Either.isRight(failureOrCause)) return true;
+				const error = (throwOnDefect && Either.isLeft(failureOrCause)
+					? failureOrCause.left
+					: cause) as unknown as TExposedError;
+				return typeof throwOnError === "function"
+					? throwOnError(error)
+					: (throwOnError ?? false);
+			},
+			onError: onError
+				? (cause, ...args) => {
+						const failureOrCause = Cause.failureOrCause(cause);
+						if (throwOnDefect && Either.isRight(failureOrCause)) return;
+						const error = (throwOnDefect && Either.isLeft(failureOrCause)
+							? failureOrCause.left
+							: cause) as unknown as TExposedError;
+						return onError(error, ...args);
+					}
+				: undefined,
+			onSettled: onSettled
+				? (data, cause, ...args) => {
+						if (cause === null) return onSettled(data, null, ...args);
+						const failureOrCause = Cause.failureOrCause(cause);
+						if (throwOnDefect && Either.isRight(failureOrCause)) return;
+						const error = (throwOnDefect && Either.isLeft(failureOrCause)
+							? failureOrCause.left
+							: cause) as unknown as TExposedError;
+						return onSettled(data, error, ...args);
+					}
+				: undefined,
 			// onMutate:
 			//   typeof onMutate === "function"
 			//     ? async (...args) => {
@@ -436,11 +444,27 @@ export function makeUseEffectMutation<R>(
 							: target.failureReason // if throwOnDefect is false then TExposedError is Cause<TError>, and base error is always Cause<TError>
 						: null;
 				} else if (prop === "mutate") {
-					return (variables: any, options: any) => {
+					return (
+						variables: TVariables,
+						options?: MutateOptions<
+							TData,
+							Cause.Cause<TError>,
+							TVariables,
+							TContext
+						>,
+					) => {
 						return target.mutate(variables, options);
 					};
 				} else if (prop === "mutateAsync") {
-					return (variables: any, options: any) =>
+					return (
+						variables: TVariables,
+						options?: MutateOptions<
+							TData,
+							Cause.Cause<TError>,
+							TVariables,
+							TContext
+						>,
+					) =>
 						target
 							.mutateAsync(variables, options)
 							.then((res) => Exit.succeed(res))

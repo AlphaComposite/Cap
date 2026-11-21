@@ -203,24 +203,15 @@ export default function WebmToMp4Page() {
 
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(faqStructuredData),
-				}}
-			/>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(howToStructuredData),
-				}}
-			/>
+			<script type="application/ld+json">
+				{JSON.stringify(breadcrumbSchema).replace(/</g, "\\u003c")}
+			</script>
+			<script type="application/ld+json">
+				{JSON.stringify(faqStructuredData).replace(/</g, "\\u003c")}
+			</script>
+			<script type="application/ld+json">
+				{JSON.stringify(howToStructuredData).replace(/</g, "\\u003c")}
+			</script>
 			<ToolsPageTemplate
 				content={pageContent}
 				toolComponent={

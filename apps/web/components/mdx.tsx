@@ -13,11 +13,14 @@ interface TableData {
 
 function Table({ data }: { data: TableData }) {
 	const headers = data.headers.map((header, index) => (
+		// biome-ignore lint/suspicious/noArrayIndexKey: Primitive text headers have no entity IDs or interactive state; duplicate labels are valid.
 		<th key={index}>{header}</th>
 	));
 	const rows = data.rows.map((row, index) => (
+		// biome-ignore lint/suspicious/noArrayIndexKey: Text-only MDX rows use positional identity; editable or stateful rows would require source IDs.
 		<tr key={index}>
 			{row.map((cell, cellIndex) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: Primitive text cells retain column positions, including repeated values, without per-cell state.
 				<td key={cellIndex}>{cell}</td>
 			))}
 		</tr>
@@ -33,9 +36,8 @@ function Table({ data }: { data: TableData }) {
 	);
 }
 
-interface CustomLinkProps {
+interface CustomLinkProps extends React.ComponentProps<"a"> {
 	href: string;
-	[key: string]: any;
 }
 
 function CustomLink({ href, ...rest }: CustomLinkProps) {
@@ -54,11 +56,7 @@ function CustomLink({ href, ...rest }: CustomLinkProps) {
 	return <a target="_blank" rel="noopener noreferrer" {...rest} />;
 }
 
-interface RoundedImageProps {
-	src: string;
-	alt: string;
-	[key: string]: any;
-}
+type RoundedImageProps = React.ComponentProps<typeof Image>;
 
 function RoundedImage(props: RoundedImageProps) {
 	return <Image src={props.src} alt={props.alt} className="rounded-lg" />;
@@ -88,6 +86,7 @@ function Warning(props: WarningProps) {
 		<div className="not-prose px-4 py-3 border-2 border-red-300 bg-red-50 rounded-lg text-sm mb-8 dark:bg-red-950 dark:border-red-800">
 			<div className="flex items-center gap-2 font-semibold text-red-700 dark:text-red-400 mb-2">
 				<svg
+					aria-hidden="true"
 					xmlns="http://www.w3.org/2000/svg"
 					viewBox="0 0 20 20"
 					fill="currentColor"
@@ -110,11 +109,13 @@ function Warning(props: WarningProps) {
 
 interface CapEmbedProps {
 	src: string;
+	title?: string;
 }
 
-function CapEmbed({ src }: CapEmbedProps) {
+function CapEmbed({ src, title = "Cap video" }: CapEmbedProps) {
 	return (
 		<iframe
+			title={title}
 			src={src}
 			frameBorder="0"
 			allowFullScreen
@@ -177,7 +178,7 @@ const rehypePrettyCodeOptions: RehypePrettyCodeOptions = {
 	keepBackground: true,
 };
 
-export function CustomMDX(props: any) {
+export function CustomMDX(props: React.ComponentProps<typeof MDXRemote>) {
 	return (
 		<MDXRemote
 			{...props}

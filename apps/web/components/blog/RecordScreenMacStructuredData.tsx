@@ -1,6 +1,7 @@
 "use client";
 
 import Script from "next/script";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { recordScreenMacContent } from "../../content/blog-content/record-screen-mac-system-audio";
 
 // Create Article structured data for SEO
@@ -23,7 +24,7 @@ const createArticleStructuredData = () => {
 		},
 	};
 
-	return JSON.stringify(articleStructuredData);
+	return serializeStateForScript(articleStructuredData);
 };
 
 // Create FAQ structured data for SEO
@@ -41,22 +42,26 @@ const createFaqStructuredData = () => {
 		})),
 	};
 
-	return JSON.stringify(faqStructuredData);
+	return serializeStateForScript(faqStructuredData);
 };
 
 export const RecordScreenMacStructuredData = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical article identity preserves Next Script dedup on repeat mounts while remaining distinct from other routes and schemas. */}
 			<Script
-				id="article-structured-data"
+				id="blog-record-screen-mac-system-audio-article-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createArticleStructuredData() }}
-			/>
+			>
+				{createArticleStructuredData()}
+			</Script>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical blog FAQ identity is distinct from the article and other routes in Next Script's cache. */}
 			<Script
-				id="faq-structured-data"
+				id="blog-record-screen-mac-system-audio-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData()}
+			</Script>
 		</>
 	);
 };

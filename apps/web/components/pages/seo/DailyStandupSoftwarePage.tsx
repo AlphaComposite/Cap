@@ -222,11 +222,13 @@ const createFaqStructuredData = () => {
 export const DailyStandupSoftwarePage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical daily-standup FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
-				id="faq-structured-data"
+				id="solutions-daily-standup-software-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData().replace(/</g, "\\u003c")}
+			</Script>
 			<SeoPageTemplate content={dailyStandupSoftwareContent} />
 		</>
 	);

@@ -1,6 +1,6 @@
 # Cap: Screen Recording, Sharing, and Video Collaboration
 
-> Cap is an open-source screen recorder and async video platform. Cap Desktop records displays, windows, selected areas, screenshots, and camera-only video with supported camera, microphone, and system-audio inputs. Instant Mode creates a shareable Cap; Studio Mode creates a local editable project. Native releases are produced for Apple Silicon and Intel macOS, 64-bit Windows, and x86_64 Linux as a Debian package.
+> Cap is an open-source screen recorder and async video platform. Cap Desktop records displays, windows, selected areas, screenshots, and camera-only video with supported camera, microphone, and system-audio inputs. Instant Mode creates a shareable Cap; Studio Mode creates a local editable project. Future native Mac releases support Apple Silicon on macOS 14.0 or newer; historical Intel Mac releases are unsupported. Windows 64-bit and x86_64 Linux Debian packages remain supported.
 
 Website: https://cap.so · Source: https://github.com/CapSoftware/Cap
 

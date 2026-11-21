@@ -5,9 +5,9 @@ import {
 	type EditTranscriptWord,
 	editTranscriptWordsToCaptionVtt,
 } from "@/lib/edit-transcript";
+import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import type { NormalizedSegmentEntry } from "@/lib/segments-audio";
 import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
-import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 
 /**
  * Pure logic for the provisional live transcription of instant-mode

@@ -1,5 +1,6 @@
 "use client";
 
+import type { Video } from "@cap/web-domain";
 import { useRef, useState } from "react";
 import {
 	CapCard,
@@ -15,7 +16,7 @@ type ClientCapCardProps = CapCardProps & {
 // Interface for drop targets that will be registered for mobile drag and drop
 interface DropTarget {
 	element: HTMLElement;
-	onDrop: (data: any) => void;
+	onDrop: (data: { id: Video.VideoId; name: string; type?: string }) => void;
 	onDragOver?: () => void;
 	onDragLeave?: () => void;
 }
@@ -26,7 +27,7 @@ let dropTargets: DropTarget[] = [];
 // Register a drop target element
 export function registerDropTarget(
 	element: HTMLElement,
-	onDrop: (data: any) => void,
+	onDrop: DropTarget["onDrop"],
 	onDragOver?: () => void,
 	onDragLeave?: () => void,
 ) {
@@ -39,7 +40,7 @@ export function registerDropTarget(
 export function ClientCapCard(props: ClientCapCardProps) {
 	const { videoId, isLoadingAnalytics, analytics, ...rest } = props;
 	const [isDragging, setIsDragging] = useState(false);
-	const cardRef = useRef<HTMLDivElement>(null);
+	const cardRef = useRef<HTMLFieldSetElement>(null);
 
 	// Create a drag preview element with thumbnail
 	const createDragPreview = (text: string): HTMLElement => {
@@ -61,7 +62,7 @@ export function ClientCapCard(props: ClientCapCardProps) {
 	};
 
 	// Handle drag start event for desktop
-	const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
+	const handleDragStart = (e: React.DragEvent<HTMLFieldSetElement>) => {
 		// Set the data transfer
 		e.dataTransfer.setData(
 			"application/cap",
@@ -96,18 +97,19 @@ export function ClientCapCard(props: ClientCapCardProps) {
 	};
 
 	return (
-		<div
+		<fieldset
+			aria-label={props.cap.name}
 			ref={cardRef}
 			draggable={true}
 			onDragStart={handleDragStart}
 			onDragEnd={handleDragEnd}
-			className={isDragging ? "opacity-50" : ""}
+			className={`min-w-0 border-0 p-0 m-0 ${isDragging ? "opacity-50" : ""}`}
 		>
 			<CapCard
 				{...rest}
-				isLoadingAnalytics={props.isLoadingAnalytics}
+				isLoadingAnalytics={isLoadingAnalytics}
 				analytics={analytics}
 			/>
-		</div>
+		</fieldset>
 	);
 }

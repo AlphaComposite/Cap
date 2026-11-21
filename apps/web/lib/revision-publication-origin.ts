@@ -237,12 +237,15 @@ async function signedFetch(
 	body = "",
 	signal?: AbortSignal,
 ) {
+	const deadline = AbortSignal.timeout(45 * 60 * 1000);
 	return originFetch(`${originBaseUrl()}${path}`, {
 		method,
 		headers: signedHeaders(method, path, body),
 		body: method === "POST" ? body : undefined,
 		dispatcher: originDispatcher,
-		signal,
+		// Bun's bare undici uses native fetch; its 300s timer ignores the Agent.
+		...(process.versions.bun ? { timeout: false as const } : {}),
+		signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
 	});
 }
 

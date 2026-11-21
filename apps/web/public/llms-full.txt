@@ -154,7 +154,7 @@ A REST API and webhooks are also available — see https://cap.so/docs/api/rest-
 
 ## Platforms
 
-- macOS: Apple Silicon & Intel; recommended 13.1+ (system audio requires 13.0+).
+- macOS: Future releases support Apple Silicon only and require macOS 14.0 or newer. Historical Intel Mac releases are unsupported and retain their original OS requirements.
 - Windows: Windows 10 (build 18362 / 1903+) and Windows 11.
 - Linux: x86_64 .deb for Debian/Ubuntu (X11/Wayland capture).
 - Web: shareable links and embeds play in any modern browser; no install for viewers.
@@ -209,7 +209,7 @@ Cap offers free browser tools at https://cap.so/tools: WebM→MP4, MOV→MP4, AV
 
 ## Installation
 
-- Desktop: https://cap.so/download (macOS Apple Silicon/Intel, Windows, Linux .deb).
+- Desktop: https://cap.so/download (future Mac releases: Apple Silicon on macOS 14.0+, plus Windows and Linux .deb; historical Intel Mac builds are unsupported).
 - CLI: `curl -fsSL https://cap.so/install-cli.sh | sh` or `cap desktop install-cli`.
 - Self-host: https://cap.so/docs/self-hosting.
 - Viewers: open any Cap share link in a browser — no install required.

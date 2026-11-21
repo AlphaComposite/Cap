@@ -167,6 +167,7 @@ export function TimelineHoverGhost({
 					className="block h-[70px] w-full bg-gray-3"
 					style={{ display: "none" }}
 				>
+					{/* biome-ignore lint/performance/noImgElement: The thumbnail controller owns imgRef.src imperatively; Next Image would change that lifecycle. */}
 					<img
 						ref={imgRef}
 						alt=""

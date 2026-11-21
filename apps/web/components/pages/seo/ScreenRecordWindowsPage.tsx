@@ -328,18 +328,20 @@ const createSoftwareAppStructuredData = () => {
 export const ScreenRecordWindowsPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical Windows-recorder FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
-				id="faq-structured-data"
+				id="screen-recorder-windows-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData().replace(/</g, "\\u003c")}
+			</Script>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical Windows software-app identity is distinct from FAQ and other routes in Next Script's cache. */}
 			<Script
-				id="software-app-structured-data"
+				id="screen-recorder-windows-software-app-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: createSoftwareAppStructuredData(),
-				}}
-			/>
+			>
+				{createSoftwareAppStructuredData().replace(/</g, "\\u003c")}
+			</Script>
 			<SeoPageTemplate content={screenRecordWindowsContent} />
 		</>
 	);

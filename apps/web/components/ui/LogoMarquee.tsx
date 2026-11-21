@@ -1,3 +1,4 @@
+import Image from "next/image";
 import type React from "react";
 
 interface LogoMarqueeProps {
@@ -48,12 +49,12 @@ export const LogoMarquee: React.FC<LogoMarqueeProps> = ({ className = "" }) => {
 
 			<div className="flex animate-marquee">
 				{/* First set of logos */}
-				{logos.map((logo, index) => (
+				{logos.map((logo) => (
 					<div
-						key={`logo-1-${index}`}
+						key={`logo-1-${logo.src}`}
 						className="flex justify-center items-center mx-5 shrink-0"
 					>
-						<img
+						<Image
 							alt={logo.alt}
 							loading="lazy"
 							width={logo.width}
@@ -66,12 +67,12 @@ export const LogoMarquee: React.FC<LogoMarqueeProps> = ({ className = "" }) => {
 				))}
 
 				{/* Duplicate set of logos for seamless looping */}
-				{logos.map((logo, index) => (
+				{logos.map((logo) => (
 					<div
-						key={`logo-2-${index}`}
+						key={`logo-2-${logo.src}`}
 						className="flex justify-center items-center mx-5 shrink-0"
 					>
-						<img
+						<Image
 							alt={logo.alt}
 							loading="lazy"
 							width={logo.width}

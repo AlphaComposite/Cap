@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@cap/ui";
+import Image from "next/image";
 
 export function CommercialGetStarted() {
 	const handleSmoothScroll = (
@@ -27,23 +28,29 @@ export function CommercialGetStarted() {
 			}}
 		>
 			<div
-				id="cloud-4"
+				data-commercial-cloud="4"
 				className="absolute top-0 -right-20 opacity-50 z-0 pointer-events-none"
 			>
-				<img
+				<Image
 					className="max-w-[40vw] h-auto"
 					src="/illustrations/cloud-1.png"
-					alt="Footer Cloud One"
+					width={1657}
+					height={1138}
+					sizes="40vw"
+					alt=""
 				/>
 			</div>
 			<div
-				id="cloud-5"
+				data-commercial-cloud="5"
 				className="absolute bottom-0 left-0 opacity-50 z-0 pointer-events-none"
 			>
-				<img
+				<Image
 					className="max-w-[40vw] h-auto"
 					src="/illustrations/cloud-2.png"
-					alt="Footer Cloud Two"
+					width={1923}
+					height={892}
+					sizes="40vw"
+					alt=""
 				/>
 			</div>
 			<div className="wrapper mx-auto h-full flex flex-col justify-center items-center relative z-10">

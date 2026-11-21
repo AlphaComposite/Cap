@@ -161,7 +161,8 @@ export async function getVideoDownloadInfo(
 		.where(eq(videos.id, videoId));
 
 	// Same message as a denied video, so this public action is not an existence check.
-	if (!video) throw new Error("You don't have permission to download this video");
+	if (!video)
+		throw new Error("You don't have permission to download this video");
 
 	const isOwner = user?.id === video.ownerId;
 	const allowed =

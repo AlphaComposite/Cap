@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { buildMarketingMetadata } from "@/lib/og/url";
 import { createBreadcrumbSchema } from "@/utils/web-schema";
 import { PageContent } from "./PageContent";
@@ -20,12 +21,9 @@ const breadcrumbSchema = createBreadcrumbSchema([
 export default function ToolsPage() {
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
+			<script type="application/ld+json">
+				{serializeStateForScript(breadcrumbSchema)}
+			</script>
 			<PageContent />
 		</>
 	);

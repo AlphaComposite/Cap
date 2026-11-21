@@ -147,7 +147,10 @@ find_linux_cli_target() {
 install_cap_desktop_macos() {
 	case "$(uname -m)" in
 		arm64|aarch64) DOWNLOAD_URL="https://cap.so/download/apple-silicon" ;;
-		x86_64|amd64) DOWNLOAD_URL="https://cap.so/download/apple-intel" ;;
+		x86_64|amd64)
+			echo "Future Mac releases require Apple Silicon. Historical Intel releases are unsupported: https://cap.so/download/versions#intel-mac" >&2
+			exit 1
+			;;
 		*)
 			echo "Unsupported Mac architecture: $(uname -m)" >&2
 			exit 1

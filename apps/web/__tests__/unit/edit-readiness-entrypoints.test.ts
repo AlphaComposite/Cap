@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { fail } from "node:assert/strict";
 import { act, createElement, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -220,11 +221,12 @@ describe.each(["share", "dashboard"])(
 						: createElement(CapCard, { cap: data, userId: "owner" } as never),
 				),
 			);
-			const edit = [...container.querySelectorAll("button")].find(
-				(e) =>
-					e.textContent?.trim() ===
-					(entry === "share" ? "Edit video" : "Edit timeline"),
-			)!;
+			const edit =
+				[...container.querySelectorAll("button")].find(
+					(e) =>
+						e.textContent?.trim() ===
+						(entry === "share" ? "Edit video" : "Edit timeline"),
+				) ?? fail("Missing edit entrypoint");
 			return {
 				edit,
 				navigationErrors,
@@ -250,7 +252,9 @@ describe.each(["share", "dashboard"])(
 				view = await mount();
 			try {
 				await act(async () => view.edit.click());
-				expect(document.activeElement?.getAttribute("role")).toBe("status");
+				expect(document.activeElement).toBe(
+					document.querySelector("main[data-edit-opening-focus]"),
+				);
 				expect(document.querySelector("dialog[open]")).not.toBeNull();
 				await act(async () => vi.advanceTimersByTime(9999));
 				expect(document.body.textContent).not.toContain("Still opening…");
@@ -275,7 +279,9 @@ describe.each(["share", "dashboard"])(
 				const cancel =
 					document.querySelector<HTMLButtonElement>("dialog button");
 				expect(cancel).not.toBeNull();
-				await act(async () => cancel!.click());
+				await act(async () =>
+					(cancel ?? fail("Missing Cancel button")).click(),
+				);
 				expect(document.querySelector("[data-edit-opening]")).toBeNull();
 				expect(mocks.replace).toHaveBeenCalledWith(window.location.href);
 				await act(async () => resolve());
@@ -377,10 +383,11 @@ describe("owner entrypoint presentation", () => {
 				(e) => e.textContent === "Edit timeline",
 			);
 			expect(edit).toBeDefined();
-			await act(async () => edit!.click());
-			expect(document.querySelector('[role="status"]')?.textContent).toContain(
-				"Opening editor…",
-			);
+			await act(async () => (edit ?? fail("Missing edit entrypoint")).click());
+			expect(
+				document.querySelector("main[data-edit-opening-focus] output")
+					?.textContent,
+			).toContain("Opening editor…");
 			expect(mocks.push).toHaveBeenCalledWith("/s/video/edit");
 			await act(async () => resolve());
 			expect(document.body.textContent).not.toContain("Opening editor…");

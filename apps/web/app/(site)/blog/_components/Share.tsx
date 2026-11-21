@@ -41,6 +41,7 @@ export function Share({ post, url }: ShareProps) {
 					LinkedIn
 				</a>
 				<button
+					type="button"
 					onClick={() => {
 						navigator.clipboard.writeText(url);
 						toast.success("Link copied to clipboard");

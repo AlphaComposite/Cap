@@ -1,12 +1,13 @@
 import { Button, Label } from "@cap/ui";
 import type { Organisation } from "@cap/web-domain";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import { updateOrganizationDetails } from "@/actions/organization/update-details";
 import { useDashboardContext } from "../../../Contexts";
 
 export const AccessEmailDomain = () => {
+	const emailDomainId = useId();
 	const { activeOrganization } = useDashboardContext();
 	const [emailDomain, setEmailDomain] = useState(
 		activeOrganization?.organization.allowedEmailDomain || null,
@@ -35,7 +36,7 @@ export const AccessEmailDomain = () => {
 	return (
 		<div className="flex-1 space-y-4">
 			<div className="space-y-1">
-				<Label htmlFor="allowedEmailDomain">Email access restriction</Label>
+				<Label htmlFor={emailDomainId}>Email access restriction</Label>
 				<p className="text-sm text-gray-10">
 					Restrict who can access public "anyone with the link" videos. Add
 					email domains (e.g.{" "}
@@ -61,7 +62,7 @@ export const AccessEmailDomain = () => {
 					className="flex px-4 py-3 w-full font-thin transition-all duration-200 text-[16px] md:text-[13px] text-gray-12 bg-gray-1 border-gray-4 outline-0 focus:bg-gray-2 rounded-xl hover:bg-gray-2 border-[1px] focus:border-gray-5 placeholder:text-gray-8 ring-0 ring-gray-2 focus:ring-1 focus:ring-gray-12 focus:ring-offset-2 ring-offset-gray-3 hover:placeholder:text-gray-12 placeholder:duration-200 min-h-[72px] resize-y"
 					placeholder="e.g. company.com, partner.org, larry@google.com"
 					value={emailDomain || ""}
-					id="allowedEmailDomain"
+					id={emailDomainId}
 					name="allowedEmailDomain"
 					onChange={(e) => {
 						setEmailDomain(e.target.value);

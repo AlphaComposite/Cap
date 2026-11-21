@@ -246,8 +246,7 @@ a.bg-primary:hover {
 		stroke-dasharray: 100;
 		stroke-dashoffset: 100;
 	}
-	50% {
-	}
+
 	100% {
 		stroke-dashoffset: 0;
 	}
@@ -899,15 +898,6 @@ footer a {
 
 .media-player[data-state="fullscreen"][data-controls-visible] video::cue {
 	bottom: 64px;
-}
-
-/* Safari-specific styles using CSS hacks */
-@media screen and (-webkit-min-device-pixel-ratio: 0) {
-	_::-webkit-full-page-media,
-	_:future,
-	:root #video-container {
-		height: calc(100% - 1.7rem);
-	}
 }
 
 @layer base {

@@ -15,6 +15,7 @@ export default function Loading() {
 					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 						{Array.from({ length: 9 }).map((_, index) => (
 							<div
+								// biome-ignore lint/suspicious/noArrayIndexKey: Nine fixed loading slots have positional identity, not mutable entity identity.
 								key={index}
 								className="animate-pulse bg-white border border-gray-200 rounded-lg p-6"
 							>

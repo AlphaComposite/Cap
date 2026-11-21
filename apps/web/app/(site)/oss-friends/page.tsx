@@ -34,7 +34,7 @@ async function fetchOSSFriends(): Promise<OSSFriendsResponse> {
 
 	const filteredData = {
 		...data,
-		data: data.data.filter((friend: any) => friend.name !== "Cap"),
+		data: data.data.filter((friend: OSSFriend) => friend.name !== "Cap"),
 	};
 
 	return filteredData;

@@ -3,7 +3,7 @@ import { nanoId } from "@cap/database/helpers";
 import * as Db from "@cap/database/schema";
 import { type User, Video } from "@cap/web-domain";
 import * as Dz from "drizzle-orm";
-import type { MySqlInsertBase } from "drizzle-orm/mysql-core";
+
 import { Effect, Option } from "effect";
 import type { Schema } from "effect/Schema";
 import { Database } from "../Database.ts";
@@ -38,7 +38,6 @@ export class VideosRepo extends Effect.Service<VideosRepo>()("VideosRepo", {
 									storageIntegrationId: v.storageIntegrationId,
 									createdAt: v.createdAt.toISOString(),
 									updatedAt: v.updatedAt.toISOString(),
-									metadata: v.metadata as any,
 								}),
 								Option.fromNullable(video?.password),
 							] as const,
@@ -109,7 +108,7 @@ export class VideosRepo extends Effect.Service<VideosRepo>()("VideosRepo", {
 
 				yield* db.use((db) =>
 					db.transaction(async (db) => {
-						const promises: MySqlInsertBase<any, any, any>[] = [
+						const promises: PromiseLike<unknown>[] = [
 							db.insert(Db.videos).values([
 								{
 									...data,

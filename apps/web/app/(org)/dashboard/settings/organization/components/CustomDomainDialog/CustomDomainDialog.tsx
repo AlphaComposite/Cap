@@ -286,10 +286,6 @@ const CustomDomainDialog = ({
 		],
 	);
 
-	if (!currentStep) {
-		return null;
-	}
-
 	const handleDomainSubmit = async () => {
 		if (!domain.trim()) {
 			dispatch({
@@ -344,15 +340,25 @@ const CustomDomainDialog = ({
 	};
 
 	useEffect(() => {
-		//if current step is success, close dialog in 8 seconds
+		if (!open || !currentStep?.id) return;
 		if (stepState.currentIndex === 2) {
-			setTimeout(() => {
+			const timeout = setTimeout(() => {
 				handleClose();
 			}, 8000);
+			return () => clearTimeout(timeout);
 		} else if (isVerified) {
 			handleNext();
 		}
-	}, [isVerified, stepState.currentIndex, handleClose, handleNext]);
+	}, [
+		open,
+		currentStep?.id,
+		isVerified,
+		stepState.currentIndex,
+		handleClose,
+		handleNext,
+	]);
+
+	if (!currentStep) return null;
 
 	return (
 		<>

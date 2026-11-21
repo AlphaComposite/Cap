@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import { AgenciesPage } from "@/components/pages/seo/AgenciesPage";
 import { PRICING } from "@/data/pricing";
+import { serializeStateForScript } from "@/lib/desktop-session";
 import { ogImageUrl } from "@/lib/og/url";
 
 // Create FAQ structured data for SEO
@@ -55,7 +56,7 @@ const createFaqStructuredData = () => {
 		})),
 	};
 
-	return JSON.stringify(faqStructuredData);
+	return serializeStateForScript(faqStructuredData);
 };
 
 // Create SoftwareApplication structured data
@@ -80,7 +81,7 @@ const createSoftwareStructuredData = () => {
 		},
 	};
 
-	return JSON.stringify(softwareStructuredData);
+	return serializeStateForScript(softwareStructuredData);
 };
 
 const ogImage = ogImageUrl({
@@ -124,16 +125,20 @@ export const metadata: Metadata = {
 export default function Page() {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical agencies FAQ identity keeps Next Script dedup stable across repeated mounts without colliding with other routes. */}
 			<Script
-				id="faq-structured-data"
+				id="solutions-agencies-faq-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			>
+				{createFaqStructuredData()}
+			</Script>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical agencies software identity is distinct from FAQ and other routes in Next Script's cache. */}
 			<Script
-				id="software-structured-data"
+				id="solutions-agencies-software-structured-data"
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createSoftwareStructuredData() }}
-			/>
+			>
+				{createSoftwareStructuredData()}
+			</Script>
 			<AgenciesPage />
 		</>
 	);

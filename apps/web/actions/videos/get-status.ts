@@ -5,8 +5,8 @@ import { getCurrentUser } from "@cap/database/auth/session";
 import {
 	organizations,
 	spaces,
-	videoPublication,
 	spaceVideos,
+	videoPublication,
 	videos,
 	videoUploads,
 } from "@cap/database/schema";
@@ -81,28 +81,29 @@ export async function getVideoStatus(
 			metadata.chaptersRegenerationRevisionId ?? null,
 		chaptersRegenerationQueuedAt: metadata.chaptersRegenerationQueuedAt ?? null,
 	};
-	const [user, organizationRows, sharedSpaces, publicationRows] = await Promise.all([
-		getCurrentUser(),
-		db()
-			.select({ settings: organizations.settings })
-			.from(organizations)
-			.where(eq(organizations.id, video.orgId))
-			.limit(1),
-		db()
-			.select({
-				id: spaces.id,
-				name: spaces.name,
-				settings: spaces.settings,
-			})
-			.from(spaceVideos)
-			.innerJoin(spaces, eq(spaceVideos.spaceId, spaces.id))
-			.where(eq(spaceVideos.videoId, videoId)),
-		db()
-			.select({ currentRevisionId: videoPublication.currentRevisionId })
-			.from(videoPublication)
-			.where(eq(videoPublication.videoId, videoId))
-			.limit(1),
-	]);
+	const [user, organizationRows, sharedSpaces, publicationRows] =
+		await Promise.all([
+			getCurrentUser(),
+			db()
+				.select({ settings: organizations.settings })
+				.from(organizations)
+				.where(eq(organizations.id, video.orgId))
+				.limit(1),
+			db()
+				.select({
+					id: spaces.id,
+					name: spaces.name,
+					settings: spaces.settings,
+				})
+				.from(spaceVideos)
+				.innerJoin(spaces, eq(spaceVideos.spaceId, spaces.id))
+				.where(eq(spaceVideos.videoId, videoId)),
+			db()
+				.select({ currentRevisionId: videoPublication.currentRevisionId })
+				.from(videoPublication)
+				.where(eq(videoPublication.videoId, videoId))
+				.limit(1),
+		]);
 	// An open share page reloads when Done publishes a newer revision.
 	Object.assign(chapterStatus, {
 		currentRevisionId: publicationRows[0]?.currentRevisionId ?? null,

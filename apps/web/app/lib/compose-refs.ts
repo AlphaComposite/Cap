@@ -1,18 +1,18 @@
 import * as React from "react";
 
-type PossibleRef<T> = React.LegacyRef<T> | React.Ref<T> | undefined;
+type PossibleRef<T> = React.Ref<T> | undefined;
 
 /**
  * Set a given ref to a given value
  * This utility takes care of different types of refs: callback refs and RefObject(s)
  */
-function setRef<T>(ref: PossibleRef<T>, value: T) {
+function setRef<T>(ref: PossibleRef<T>, value: T | null) {
 	if (typeof ref === "function") {
 		return ref(value);
 	}
 
 	if (ref !== null && ref !== undefined) {
-		(ref as any).current = value;
+		ref.current = value;
 	}
 }
 
@@ -54,9 +54,12 @@ function composeRefs<T>(...refs: PossibleRef<T>[]): React.RefCallback<T> {
  * A custom hook that composes multiple refs
  * Accepts callback refs and RefObject(s)
  */
-function useComposedRefs<T>(...refs: PossibleRef<T>[]): React.RefCallback<T> {
-	// eslint-disable-next-line react-hooks/exhaustive-deps
-	return React.useCallback(composeRefs(...refs), refs);
+function useComposedRefs<T>(
+	ref1: PossibleRef<T>,
+	ref2: PossibleRef<T>,
+	ref3: PossibleRef<T>,
+): React.RefCallback<T> {
+	return React.useMemo(() => composeRefs(ref1, ref2, ref3), [ref1, ref2, ref3]);
 }
 
 export { composeRefs, useComposedRefs };

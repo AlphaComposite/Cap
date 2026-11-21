@@ -22,13 +22,7 @@ const PlatformSupportArt = memo(() => {
 	return <PlatformSupportRive className="w-[120px] h-[80px]" />;
 });
 
-const FAQItem = ({
-	faq,
-	index,
-}: {
-	faq: { question: string; answer: string };
-	index: number;
-}) => {
+const FAQItem = ({ faq }: { faq: { question: string; answer: string } }) => {
 	const [isOpen, setIsOpen] = useState(false);
 
 	return (
@@ -611,8 +605,8 @@ export const AgenciesPage = () => {
 					</div>
 					<div className="mx-auto mb-10 max-w-3xl">
 						<div className="space-y-4">
-							{agenciesContent.faqs.map((faq, index) => (
-								<FAQItem key={index} faq={faq} index={index} />
+							{agenciesContent.faqs.map((faq) => (
+								<FAQItem key={faq.question} faq={faq} />
 							))}
 						</div>
 					</div>

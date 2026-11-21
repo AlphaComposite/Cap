@@ -1,3 +1,4 @@
+import { fail } from "node:assert/strict";
 import {
 	comments,
 	editIntent,
@@ -57,7 +58,10 @@ function fixture() {
 			{ start: 6, end: 9 },
 		],
 	};
-	const rows = new Map<unknown, Record<string, any>[]>([
+	type FixtureRow = Record<string, unknown> & {
+		metadataSnapshot?: typeof editRevision.$inferSelect.metadataSnapshot;
+	};
+	const rows = new Map<unknown, FixtureRow[]>([
 		[videos, [{ id: "video", ownerId: "owner", metadata: {} }]],
 		[
 			videoPublication,
@@ -109,7 +113,7 @@ function fixture() {
 			},
 		}),
 		insert: (table: unknown) => ({
-			values: (value: Record<string, any>) => {
+			values: (value: FixtureRow) => {
 				const existing = rows.get(table) ?? [];
 				if (table !== videoPublication)
 					rows.set(table, [...existing, { ...value }]);
@@ -119,7 +123,7 @@ function fixture() {
 			},
 		}),
 		update: (table: unknown) => ({
-			set: (value: Record<string, any>) => ({
+			set: (value: FixtureRow) => ({
 				where: async () => {
 					for (const row of rows.get(table) ?? []) Object.assign(row, value);
 					return [{ affectedRows: 1 }];
@@ -136,7 +140,7 @@ function fixture() {
 	const selectFrames = vi.fn<OriginClient["selectFrames"]>(async (body) => ({
 		...body,
 		keepIndexes: [0],
-		keepRanges: [body.keepRanges[0]!],
+		keepRanges: [body.keepRanges[0] ?? fail("Missing keep range")],
 	}));
 	const prepareRevision = vi.fn<OriginClient["prepareRevision"]>(
 		async (body) => {
@@ -217,41 +221,75 @@ afterEach(() => {
 
 describe("publication independent transcript read", () => {
 	it.each([
-		[new DOMException("This operation was aborted", "AbortError"), true, "SUPERSEDED"],
-		[new DOMException("This operation was aborted", "AbortError"), false, "FAILED"],
-		[new DOMException("This operation was aborted", "AbortError"), undefined, "FAILED"],
-		[new Error("transport", { cause: new DOMException("aborted", "AbortError") }), false, "FAILED"],
+		[
+			new DOMException("This operation was aborted", "AbortError"),
+			true,
+			"SUPERSEDED",
+		],
+		[
+			new DOMException("This operation was aborted", "AbortError"),
+			false,
+			"FAILED",
+		],
+		[
+			new DOMException("This operation was aborted", "AbortError"),
+			undefined,
+			"FAILED",
+		],
+		[
+			new Error("transport", {
+				cause: new DOMException("aborted", "AbortError"),
+			}),
+			false,
+			"FAILED",
+		],
 		[new Error("encoder failed"), true, "FAILED"],
 		[new Error("encoder failed"), false, "FAILED"],
-	])("retains only causally linked cancellation separately from failure (%#)", async (error, aborted, state) => {
-		const { database, rows, origin, input } = fixture();
-		const controller = new AbortController();
-		if (aborted !== undefined) Object.assign(origin, { signal: controller.signal });
-		finishInventoryProbe.getObject = async () => transcript;
-		finishInventoryProbe.listPrefix = async () => [];
-		vi.mocked(origin.prepareRevision).mockImplementationOnce(async () => {
-			if (aborted) controller.abort();
-			throw error;
-		});
-		await expect(prepareInstantFinishRevision(database, input, {
-			origin, randomRevisionId: () => "revision",
-		})).rejects.toThrow();
-		expect(rows.get(editRevision)?.[0]?.state).toBe(state);
-		expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
-	});
+	])(
+		"retains only causally linked cancellation separately from failure (%#)",
+		async (error, aborted, state) => {
+			const { database, rows, origin, input } = fixture();
+			const controller = new AbortController();
+			if (aborted !== undefined)
+				Object.assign(origin, { signal: controller.signal });
+			finishInventoryProbe.getObject = async () => transcript;
+			finishInventoryProbe.listPrefix = async () => [];
+			vi.mocked(origin.prepareRevision).mockImplementationOnce(async () => {
+				if (aborted) controller.abort();
+				throw error;
+			});
+			await expect(
+				prepareInstantFinishRevision(database, input, {
+					origin,
+					randomRevisionId: () => "revision",
+				}),
+			).rejects.toThrow();
+			expect(rows.get(editRevision)?.[0]?.state).toBe(state);
+			expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
+		},
+	);
 	it("allocates the sealed revision while the independent transcript read is pending", async () => {
 		const { database, rows, origin, input } = fixture();
 		const read = deferred();
 		finishInventoryProbe.listPrefix = async () => [];
-		finishInventoryProbe.getObject = async () => { await read.promise; return transcript; };
+		finishInventoryProbe.getObject = async () => {
+			await read.promise;
+			return transcript;
+		};
 		const pending = publishInstantFinishRevision(database, input, {
-			origin, randomRevisionId: () => "revision",
+			origin,
+			randomRevisionId: () => "revision",
 		});
 		try {
-			await vi.waitFor(() => expect(rows.get(editRevision)?.[0]?.state).toBe("PREPARING"));
+			await vi.waitFor(() =>
+				expect(rows.get(editRevision)?.[0]?.state).toBe("PREPARING"),
+			);
 			expect(origin.prepareRevision).not.toHaveBeenCalled();
 			expect(rows.get(videoPublication)?.[0]?.currentRevisionId).toBeNull();
-		} finally { read.resolve(); await pending; }
+		} finally {
+			read.resolve();
+			await pending;
+		}
 		expect(origin.prepareRevision).toHaveBeenCalledOnce();
 		expect(rows.get(editRevision)?.[0]?.state).toBe("CURRENT");
 	});
@@ -281,7 +319,9 @@ describe("publication independent transcript read", () => {
 				inventory.resolve();
 				await pending;
 			}
-			const body = vi.mocked(origin.prepareRevision).mock.calls[0]![0];
+			const [body] =
+				vi.mocked(origin.prepareRevision).mock.calls[0] ??
+				fail("prepareRevision was not called");
 			expect(body.keepRanges).toEqual([{ start: 0, end: 4 }]);
 			expect(body.editSpec.keepRanges).toEqual(body.keepRanges);
 			expect(body.captionsVtt).toContain("kept");
@@ -298,14 +338,15 @@ describe("publication independent transcript read", () => {
 			origin,
 			randomRevisionId: () => "revision",
 		});
-		const captions = rows.get(editRevision)?.[0]?.metadataSnapshot.captionsVtt;
+		const captions = rows.get(editRevision)?.[0]?.metadataSnapshot?.captionsVtt;
+		expect(captions).toContain("kept");
 		finishInventoryProbe.getObject = async () => null;
 		await expect(
 			publishInstantFinishRevision(database, input, { origin }),
 		).resolves.toEqual(prepared);
 		expect(origin.prepareRevision).toHaveBeenCalledOnce();
 		expect(rows.get(editRevision)?.[0]?.state).toBe("CURRENT");
-		expect(rows.get(editRevision)?.[0]?.metadataSnapshot.captionsVtt).toBe(
+		expect(rows.get(editRevision)?.[0]?.metadataSnapshot?.captionsVtt).toBe(
 			captions,
 		);
 	});

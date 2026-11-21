@@ -39,7 +39,7 @@ const DomainStep = ({
 			<div className="space-y-3">
 				<Input
 					type="text"
-					id="customDomain"
+					aria-label="Custom domain"
 					placeholder="caps.yourdomain.com"
 					value={domain}
 					disabled={!user.isPro || submitLoading}

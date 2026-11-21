@@ -112,7 +112,8 @@ export default async function PostPage(props: PostProps) {
 							<span>
 								{format(
 									parseISO(
-										(post.metadata as any).publishedAt ||
+										("publishedAt" in post.metadata &&
+											post.metadata.publishedAt) ||
 											new Date().toISOString(),
 									),
 									"MMMM dd, yyyy",

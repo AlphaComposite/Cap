@@ -79,7 +79,7 @@ export const Platforms = () => {
 		{
 			key: "macos",
 			name: "macOS",
-			note: "Apple silicon and Intel. macOS 13.1 or newer.",
+			note: "Apple Silicon. macOS 14.0 or newer. Historical Intel releases are unsupported.",
 			href: getDownloadUrl("macos", isIntel),
 			glyph: <AppleGlyph className="size-7" />,
 			mode: "instant" as const,

@@ -20,9 +20,11 @@ export const Stepper = ({ steps, onStepClick }: StepperProps) => {
 		<div className="flex justify-center items-center px-7 py-3 w-full border-b bg-gray-1 border-gray-4">
 			{steps.map((step, index) => (
 				<Fragment key={step.id}>
-					<div
+					<button
+						type="button"
+						disabled={!onStepClick || step.status !== StepStatus.COMPLETED}
 						className={clsx(
-							"flex gap-2 items-center",
+							"flex gap-2 items-center p-0 border-0 bg-transparent text-left",
 							onStepClick &&
 								step.status === StepStatus.COMPLETED &&
 								"cursor-pointer hover:opacity-80 transition-opacity",
@@ -33,7 +35,7 @@ export const Stepper = ({ steps, onStepClick }: StepperProps) => {
 							onStepClick(index)
 						}
 					>
-						<div
+						<span
 							className={clsx(
 								"flex justify-center items-center rounded-full border size-5 transition-colors duration-200",
 								step.status === StepStatus.COMPLETED &&
@@ -53,7 +55,7 @@ export const Stepper = ({ steps, onStepClick }: StepperProps) => {
 									className="text-white text-[8px]"
 								/>
 							) : (
-								<p
+								<span
 									className={clsx(
 										"text-[11px]",
 										step.status !== StepStatus.PENDING
@@ -62,10 +64,10 @@ export const Stepper = ({ steps, onStepClick }: StepperProps) => {
 									)}
 								>
 									{index + 1}
-								</p>
+								</span>
 							)}
-						</div>
-						<p
+						</span>
+						<span
 							className={clsx(
 								"whitespace-nowrap transition-colors duration-200 text-[13px]",
 								step.hasError
@@ -76,8 +78,8 @@ export const Stepper = ({ steps, onStepClick }: StepperProps) => {
 							)}
 						>
 							{step.name}
-						</p>
-					</div>
+						</span>
+					</button>
 					{index !== steps.length - 1 && (
 						<div className="relative flex-1 mx-5 h-[2px] border-t border-dashed border-gray-5">
 							<motion.div

@@ -87,7 +87,9 @@ export const useMediaPermission = (
 			const stream = await navigator.mediaDevices.getUserMedia(
 				mediaConstraintsMap[kind],
 			);
-			stream.getTracks().forEach((track) => track.stop());
+			stream.getTracks().forEach((track) => {
+				track.stop();
+			});
 			updateState("granted");
 			await refreshPermission();
 			return true;

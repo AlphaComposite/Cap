@@ -9,9 +9,13 @@ export async function GET(
 	props: RouteContext<"/api/releases/tauri/[version]/[target]/[arch]">,
 ) {
 	const params = await props.params;
+	if (
+		params.target === "darwin" &&
+		!["aarch64", "arm64"].includes(params.arch)
+	) {
+		return new Response(null, { status: 204 });
+	}
 	try {
-		params.arch = "arch";
-
 		const { data: release } = await octokit.repos.getLatestRelease({
 			owner: "capsoftware",
 			repo: "cap",
@@ -27,7 +31,10 @@ export async function GET(
 			const isTargetMatch =
 				asset.name.endsWith(".tar.gz") && !asset.name.endsWith(".tar.gz.sig");
 
-			return isTargetMatch;
+			return (
+				isTargetMatch &&
+				(params.target !== "darwin" || /(?:aarch64|arm64)/.test(asset.name))
+			);
 		});
 
 		if (!asset) {
@@ -38,8 +45,10 @@ export async function GET(
 
 		const url = asset.browser_download_url;
 
-		const signatureAsset = release.assets.find(({ name }: any) =>
-			name.endsWith(".sig"),
+		const signatureAsset = release.assets.find(({ name }) =>
+			params.target === "darwin"
+				? name === `${asset.name}.sig`
+				: name.endsWith(".sig"),
 		);
 
 		if (!signatureAsset) {

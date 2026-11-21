@@ -15,7 +15,11 @@ export const useIsChromium = (): boolean => {
 	useEffect(() => {
 		if (typeof navigator === "undefined") return;
 
-		const uaData = (navigator as any).userAgentData;
+		const uaData = (
+			navigator as Navigator & {
+				userAgentData?: { brands?: { brand: string }[] };
+			}
+		).userAgentData;
 		if (Array.isArray(uaData?.brands)) {
 			setIsChromium(
 				uaData.brands.some((b: { brand: string }) => /chromium/i.test(b.brand)),

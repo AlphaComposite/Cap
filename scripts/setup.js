@@ -12,6 +12,17 @@ import { createLinuxBundleConfig } from "./linux-bundle-config.mjs";
 const exec = promisify(execCb);
 const execFile = promisify(execFileCb);
 
+export async function extractWindowsArchive(
+	archivePath,
+	destination,
+	execute = execFile,
+) {
+	return execute(
+		path.win32.join(env.SystemRoot || "C:\\Windows", "System32", "tar.exe"),
+		["xf", archivePath, "-C", destination],
+	);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -31,6 +42,7 @@ function cargoConfigPath(value) {
 }
 
 async function main() {
+	if (process.platform === "darwin") onnxRuntimeAsset("darwin", arch);
 	await fs.mkdir(targetDir, { recursive: true });
 
 	let cargoConfigContents = "";
@@ -54,27 +66,16 @@ async function main() {
 		const NATIVE_DEPS_VERSION = "v0.25";
 		const NATIVE_DEPS_URL = `https://github.com/spacedriveapp/native-deps/releases/download/${NATIVE_DEPS_VERSION}`;
 
-		const NATIVE_DEPS_ASSETS = {
-			x86_64: "native-deps-x86_64-darwin-apple.tar.xz",
-			aarch64: "native-deps-aarch64-darwin-apple.tar.xz",
-		};
-
-		const nativeDepsTar = NATIVE_DEPS_ASSETS[arch];
+		const nativeDepsTar = "native-deps-aarch64-darwin-apple.tar.xz";
 		const nativeDepsTarPath = path.join(
 			targetDir,
 			`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
 		);
-		let downloadedNativeDeps = false;
-
-		if (!(await fileExists(nativeDepsTarPath))) {
-			console.log(`Downloading ${nativeDepsTar}`);
-			const nativeDepsBytes = await fetch(`${NATIVE_DEPS_URL}/${nativeDepsTar}`)
-				.then((r) => r.blob())
-				.then((b) => b.arrayBuffer());
-			await fs.writeFile(nativeDepsTarPath, Buffer.from(nativeDepsBytes));
-			console.log("Downloaded native deps");
-			downloadedNativeDeps = true;
-		} else console.log(`Using cached ${nativeDepsTar}`);
+		const downloadedNativeDeps = !(await fileExists(nativeDepsTarPath));
+		await downloadVerifiedAsset({
+			name: path.basename(nativeDepsTarPath),
+			url: `${NATIVE_DEPS_URL}/${nativeDepsTar}`,
+		});
 
 		const nativeDepsFolder = `native-deps`;
 		const nativeDepsDir = path.join(targetDir, nativeDepsFolder);
@@ -141,26 +142,27 @@ async function main() {
 
 		await fs.mkdir(targetDir, { recursive: true });
 
-		let downloadedFfmpeg = false;
 		const ffmpegZip = `ffmpeg-${FFMPEG_VERSION}.zip`;
 		const ffmpegZipPath = path.join(targetDir, ffmpegZip);
-		if (!(await fileExists(ffmpegZipPath))) {
-			const ffmpegZipBytes = await fetch(FFMPEG_ZIP_URL)
-				.then((r) => r.blob())
-				.then((b) => b.arrayBuffer());
-			await fs.writeFile(ffmpegZipPath, Buffer.from(ffmpegZipBytes));
-			console.log(`Downloaded ${ffmpegZip}`);
-			downloadedFfmpeg = true;
-		} else console.log(`Using cached ${ffmpegZip}`);
+		const downloadedFfmpeg = !(await fileExists(ffmpegZipPath));
+		await downloadVerifiedAsset({
+			name: ffmpegZip,
+			url: FFMPEG_ZIP_URL,
+			sha256:
+				"fedf38dbdd00fa189da06afb0abba69a19312412e05fa2e8e89b3c06aafebcdc",
+		});
 
 		const ffmpegDir = path.join(targetDir, "ffmpeg");
 		if (!(await fileExists(ffmpegDir)) || downloadedFfmpeg) {
-			await exec(
-				`Expand-Archive -Path "${ffmpegZipPath}" -DestinationPath "${targetDir}" -Force`,
-				{ shell: "powershell.exe" },
+			const extractDir = await fs.mkdtemp(
+				path.join(targetDir, "ffmpeg-extract-"),
 			);
-			await fs.rm(ffmpegDir, { recursive: true, force: true }).catch(() => {});
-			await fs.rename(path.join(targetDir, FFMPEG_ZIP_NAME), ffmpegDir);
+			try {
+				await extractWindowsArchive(ffmpegZipPath, extractDir);
+				await installFfmpegRoot(extractDir, ffmpegDir);
+			} finally {
+				await fs.rm(extractDir, { recursive: true, force: true });
+			}
 			console.log("Extracted ffmpeg");
 		} else console.log("Using cached ffmpeg");
 
@@ -267,16 +269,11 @@ async function main() {
 				targetDir,
 				`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
 			);
-			let downloadedNativeDeps = false;
-			if (!(await fileExists(nativeDepsTarPath))) {
-				console.log(`Downloading ${nativeDepsTar}`);
-				const bytes = await fetch(`${NATIVE_DEPS_URL}/${nativeDepsTar}`)
-					.then((r) => r.blob())
-					.then((b) => b.arrayBuffer());
-				await fs.writeFile(nativeDepsTarPath, Buffer.from(bytes));
-				console.log("Downloaded native deps");
-				downloadedNativeDeps = true;
-			} else console.log(`Using cached ${nativeDepsTar}`);
+			const downloadedNativeDeps = !(await fileExists(nativeDepsTarPath));
+			await downloadVerifiedAsset({
+				name: path.basename(nativeDepsTarPath),
+				url: `${NATIVE_DEPS_URL}/${nativeDepsTar}`,
+			});
 
 			const nativeDepsDir = path.join(targetDir, "native-deps");
 			const nativeLibDir = path.join(nativeDepsDir, "lib");
@@ -311,11 +308,19 @@ async function main() {
 					await fs.copyFile(realPath, path.join(dir, name));
 			}
 			const onnxRuntimeName = path.basename(onnxRuntimePath);
-			const onnxRuntimeNames = [onnxRuntimeName, `${onnxRuntimeName}.1`];
+			const onnxRuntimeNames = [
+				onnxRuntimeName,
+				`${onnxRuntimeName}.1`,
+				"libonnxruntime_providers_shared.so",
+			];
 			for (const name of onnxRuntimeNames) {
-				await fs.copyFile(onnxRuntimePath, path.join(debLibDir, name));
+				const source =
+					name === "libonnxruntime_providers_shared.so"
+						? path.join(path.dirname(onnxRuntimePath), name)
+						: onnxRuntimePath;
+				await fs.copyFile(source, path.join(debLibDir, name));
 				for (const dir of profileDirs)
-					await fs.copyFile(onnxRuntimePath, path.join(dir, name));
+					await fs.copyFile(source, path.join(dir, name));
 			}
 			const bundledLibraries = [
 				...new Set([...sonameLibs, ...onnxRuntimeNames]),
@@ -343,8 +348,6 @@ async function main() {
 		cargoConfigContents + cargoBuildContents,
 	);
 }
-
-main();
 
 async function trimMacOSFramework(frameworkDir) {
 	const headersDir = path.join(frameworkDir, "Headers");
@@ -414,118 +417,28 @@ async function signMacOSFrameworkLibs(frameworkDir) {
 		);
 }
 
-async function setupMacOSOnnxRuntime() {
-	const asset =
-		arch === "aarch64"
-			? {
-					version: "1.24.2",
-					name: "onnxruntime-osx-arm64-1.24.2.tgz",
-				}
-			: {
-					version: "1.23.2",
-					name: "onnxruntime-osx-x86_64-1.23.2.tgz",
-				};
-	const url = `https://github.com/microsoft/onnxruntime/releases/download/v${asset.version}/${asset.name}`;
-	const archivePath = path.join(targetDir, asset.name);
-	const extractDir = path.join(targetDir, asset.name.replace(/\.tgz$/, ""));
-	const outputDir = path.join(targetDir, "native-deps", "onnxruntime", "lib");
-	const outputPath = path.join(outputDir, "libonnxruntime.dylib");
-	const markerPath = path.join(outputDir, "asset.txt");
-	const marker = await fs
-		.readFile(markerPath, "utf-8")
-		.then((value) => value.trim())
-		.catch(() => null);
-
-	if (!(await fileExists(archivePath))) {
-		console.log(`Downloading ${asset.name}`);
-		const bytes = await fetch(url)
-			.then((r) => r.blob())
-			.then((b) => b.arrayBuffer());
-		await fs.writeFile(archivePath, Buffer.from(bytes));
-		console.log(`Downloaded ${asset.name}`);
-	} else console.log(`Using cached ${asset.name}`);
-
-	if (!(await fileExists(outputPath)) || marker !== asset.name) {
-		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await execFile("tar", ["xf", archivePath, "-C", targetDir]);
-		await fs.mkdir(outputDir, { recursive: true });
-		await fs.copyFile(
-			path.join(extractDir, "lib", "libonnxruntime.dylib"),
-			outputPath,
-		);
-		await signMacOSDylib(outputPath);
-		await fs.writeFile(markerPath, asset.name);
-		console.log("Prepared ONNX Runtime dylib");
-	} else {
-		console.log("Using cached ONNX Runtime dylib");
-		if (env.APPLE_SIGNING_IDENTITY) await signMacOSDylib(outputPath);
-	}
-
-	return outputPath;
+export async function setupMacOSOnnxRuntime(
+	directory = targetDir,
+	architecture = arch,
+) {
+	return setupPackagedOnnxRuntime("darwin", architecture, directory);
 }
 
-async function setupWindowsOnnxRuntime() {
-	const assets = {
-		x86_64: {
-			version: "1.24.2",
-			name: "onnxruntime-win-x64-1.24.2.zip",
-		},
-		aarch64: {
-			version: "1.24.2",
-			name: "onnxruntime-win-arm64-1.24.2.zip",
-		},
-	};
-	const asset = assets[arch];
-	if (!asset)
-		throw new Error(`Unsupported Windows arch for ONNX Runtime: ${arch}`);
-
-	const url = `https://github.com/microsoft/onnxruntime/releases/download/v${asset.version}/${asset.name}`;
-	const archivePath = path.join(targetDir, asset.name);
-	const extractDir = path.join(targetDir, asset.name.replace(/\.zip$/, ""));
-	const outputDir = path.join(targetDir, "native-deps", "onnxruntime", "lib");
-	const outputPath = path.join(outputDir, "onnxruntime.dll");
-	const markerPath = path.join(outputDir, "asset.txt");
-	const marker = await fs
-		.readFile(markerPath, "utf-8")
-		.then((value) => value.trim())
-		.catch(() => null);
-
-	if (!(await fileExists(archivePath))) {
-		console.log(`Downloading ${asset.name}`);
-		const bytes = await fetch(url)
-			.then((r) => r.blob())
-			.then((b) => b.arrayBuffer());
-		await fs.writeFile(archivePath, Buffer.from(bytes));
-		console.log(`Downloaded ${asset.name}`);
-	} else console.log(`Using cached ${asset.name}`);
-
-	if (!(await fileExists(outputPath)) || marker !== asset.name) {
-		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await exec(
-			`Expand-Archive -Path "${archivePath}" -DestinationPath "${targetDir}" -Force`,
-			{ shell: "powershell.exe" },
-		);
-		await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
-		await fs.mkdir(outputDir, { recursive: true });
-		const libDir = path.join(extractDir, "lib");
-		const dllNames = (await fs.readdir(libDir)).filter((name) =>
-			name.toLowerCase().endsWith(".dll"),
-		);
-		if (!dllNames.includes("onnxruntime.dll"))
-			throw new Error(`ONNX Runtime archive is missing onnxruntime.dll`);
-
-		for (const name of dllNames) {
-			await fs.copyFile(path.join(libDir, name), path.join(outputDir, name));
-		}
-		await fs.writeFile(markerPath, asset.name);
-		console.log("Prepared ONNX Runtime DLLs");
-	} else console.log("Using cached ONNX Runtime DLLs");
-
-	const dllNames = (await fs.readdir(outputDir)).filter((name) =>
-		name.toLowerCase().endsWith(".dll"),
+export async function setupWindowsOnnxRuntime(
+	directory = targetDir,
+	architecture = arch,
+) {
+	const outputPath = await setupPackagedOnnxRuntime(
+		"win32",
+		architecture,
+		directory,
+	);
+	const outputDir = path.dirname(outputPath);
+	const dllNames = onnxRuntimeAsset("win32", architecture).files.filter(
+		(name) => name.endsWith(".dll"),
 	);
 	for (const profile of ["debug", "release"]) {
-		const profileDir = path.join(targetDir, profile);
+		const profileDir = path.join(directory, profile);
 		await fs.mkdir(profileDir, { recursive: true });
 		for (const name of dllNames) {
 			await fs.copyFile(
@@ -539,47 +452,146 @@ async function setupWindowsOnnxRuntime() {
 	return outputPath;
 }
 
-async function setupLinuxOnnxRuntime() {
-	const version = "1.24.3";
-	const platformArch = { x86_64: "x64", aarch64: "aarch64" }[arch];
-	if (!platformArch)
-		throw new Error(`Unsupported Linux arch for ONNX Runtime: ${arch}`);
+export async function setupLinuxOnnxRuntime(
+	directory = targetDir,
+	architecture = arch,
+) {
+	return setupPackagedOnnxRuntime("linux", architecture, directory);
+}
 
-	const archiveName = `onnxruntime-linux-${platformArch}-${version}.tgz`;
-	const archivePath = path.join(targetDir, archiveName);
-	const extractDir = path.join(targetDir, archiveName.replace(/\.tgz$/, ""));
-	const outputDir = path.join(targetDir, "native-deps", "onnxruntime", "lib");
-	const outputPath = path.join(outputDir, "libonnxruntime.so");
-	const markerPath = path.join(outputDir, "asset.txt");
-	const marker = await fs
-		.readFile(markerPath, "utf-8")
-		.then((value) => value.trim())
-		.catch(() => null);
-
-	if (!(await fileExists(archivePath))) {
-		const response = await fetch(
-			`https://github.com/microsoft/onnxruntime/releases/download/v${version}/${archiveName}`,
+export function onnxRuntimeAsset(platform, architecture) {
+	if (platform === "darwin" && architecture !== "aarch64")
+		throw new Error(
+			"Unsupported Mac target: future builds require Apple Silicon (aarch64); Intel Mac releases are unsupported.",
 		);
-		if (!response.ok)
+	const runtimeArch =
+		architecture === "x86_64"
+			? "x64"
+			: architecture === "aarch64"
+				? "arm64"
+				: null;
+	const runtimePlatform =
+		platform === "linux"
+			? "linux"
+			: platform === "win32"
+				? "win"
+				: platform === "darwin"
+					? "osx"
+					: null;
+	if (!runtimeArch || !runtimePlatform)
+		throw new Error(
+			`Unsupported NuGet ONNX Runtime target: ${platform}/${architecture}`,
+		);
+	const version = platform === "linux" ? "1.24.3" : "1.24.2";
+	const name = `microsoft.ml.onnxruntime.${version}.nupkg`;
+	const files =
+		platform === "linux"
+			? ["libonnxruntime.so", "libonnxruntime_providers_shared.so"]
+			: platform === "darwin"
+				? ["libonnxruntime.dylib"]
+				: [
+						"onnxruntime.dll",
+						"onnxruntime_providers_shared.dll",
+						"onnxruntime.lib",
+						"onnxruntime_providers_shared.lib",
+					];
+	return {
+		version,
+		name,
+		url: `https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${version}/${name}`,
+		sha256:
+			platform === "linux"
+				? "e4ab3b236c1b803e1e7167fe9a75caa1b82a2fd4ae82abbd130937c07517bcdb"
+				: "782564d3d68e87269ea1812cc94710ad06fe014faf093f01a6f89d0bd58719d3",
+		runtimeId: `${runtimePlatform}-${runtimeArch}`,
+		files,
+	};
+}
+
+export async function stageOnnxRuntime(
+	extractDir,
+	outputDir,
+	platform,
+	architecture,
+) {
+	const asset = onnxRuntimeAsset(platform, architecture);
+	const root = await fs.realpath(extractDir);
+	const sourceDir = path.join(root, "runtimes", asset.runtimeId, "native");
+	for (const name of asset.files) {
+		const source = path.join(sourceDir, name);
+		const valid = await fs
+			.lstat(source)
+			.then(
+				async (stat) =>
+					stat.isFile() &&
+					stat.size > 0 &&
+					(await fs.realpath(source)).startsWith(`${root}${path.sep}`),
+			)
+			.catch(() => false);
+		if (!valid)
 			throw new Error(
-				`Failed to download ${archiveName}: HTTP ${response.status}`,
+				`ONNX Runtime package is missing a regular ${asset.runtimeId}/${name}`,
 			);
-		await fs.writeFile(archivePath, Buffer.from(await response.arrayBuffer()));
-		console.log(`Downloaded ${archiveName}`);
-	} else console.log(`Using cached ${archiveName}`);
+	}
+	await fs.rm(outputDir, { recursive: true, force: true });
+	await fs.mkdir(outputDir, { recursive: true });
+	for (const name of asset.files)
+		await fs.copyFile(path.join(sourceDir, name), path.join(outputDir, name));
+}
 
-	if (!(await fileExists(outputPath)) || marker !== archiveName) {
-		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await execFile("tar", ["xf", archivePath, "-C", targetDir]);
-		await fs.mkdir(outputDir, { recursive: true });
-		await fs.copyFile(
-			path.join(extractDir, "lib", "libonnxruntime.so"),
-			outputPath,
+async function setupPackagedOnnxRuntime(platform, architecture, directory) {
+	const asset = onnxRuntimeAsset(platform, architecture);
+	const archivePath = await downloadVerifiedAsset(asset, directory);
+	const outputDir = path.join(directory, "native-deps", "onnxruntime", "lib");
+	const outputPath = path.join(outputDir, asset.files[0]);
+	const markerPath = path.join(outputDir, "asset.txt");
+	const marker = `${asset.name}:${asset.runtimeId}:${asset.sha256}`;
+	const currentMarker = await fs.readFile(markerPath, "utf8").catch(() => null);
+	const validFiles = await Promise.all(
+		asset.files.map((name) =>
+			fs
+				.lstat(path.join(outputDir, name))
+				.then((stat) => stat.isFile() && stat.size > 0)
+				.catch(() => false),
+		),
+	);
+	if (currentMarker !== marker || validFiles.includes(false)) {
+		const extractDir = await fs.mkdtemp(
+			path.join(directory, "onnxruntime-extract-"),
 		);
-		await fs.writeFile(markerPath, archiveName);
-		console.log("Prepared ONNX Runtime shared library");
-	} else console.log("Using cached ONNX Runtime shared library");
-
+		try {
+			if (process.platform === "win32")
+				await extractWindowsArchive(archivePath, extractDir);
+			else if (
+				process.platform === "linux" &&
+				!(await findExecutable("bsdtar"))
+			)
+				await execFile("unzip", ["-q", archivePath, "-d", extractDir]);
+			else
+				await execFile(process.platform === "linux" ? "bsdtar" : "tar", [
+					"xf",
+					archivePath,
+					"-C",
+					extractDir,
+				]);
+			await stageOnnxRuntime(extractDir, outputDir, platform, architecture);
+			if (platform === "darwin") {
+				await execFile("install_name_tool", [
+					"-id",
+					"@rpath/libonnxruntime.dylib",
+					outputPath,
+				]);
+				await signMacOSDylib(outputPath);
+			}
+			await fs.writeFile(markerPath, marker);
+		} finally {
+			await fs.rm(extractDir, { recursive: true, force: true });
+		}
+		console.log(
+			`Prepared ONNX Runtime ${asset.version} for ${asset.runtimeId}`,
+		);
+	} else if (platform === "darwin" && env.APPLE_SIGNING_IDENTITY)
+		await signMacOSDylib(outputPath);
 	return outputPath;
 }
 
@@ -624,10 +636,8 @@ async function setupWindowsDxc() {
 
 	if (currentMarker !== marker || missingAssets.length > 0) {
 		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await exec(
-			`Expand-Archive -Path "${archivePath}" -DestinationPath "${extractDir}" -Force`,
-			{ shell: "powershell.exe" },
-		);
+		await fs.mkdir(extractDir, { recursive: true });
+		await extractWindowsArchive(archivePath, extractDir);
 		await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
 		await fs.mkdir(outputDir, { recursive: true });
 		for (const file of files)
@@ -660,27 +670,85 @@ async function setupWindowsDxc() {
 	console.log("Copied DXC DLLs to target profile directories");
 }
 
-async function downloadVerifiedAsset(asset) {
-	const archivePath = path.join(targetDir, asset.name);
-	if (!(await fileExists(archivePath))) {
+export async function installFfmpegRoot(directory, outputDir) {
+	const entries = await fs.readdir(directory, { withFileTypes: true });
+	if (entries.length !== 1 || !entries[0].isDirectory())
+		throw new Error("FFmpeg archive must contain exactly one directory");
+	const root = await fs.realpath(path.join(directory, entries[0].name));
+	for (const file of [
+		"bin/ffmpeg.exe",
+		"bin/ffprobe.exe",
+		"bin/avcodec-61.dll",
+		"lib/avcodec.lib",
+		"include/libavcodec/avcodec.h",
+	]) {
+		const candidate = path.join(root, file);
+		const valid = await fs
+			.lstat(candidate)
+			.then(
+				async (stat) =>
+					stat.isFile() &&
+					(await fs.realpath(candidate)).startsWith(`${root}${path.sep}`),
+			)
+			.catch(() => false);
+		if (!valid) throw new Error(`FFmpeg archive is missing a regular ${file}`);
+	}
+	await fs.rm(outputDir, { recursive: true, force: true });
+	await fs.rename(root, outputDir);
+}
+
+export async function downloadVerifiedAsset(asset, directory = targetDir) {
+	if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(asset.name))
+		throw new Error(`Invalid asset name: ${asset.name}`);
+	const url = new URL(asset.url);
+	if (url.protocol !== "https:" || url.username || url.password)
+		throw new Error("Asset URL must use HTTPS without credentials");
+	const archivePath = path.join(directory, asset.name);
+	const cached = await fileExists(archivePath);
+	let bytes;
+	if (!cached) {
 		const response = await fetch(asset.url);
 		if (!response.ok)
 			throw new Error(
 				`Failed to download ${asset.name}: HTTP ${response.status}`,
 			);
-		await fs.writeFile(archivePath, Buffer.from(await response.arrayBuffer()));
-		console.log(`Downloaded ${asset.name}`);
-	} else console.log(`Using cached ${asset.name}`);
+		bytes = Buffer.from(await response.arrayBuffer());
+	} else bytes = await fs.readFile(archivePath);
 
-	const actualHash = createHash("sha256")
-		.update(await fs.readFile(archivePath))
-		.digest("hex");
-	if (actualHash !== asset.sha256) {
+	const actualHash = createHash("sha256").update(bytes).digest("hex");
+	if (asset.sha256 !== undefined && actualHash !== asset.sha256) {
 		await fs.rm(archivePath, { force: true });
 		throw new Error(
 			`${asset.name} SHA-256 mismatch: got ${actualHash}, expected ${asset.sha256}; removed invalid cached archive`,
 		);
 	}
+	const magic =
+		asset.name.endsWith(".zip") || asset.name.endsWith(".nupkg")
+			? "504b0304"
+			: asset.name.endsWith(".tgz")
+				? "1f8b"
+				: asset.name.endsWith(".tar.xz")
+					? "fd377a585a00"
+					: null;
+	if (
+		!magic ||
+		!bytes.subarray(0, magic.length / 2).equals(Buffer.from(magic, "hex"))
+	) {
+		await fs.rm(archivePath, { force: true });
+		throw new Error(
+			`${asset.name} has an invalid archive format; removed invalid cached archive`,
+		);
+	}
+	if (!cached) {
+		const temporaryPath = `${archivePath}.${process.pid}.download`;
+		try {
+			await fs.writeFile(temporaryPath, bytes);
+			await fs.rename(temporaryPath, archivePath);
+		} finally {
+			await fs.rm(temporaryPath, { force: true });
+		}
+		console.log(`Downloaded ${asset.name}`);
+	} else console.log(`Using cached ${asset.name}`);
 
 	return archivePath;
 }
@@ -887,3 +955,6 @@ async function canUseSccache(sccachePath) {
 		await fs.rm(probeDir, { recursive: true, force: true });
 	}
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename)
+	await main();

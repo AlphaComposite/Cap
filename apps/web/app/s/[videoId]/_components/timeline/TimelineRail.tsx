@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import Image from "next/image";
 import { memo, type RefObject, useCallback, useEffect, useRef } from "react";
 import { usePlayback } from "../playback/PlaybackContext";
 import { useTimelineActions, useTimelineWindowRef } from "./TimelineProvider";
@@ -289,6 +290,7 @@ const FilmstripTiles = memo(function FilmstripTiles({
 					const src = tiles[index] ?? null;
 					return (
 						<div
+							// biome-ignore lint/suspicious/noArrayIndexKey: Filmstrip slots retain identity while asynchronous thumbnail URLs fill or replace their contents.
 							key={index}
 							className={clsx(
 								"relative h-full min-w-0 flex-1",
@@ -296,7 +298,10 @@ const FilmstripTiles = memo(function FilmstripTiles({
 							)}
 						>
 							{src && (
-								<img
+								<Image
+									fill
+									unoptimized
+									sizes="160px"
 									src={src}
 									alt=""
 									draggable={false}

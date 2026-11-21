@@ -182,49 +182,136 @@ def _yield_to_playback(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot, c
         raise DownloadYield()
 
 
+def _uncut_download_timescale(origin: lib_origin.Origin) -> int | None:
+    if len(getattr(origin, "ranges", ())) != 1:
+        return None
+    tb = origin.profile.timescale
+    if isinstance(tb, bool) or not isinstance(tb, int) or tb <= 0:
+        return None
+    # The default 1000 Hz movie clock rounds AAC edit endpoints; preserve both sample grids.
+    movie_ts = math.lcm(tb, lib_audio.SR)
+    if movie_ts > 2_147_483_647 or not origin.ticks or len(origin.ticks) != len(origin.durs):
+        return None
+    end = lib_origin.source_end_ticks(origin.ticks, origin.durs)
+    keep = origin.ranges[0]
+    if float(keep["start"]) != 0 or not math.isfinite(float(keep["end"])) or float(keep["end"]) < end / tb:
+        return None
+    sha, probed, _, _, _, _ = lib_origin.cached_mezz_index(origin.mezz)
+    if sha != origin.mezz_sha256 or probed.timescale != tb or probed.has_b_frames or len(probed.packets) != len(origin.ticks):
+        return None
+    index = 0
+    cursor = 0
+    for segment_index, segment in enumerate(origin.segments):
+        if segment.index != segment_index or segment.out_pts != cursor or not segment.frames:
+            return None
+        start = cursor
+        for frame in segment.frames:
+            if index >= len(origin.ticks):
+                return None
+            pts, dur = origin.ticks[index], origin.durs[index]
+            packet = probed.packets[index]
+            if (dur <= 0 or pts != cursor or packet.pts != pts or packet.dur != dur
+                    or frame != lib_origin.FrameRec(index, pts, dur, 0, pts)):
+                return None
+            cursor += dur
+            index += 1
+        if segment.duration_ticks != cursor - start:
+            return None
+    return movie_ts if index == len(origin.ticks) and cursor == end else None
+
+
+def _encode_uncut_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot, current: Callable[[], bool] | None,
+                           pcm_path: Path, dest: Path, movie_ts: int) -> None:
+    deadline = time.monotonic() + limits.timeout_for_duration(origin.timeline.samples / lib_audio.SR)
+    with os.fdopen(os.open(pcm_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        for lo in range(0, origin.timeline.samples, lib_audio.SR):
+            _yield_to_playback(origin, slot, current)
+            if time.monotonic() >= deadline:
+                raise limits.InputRejected("subprocess timeout")
+            pcm, _ = lib_audio.assemble_cut(origin.audio_source, origin.timeline, lo, min(lo + lib_audio.SR, origin.timeline.samples))
+            stream.write(pcm.tobytes())
+            del pcm
+    _yield_to_playback(origin, slot, current)
+    with os.fdopen(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"):
+        pass
+    proc = subprocess.Popen(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-i", str(origin.mezz), "-f", "f32le", "-ar", str(lib_audio.SR), "-ac", "2", "-i", str(pcm_path),
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", lib_audio.AUDIO_BITRATE,
+            *lib_audio.AAC_ENCODER_ARGS, "-video_track_timescale", str(origin.profile.timescale),
+            "-movie_timescale", str(movie_ts), "-movflags", "+faststart", str(dest),
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=_lower_child_priority,
+    )
+    try:
+        while True:
+            _yield_to_playback(origin, slot, current)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise limits.InputRejected("subprocess timeout")
+            try:
+                code = proc.wait(timeout=min(0.1, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if code:
+            raise RuntimeError("download remux failed")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=5)
+
+
 def remux_download(origin: lib_origin.Origin, slot: lib_origin.EncodeSlot, current: Callable[[], bool] | None = None) -> None:
     dest = origin.cache / "download.mp4"
     if dest.is_file() and dest.stat().st_size > 0:
         return
     ident = f"{os.getpid()}-{threading.get_ident()}"
-    tmp_in = dest.with_name(f".download-in-{ident}.mp4")
+    movie_ts = _uncut_download_timescale(origin)
+    tmp_in = dest.with_name(f".download-in-{ident}.{'f32le' if movie_ts is not None else 'mp4'}")
     tmp_out = dest.with_name(f".download-out-{ident}.mp4")
     try:
-        with tmp_in.open("wb") as stream:
-            _yield_to_playback(origin, slot, current)
-            init = origin.read_init_for_download()
-            stream.write(init)
-            del init
-            for index in range(len(origin.segments)):
+        if movie_ts is not None:
+            _encode_uncut_download(origin, slot, current, tmp_in, tmp_out, movie_ts)
+        else:
+            with tmp_in.open("wb") as stream:
                 _yield_to_playback(origin, slot, current)
-                segment = _without_styp(origin.read_segment_for_download(index))
-                stream.write(segment)
-                del segment
-            _yield_to_playback(origin, slot, current)
-        os.chmod(tmp_in, 0o600)
-        result = limits.run_cmd(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-y",
-                "-i",
-                str(tmp_in),
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                str(tmp_out),
-            ],
-            limits.FFMPEG_TIMEOUT_S,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            preexec_fn=_lower_child_priority,
-        )
-        if result.returncode or not tmp_out.is_file() or tmp_out.stat().st_size < 8:
+                init = origin.read_init_for_download()
+                stream.write(init)
+                del init
+                for index in range(len(origin.segments)):
+                    _yield_to_playback(origin, slot, current)
+                    segment = _without_styp(origin.read_segment_for_download(index))
+                    stream.write(segment)
+                    del segment
+                _yield_to_playback(origin, slot, current)
+            os.chmod(tmp_in, 0o600)
+            result = limits.run_cmd(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-y",
+                    "-i",
+                    str(tmp_in),
+                    "-c",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    str(tmp_out),
+                ],
+                limits.FFMPEG_TIMEOUT_S,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                preexec_fn=_lower_child_priority,
+            )
+            if result.returncode:
+                raise RuntimeError("download remux failed")
+        if not tmp_out.is_file() or tmp_out.stat().st_size < 8:
             raise RuntimeError("download remux failed")
         _yield_to_playback(origin, slot, current)
         os.chmod(tmp_out, 0o600)

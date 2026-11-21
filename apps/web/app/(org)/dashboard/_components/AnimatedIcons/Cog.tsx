@@ -55,8 +55,10 @@ const CogIcon = forwardRef<CogIconHandle, CogIconProps>(
 				onMouseEnter={handleMouseEnter}
 				onMouseLeave={handleMouseLeave}
 				{...props}
+				aria-hidden="true"
 			>
 				<motion.svg
+					aria-hidden="true"
 					xmlns="http://www.w3.org/2000/svg"
 					width={size}
 					height={size}

@@ -14,6 +14,7 @@ export const SkeletonRows = () => {
 							.fill(0)
 							.map((_, index) => (
 								<div
+									// biome-ignore lint/suspicious/noArrayIndexKey: Fifteen fixed skeleton slots have positional identity and no underlying entities.
 									key={index}
 									className="flex relative flex-col gap-4 w-full h-full bg-gray-3 rounded-2xl border-gray-4 border"
 								>

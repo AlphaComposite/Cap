@@ -83,12 +83,14 @@ export async function removeVideosFromOrganization(
 
 		await db().transaction(async (tx) => {
 			await bumpPolicyEpochForVideos(existingVideoIds, tx);
-			await tx.delete(sharedVideos).where(
-				and(
-					eq(sharedVideos.organizationId, organizationId),
-					inArray(sharedVideos.videoId, existingVideoIds),
-				),
-			);
+			await tx
+				.delete(sharedVideos)
+				.where(
+					and(
+						eq(sharedVideos.organizationId, organizationId),
+						inArray(sharedVideos.videoId, existingVideoIds),
+					),
+				);
 		});
 
 		// Clear folderId for videos that are being removed from the organization and are currently in folders within that organization
