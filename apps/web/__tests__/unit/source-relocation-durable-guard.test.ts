@@ -26,7 +26,7 @@ const protectedKeys = [
 	`${prefix}private/edited/../result.mp4`,
 	`${prefix}private/edited/`,
 	`${prefix}private/edited`,
-];
+] as const;
 const states = ["INTENT", "COPIED", "POINTER", "DELETED"] as const;
 const refusal = /durable edited artifact/;
 
@@ -274,7 +274,7 @@ describe("durable edited relocation boundary (offline transport doubles)", () =>
 				"offline-bucket",
 			);
 			await store.deleteAllVersions(key);
-			expect(send.mock.calls[0][0]).toBeInstanceOf(ListObjectVersionsCommand);
+			expect(send.mock.calls[0]?.[0]).toBeInstanceOf(ListObjectVersionsCommand);
 			const deletes = send.mock.calls
 				.map(([command]) => command)
 				.filter((command) => command instanceof DeleteObjectCommand);
