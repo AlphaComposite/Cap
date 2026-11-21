@@ -9,6 +9,24 @@ import { getGitHubReleases } from "@/utils/releases";
 const request = new NextRequest("https://cap.so/download/apple-silicon");
 
 describe("desktop download route", () => {
+	it.each(["apple-intel", "intel", "x86_64"])(
+		"rejects current Intel alias %s before any provider request",
+		async (platform) => {
+			const fetch = vi.fn();
+			vi.stubGlobal("fetch", fetch);
+			vi.mocked(getGitHubReleases).mockClear();
+			const response = await GET(request, {
+				params: Promise.resolve({ platform }),
+			});
+			expect(response.headers.get("location")).toBe(
+				"https://cap.so/download/versions#intel-mac",
+			);
+			expect(fetch).not.toHaveBeenCalled();
+			expect(getGitHubReleases).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		},
+	);
+
 	it("handles missing route parameters without throwing", async () => {
 		const response = await GET(request, {
 			params: Promise.resolve({} as { platform: string }),

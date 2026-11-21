@@ -4,13 +4,17 @@ summary: "Install Cap Desktop and grant recording permissions"
 tags: "Getting Started, Desktop"
 ---
 
-Cap Desktop release builds are available for Apple Silicon and Intel Macs, 64-bit Windows, and 64-bit Linux through a Debian package.
+Future Cap Desktop release builds support Apple Silicon Macs, 64-bit Windows, and 64-bit Linux. Historical Intel Mac releases remain available but are unsupported and receive no future updates.
 
 Download the current build from [cap.so/download](https://cap.so/download). The download page detects common platforms, and the [versions page](https://cap.so/download/versions) lists the available installers directly.
 
 ## macOS
 
-1. Download the correct `.dmg` for Apple Silicon or Intel.
+Future Mac releases require **Apple Silicon and macOS 14.0 or later**. The packaged ARM64 ONNX Runtime 1.24.2 declares a macOS 14.0 deployment minimum; this is independent of the former Intel dependency's minimum. Static package inspection establishes that floor, not feature execution on every supported OS.
+
+The [last Intel release from the configured upstream provider, 0.6.3](https://cdn.crabnebula.app/asset/01M767VMABJC5GKYFH5874WX5W), is retained **unsupported**. See its [upstream release notes](https://github.com/CapSoftware/Cap/releases/tag/cap-v0.6.3) and [historical versions](https://cap.so/download/versions#intel-mac). This fork has not published an Intel release. Historical installers keep their original requirements; the future ARM minimum is not a retroactive compatibility claim.
+
+1. Download the Apple Silicon `.dmg`. A browser user agent containing "Intel Mac OS X" does not reliably identify the Mac's processor; check **About This Mac** if unsure.
 2. Open it and drag **Cap** into **Applications**.
 3. Open Cap from Applications or Spotlight.
 4. Approve the standard downloaded-application prompt if macOS shows it.
@@ -41,7 +45,7 @@ The package declares the GTK, WebKit, app-indicator, VA, PipeWire, and ALSA runt
 
 ## Updates
 
-Cap checks its signed update channel in production builds. macOS and Windows can install supported application updates from Cap. Linux `.deb` updates require the package-manager installation flow rather than an automatic privileged install.
+Cap checks its signed update channel in production builds. Apple Silicon macOS and Windows can install supported application updates from Cap. Intel Macs do not receive future releases and must never be offered ARM binaries. Linux `.deb` updates require the package-manager installation flow rather than an automatic privileged install.
 
 ## Verify the installation
 

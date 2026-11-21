@@ -27,7 +27,7 @@ name = "Cap GPUI"
 identifier = "so.cap.desktop.gpui"
 icon = ["assets/dock-icon.png"]
 category = "public.app-category.productivity"
-osx_minimum_system_version = "12.3"
+osx_minimum_system_version = "14.0"
 osx_info_plist_exts = ["resources/Info.plist"]
 osx_url_schemes = ["cap-desktop"]
 

@@ -220,7 +220,7 @@ export const DownloadPage = () => {
 						>
 							Arch / Pacman
 						</a>
-						{platform === "macos" && isIntel && (
+						{(platform !== "macos" || isIntel) && (
 							<a
 								href="/download/apple-silicon"
 								onClick={() =>
@@ -234,48 +234,12 @@ export const DownloadPage = () => {
 								Apple Silicon
 							</a>
 						)}
-						{platform === "macos" && !isIntel && (
-							<a
-								href="/download/apple-intel"
-								onClick={() =>
-									trackDownloadClick(
-										"other_option_apple_intel",
-										"/download/apple-intel",
-									)
-								}
-								className="text-sm transition-all text-gray-10 hover:underline"
-							>
-								Apple Intel
-							</a>
-						)}
-						{platform !== "macos" && (
-							<>
-								<a
-									href="/download/apple-silicon"
-									onClick={() =>
-										trackDownloadClick(
-											"other_option_apple_silicon",
-											"/download/apple-silicon",
-										)
-									}
-									className="text-sm transition-all text-gray-8 hover:underline"
-								>
-									Apple Silicon
-								</a>
-								<a
-									href="/download/apple-intel"
-									onClick={() =>
-										trackDownloadClick(
-											"other_option_apple_intel",
-											"/download/apple-intel",
-										)
-									}
-									className="text-sm transition-all text-gray-8 hover:underline"
-								>
-									Apple Intel
-								</a>
-							</>
-						)}
+						<Link
+							href="/download/versions#intel-mac"
+							className="text-sm text-gray-10 hover:underline"
+						>
+							Intel Mac releases (unsupported)
+						</Link>
 						<Link
 							href="/download/versions"
 							onClick={() =>

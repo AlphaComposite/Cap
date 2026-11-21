@@ -37,6 +37,21 @@
 
 ## What this fork adds
 
+### Desktop release support
+
+Future Mac releases are Apple Silicon-only and require macOS 14.0 or later,
+the deployment floor declared by the pinned ARM64 ONNX Runtime 1.24.2 package.
+This is static dependency inspection, not a claim of tested native execution
+on every supported macOS version. Windows and Linux x86_64 support is unchanged.
+
+Historical Intel Mac releases are retained but unsupported and receive no
+future updates. The configured upstream release provider's last Intel release
+at this policy change is [0.6.3](https://github.com/CapSoftware/Cap/releases/tag/cap-v0.6.3),
+with its [immutable Intel download](https://cdn.crabnebula.app/asset/01M767VMABJC5GKYFH5874WX5W).
+This fork has no published Intel release of its own. Historical releases keep
+their original OS requirements; never substitute an ARM binary for Intel.
+See [installation support](apps/web/content/docs/installation.mdx).
+
 This fork turns Cap's web app into a fast, Loom-style async video tool:
 record in Chrome, get a playable link within seconds of Stop, clean the video
 up from its transcript, and publish the edit instantly. Every edit is

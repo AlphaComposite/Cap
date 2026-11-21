@@ -49,19 +49,16 @@ export async function GET(
 	if (!platform) {
 		return NextResponse.redirect(new URL("/download", request.url));
 	}
+	if (["apple-intel", "intel", "x86_64"].includes(platform)) {
+		return NextResponse.redirect(
+			new URL("/download/versions#intel-mac", request.url),
+		);
+	}
 
 	const downloadUrls: Record<
 		string,
 		{ url: string; fallback: ReleaseDownloadKey }
 	> = {
-		"apple-intel": {
-			url: "https://cdn.crabnebula.app/download/cap/cap/latest/platform/dmg-x86_64",
-			fallback: "macos-x64",
-		},
-		intel: {
-			url: "https://cdn.crabnebula.app/download/cap/cap/latest/platform/dmg-x86_64",
-			fallback: "macos-x64",
-		},
 		mac: {
 			url: "https://cdn.crabnebula.app/download/cap/cap/latest/platform/dmg-aarch64",
 			fallback: "macos-arm64",
@@ -78,10 +75,7 @@ export async function GET(
 			url: "https://cdn.crabnebula.app/download/cap/cap/latest/platform/dmg-aarch64",
 			fallback: "macos-arm64",
 		},
-		x86_64: {
-			url: "https://cdn.crabnebula.app/download/cap/cap/latest/platform/dmg-x86_64",
-			fallback: "macos-x64",
-		},
+
 		windows: {
 			url: "https://cdn.crabnebula.app/download/cap/cap/latest/platform/nsis-x86_64",
 			fallback: "windows",

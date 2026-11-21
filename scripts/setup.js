@@ -42,6 +42,7 @@ function cargoConfigPath(value) {
 }
 
 async function main() {
+	if (process.platform === "darwin") onnxRuntimeAsset("darwin", arch);
 	await fs.mkdir(targetDir, { recursive: true });
 
 	let cargoConfigContents = "";
@@ -65,12 +66,7 @@ async function main() {
 		const NATIVE_DEPS_VERSION = "v0.25";
 		const NATIVE_DEPS_URL = `https://github.com/spacedriveapp/native-deps/releases/download/${NATIVE_DEPS_VERSION}`;
 
-		const NATIVE_DEPS_ASSETS = {
-			x86_64: "native-deps-x86_64-darwin-apple.tar.xz",
-			aarch64: "native-deps-aarch64-darwin-apple.tar.xz",
-		};
-
-		const nativeDepsTar = NATIVE_DEPS_ASSETS[arch];
+		const nativeDepsTar = "native-deps-aarch64-darwin-apple.tar.xz";
 		const nativeDepsTarPath = path.join(
 			targetDir,
 			`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
@@ -464,6 +460,10 @@ export async function setupLinuxOnnxRuntime(
 }
 
 export function onnxRuntimeAsset(platform, architecture) {
+	if (platform === "darwin" && architecture !== "aarch64")
+		throw new Error(
+			"Unsupported Mac target: future builds require Apple Silicon (aarch64); Intel Mac releases are unsupported.",
+		);
 	const runtimeArch =
 		architecture === "x86_64"
 			? "x64"
@@ -482,12 +482,7 @@ export function onnxRuntimeAsset(platform, architecture) {
 		throw new Error(
 			`Unsupported NuGet ONNX Runtime target: ${platform}/${architecture}`,
 		);
-	const version =
-		platform === "linux"
-			? "1.24.3"
-			: platform === "darwin" && architecture === "x86_64"
-				? "1.23.2"
-				: "1.24.2";
+	const version = platform === "linux" ? "1.24.3" : "1.24.2";
 	const name = `microsoft.ml.onnxruntime.${version}.nupkg`;
 	const files =
 		platform === "linux"
@@ -507,9 +502,7 @@ export function onnxRuntimeAsset(platform, architecture) {
 		sha256:
 			platform === "linux"
 				? "e4ab3b236c1b803e1e7167fe9a75caa1b82a2fd4ae82abbd130937c07517bcdb"
-				: version === "1.23.2"
-					? "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a"
-					: "782564d3d68e87269ea1812cc94710ad06fe014faf093f01a6f89d0bd58719d3",
+				: "782564d3d68e87269ea1812cc94710ad06fe014faf093f01a6f89d0bd58719d3",
 		runtimeId: `${runtimePlatform}-${runtimeArch}`,
 		files,
 	};

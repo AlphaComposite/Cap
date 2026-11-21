@@ -5,6 +5,7 @@ import { buildMarketingMetadata } from "@/lib/og/url";
 import {
 	getGitHubReleases,
 	hasDownloads,
+	lastIntelMacRelease,
 	type Release,
 	type ReleaseDownloads,
 } from "@/utils/releases";
@@ -20,69 +21,7 @@ export const metadata: Metadata = buildMarketingMetadata({
 
 export const revalidate = 60;
 
-function DownloadLinks({
-	downloads,
-	isLatest,
-}: {
-	downloads: ReleaseDownloads;
-	isLatest: boolean;
-}) {
-	if (isLatest) {
-		return (
-			<div className="flex flex-wrap gap-2">
-				<a
-					href="/download/apple-silicon"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-				>
-					<AppleIcon />
-					Apple Silicon
-				</a>
-				<a
-					href="/download/apple-intel"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<AppleIcon />
-					Intel
-				</a>
-				<a
-					href="/download/windows"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<WindowsIcon />
-					Windows
-				</a>
-				<a
-					href="/download/linux-deb"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Debian / Ubuntu (.deb)
-				</a>
-				<a
-					href="/download/linux-appimage"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					AppImage
-				</a>
-				<a
-					href="/download/linux-rpm"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Fedora / RPM
-				</a>
-				<a
-					href="/download/linux-pacman"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Arch / Pacman
-				</a>
-			</div>
-		);
-	}
-
+function DownloadLinks({ downloads }: { downloads: ReleaseDownloads }) {
 	if (!hasDownloads(downloads)) {
 		return <span className="text-sm text-gray-9">Downloads not available</span>;
 	}
@@ -104,7 +43,7 @@ function DownloadLinks({
 					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
 				>
 					<AppleIcon />
-					Intel
+					Intel (unsupported)
 				</a>
 			)}
 			{downloads.windows && (
@@ -227,7 +166,7 @@ function ReleaseRow({
 					</a>
 				</div>
 			</div>
-			<DownloadLinks downloads={release.downloads} isLatest={isLatest} />
+			<DownloadLinks downloads={release.downloads} />
 		</div>
 	);
 }
@@ -269,6 +208,28 @@ export default async function VersionsPage() {
 						Download previous versions of Cap for macOS, Windows, and Linux.
 					</p>
 				</div>
+
+				<section
+					id={lastIntelMacRelease.anchor}
+					className="rounded-lg border border-gray-5 p-4 space-y-2"
+				>
+					<h2 className="font-semibold">Intel Mac releases — unsupported</h2>
+					<p>
+						Future Mac releases require Apple Silicon and macOS 14.0 or later.
+						Historical Intel releases are retained without support or future
+						updates.
+					</p>
+					<a href={lastIntelMacRelease.url} className="underline">
+						Last Intel release from the configured upstream provider:{" "}
+						{lastIntelMacRelease.version} (unsupported)
+					</a>
+					<p>
+						This fork has not published an Intel release.{" "}
+						<a href={lastIntelMacRelease.releaseUrl} className="underline">
+							Upstream release notes
+						</a>
+					</p>
+				</section>
 
 				{error ? (
 					<div className="p-4 rounded-lg border border-red-5 bg-red-2 text-red-11">

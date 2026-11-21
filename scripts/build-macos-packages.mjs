@@ -37,7 +37,7 @@ export function resolveMacosDeploymentTarget(value) {
 		if (difference > 0) return target;
 		if (difference < 0) {
 			throw new Error(
-				`MACOSX_DEPLOYMENT_TARGET=${target} is below Cap's minimum macOS version ${minimum}; ScreenCaptureKit requires macOS 12.3 or later.`,
+				`MACOSX_DEPLOYMENT_TARGET=${target} is below Cap's minimum macOS version ${minimum}; the packaged Apple Silicon ONNX Runtime requires macOS 14.0 or later.`,
 			);
 		}
 	}
@@ -64,9 +64,7 @@ export function isTimestampSigningFailure(output) {
 }
 
 function validateArguments(target, args, platform) {
-	let valid =
-		platform === "darwin" &&
-		/^(?:aarch64|x86_64)-apple-darwin$/.test(target ?? "");
+	let valid = platform === "darwin" && target === "aarch64-apple-darwin";
 	for (let index = 0; index < args.length && valid; index++) {
 		const argument = args[index];
 		if (argument === "--config" || argument === "-c") {
@@ -81,7 +79,7 @@ function validateArguments(target, args, platform) {
 	}
 	if (!valid) {
 		throw new Error(
-			"Run on macOS: node scripts/build-macos-packages.mjs <aarch64|x86_64>-apple-darwin [--config <path>] [--verbose]",
+			"Run on macOS: node scripts/build-macos-packages.mjs aarch64-apple-darwin [--config <path>] [--verbose] (Apple Silicon only)",
 		);
 	}
 }

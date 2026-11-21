@@ -9,7 +9,7 @@ export const getDownloadUrl = (
 	if (platform === "windows") {
 		return "/download/windows";
 	} else if (platform === "macos") {
-		return isIntel ? "/download/apple-intel" : "/download/apple-silicon";
+		return isIntel ? "/download/versions#intel-mac" : "/download/apple-silicon";
 	} else if (platform === "linux") {
 		return "/download/linux-deb";
 	} else {
@@ -27,7 +27,9 @@ export const getDownloadButtonText = (
 	} else if (platform === "windows") {
 		return "Download for free";
 	} else if (platform === "macos") {
-		return isIntel ? "Download for free" : "Download for free";
+		return isIntel
+			? "Intel Mac releases (unsupported)"
+			: "Download for Apple Silicon";
 	} else if (platform === "linux") {
 		return "Download for free";
 	} else {
@@ -75,13 +77,13 @@ export const getPlatformIcon = (platform: string | null): React.ReactNode => {
 
 export const getVersionText = (platform: string | null): React.ReactNode => {
 	if (platform === "macos") {
-		return "macOS 13.1+ recommended";
+		return "Apple Silicon • macOS 14.0 or later";
 	} else if (platform === "windows") {
 		return "Windows 10+ recommended";
 	} else if (platform === "linux") {
 		return "Linux x86_64 • .deb, AppImage, RPM and Arch available";
 	} else {
-		return "macOS 13.1+ recommended";
+		return "Apple Silicon • macOS 14.0 or later";
 	}
 };
 
@@ -107,7 +109,7 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 						window.location.href = "/download/apple-silicon";
 					}}
 					className="inline-flex size-6 items-center justify-center focus:outline-none"
-					aria-label="Download for free"
+					aria-label="Download for Apple Silicon"
 				>
 					<svg
 						aria-hidden="true"

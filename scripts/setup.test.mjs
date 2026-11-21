@@ -54,7 +54,7 @@ test("macOS setup rejects HTTP errors before caching or extracting a response", 
 		"fetch",
 		async () => new Response("Not Found", { status: 404 }),
 	);
-	await assert.rejects(setupMacOSOnnxRuntime(directory), /HTTP 404/);
+	await assert.rejects(setupMacOSOnnxRuntime(directory, "aarch64"), /HTTP 404/);
 	assert.deepEqual(await fs.readdir(directory), []);
 });
 
@@ -291,7 +291,7 @@ test("Windows archives avoid the broken PowerShell extraction path", async () =>
 	);
 });
 
-test("Intel macOS keeps its exact runtime version on a verified official package", async (t) => {
+test("Intel macOS is rejected before network or filesystem side effects", async (t) => {
 	const directory = await temporaryDirectory(t);
 	const urls = [];
 	t.mock.method(globalThis, "fetch", async (url) => {
@@ -300,19 +300,11 @@ test("Intel macOS keeps its exact runtime version on a verified official package
 	});
 	await assert.rejects(
 		setupMacOSOnnxRuntime(directory, "x86_64"),
-		/stop before downloading Intel package/,
+		/Apple Silicon/,
 	);
-	assert.deepEqual(urls, [
-		"https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg",
-	]);
-	const plan = onnxRuntimeAsset("darwin", "x86_64");
-	assert.equal(plan.version, "1.23.2");
-	assert.equal(plan.runtimeId, "osx-x64");
-	assert.equal(
-		plan.sha256,
-		"25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a",
-	);
-	assert.deepEqual(plan.files, ["libonnxruntime.dylib"]);
+	assert.deepEqual(urls, []);
+	assert.deepEqual(await fs.readdir(directory), []);
+	assert.throws(() => onnxRuntimeAsset("darwin", "x86_64"), /Apple Silicon/);
 });
 
 test("the existing downloader accepts hash-pinned NuGet ZIP bytes", async (t) => {
@@ -367,7 +359,6 @@ test("NuGet runtime layout stages exactly the selected architecture and rejects 
 		["win32", "x86_64"],
 		["win32", "aarch64"],
 		["darwin", "aarch64"],
-		["darwin", "x86_64"],
 	]) {
 		const plan = onnxRuntimeAsset(platform, architecture);
 		const source = path.join(extracted, "runtimes", plan.runtimeId, "native");
