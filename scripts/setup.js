@@ -64,17 +64,11 @@ async function main() {
 			targetDir,
 			`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
 		);
-		let downloadedNativeDeps = false;
-
-		if (!(await fileExists(nativeDepsTarPath))) {
-			console.log(`Downloading ${nativeDepsTar}`);
-			const nativeDepsBytes = await fetch(`${NATIVE_DEPS_URL}/${nativeDepsTar}`)
-				.then((r) => r.blob())
-				.then((b) => b.arrayBuffer());
-			await fs.writeFile(nativeDepsTarPath, Buffer.from(nativeDepsBytes));
-			console.log("Downloaded native deps");
-			downloadedNativeDeps = true;
-		} else console.log(`Using cached ${nativeDepsTar}`);
+		const downloadedNativeDeps = !(await fileExists(nativeDepsTarPath));
+		await downloadVerifiedAsset({
+			name: path.basename(nativeDepsTarPath),
+			url: `${NATIVE_DEPS_URL}/${nativeDepsTar}`,
+		});
 
 		const nativeDepsFolder = `native-deps`;
 		const nativeDepsDir = path.join(targetDir, nativeDepsFolder);
@@ -141,26 +135,32 @@ async function main() {
 
 		await fs.mkdir(targetDir, { recursive: true });
 
-		let downloadedFfmpeg = false;
 		const ffmpegZip = `ffmpeg-${FFMPEG_VERSION}.zip`;
 		const ffmpegZipPath = path.join(targetDir, ffmpegZip);
-		if (!(await fileExists(ffmpegZipPath))) {
-			const ffmpegZipBytes = await fetch(FFMPEG_ZIP_URL)
-				.then((r) => r.blob())
-				.then((b) => b.arrayBuffer());
-			await fs.writeFile(ffmpegZipPath, Buffer.from(ffmpegZipBytes));
-			console.log(`Downloaded ${ffmpegZip}`);
-			downloadedFfmpeg = true;
-		} else console.log(`Using cached ${ffmpegZip}`);
+		const downloadedFfmpeg = !(await fileExists(ffmpegZipPath));
+		await downloadVerifiedAsset({
+			name: ffmpegZip,
+			url: FFMPEG_ZIP_URL,
+			sha256:
+				"fedf38dbdd00fa189da06afb0abba69a19312412e05fa2e8e89b3c06aafebcdc",
+		});
 
 		const ffmpegDir = path.join(targetDir, "ffmpeg");
 		if (!(await fileExists(ffmpegDir)) || downloadedFfmpeg) {
-			await exec(
-				`Expand-Archive -Path "${ffmpegZipPath}" -DestinationPath "${targetDir}" -Force`,
-				{ shell: "powershell.exe" },
+			const extractDir = await fs.mkdtemp(
+				path.join(targetDir, "ffmpeg-extract-"),
 			);
-			await fs.rm(ffmpegDir, { recursive: true, force: true }).catch(() => {});
-			await fs.rename(path.join(targetDir, FFMPEG_ZIP_NAME), ffmpegDir);
+			try {
+				await execFile("powershell.exe", [
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					`Expand-Archive -LiteralPath '${ffmpegZipPath.replaceAll("'", "''")}' -DestinationPath '${extractDir.replaceAll("'", "''")}' -Force -ErrorAction Stop`,
+				]);
+				await installFfmpegRoot(extractDir, ffmpegDir);
+			} finally {
+				await fs.rm(extractDir, { recursive: true, force: true });
+			}
 			console.log("Extracted ffmpeg");
 		} else console.log("Using cached ffmpeg");
 
@@ -267,16 +267,11 @@ async function main() {
 				targetDir,
 				`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
 			);
-			let downloadedNativeDeps = false;
-			if (!(await fileExists(nativeDepsTarPath))) {
-				console.log(`Downloading ${nativeDepsTar}`);
-				const bytes = await fetch(`${NATIVE_DEPS_URL}/${nativeDepsTar}`)
-					.then((r) => r.blob())
-					.then((b) => b.arrayBuffer());
-				await fs.writeFile(nativeDepsTarPath, Buffer.from(bytes));
-				console.log("Downloaded native deps");
-				downloadedNativeDeps = true;
-			} else console.log(`Using cached ${nativeDepsTar}`);
+			const downloadedNativeDeps = !(await fileExists(nativeDepsTarPath));
+			await downloadVerifiedAsset({
+				name: path.basename(nativeDepsTarPath),
+				url: `${NATIVE_DEPS_URL}/${nativeDepsTar}`,
+			});
 
 			const nativeDepsDir = path.join(targetDir, "native-deps");
 			const nativeLibDir = path.join(nativeDepsDir, "lib");
@@ -343,8 +338,6 @@ async function main() {
 		cargoConfigContents + cargoBuildContents,
 	);
 }
-
-main();
 
 async function trimMacOSFramework(frameworkDir) {
 	const headersDir = path.join(frameworkDir, "Headers");
@@ -414,7 +407,7 @@ async function signMacOSFrameworkLibs(frameworkDir) {
 		);
 }
 
-async function setupMacOSOnnxRuntime() {
+export async function setupMacOSOnnxRuntime(directory = targetDir) {
 	const asset =
 		arch === "aarch64"
 			? {
@@ -426,9 +419,9 @@ async function setupMacOSOnnxRuntime() {
 					name: "onnxruntime-osx-x86_64-1.23.2.tgz",
 				};
 	const url = `https://github.com/microsoft/onnxruntime/releases/download/v${asset.version}/${asset.name}`;
-	const archivePath = path.join(targetDir, asset.name);
-	const extractDir = path.join(targetDir, asset.name.replace(/\.tgz$/, ""));
-	const outputDir = path.join(targetDir, "native-deps", "onnxruntime", "lib");
+	const archivePath = path.join(directory, asset.name);
+	const extractDir = path.join(directory, asset.name.replace(/\.tgz$/, ""));
+	const outputDir = path.join(directory, "native-deps", "onnxruntime", "lib");
 	const outputPath = path.join(outputDir, "libonnxruntime.dylib");
 	const markerPath = path.join(outputDir, "asset.txt");
 	const marker = await fs
@@ -436,18 +429,11 @@ async function setupMacOSOnnxRuntime() {
 		.then((value) => value.trim())
 		.catch(() => null);
 
-	if (!(await fileExists(archivePath))) {
-		console.log(`Downloading ${asset.name}`);
-		const bytes = await fetch(url)
-			.then((r) => r.blob())
-			.then((b) => b.arrayBuffer());
-		await fs.writeFile(archivePath, Buffer.from(bytes));
-		console.log(`Downloaded ${asset.name}`);
-	} else console.log(`Using cached ${asset.name}`);
+	await downloadVerifiedAsset({ ...asset, url }, directory);
 
 	if (!(await fileExists(outputPath)) || marker !== asset.name) {
 		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-		await execFile("tar", ["xf", archivePath, "-C", targetDir]);
+		await execFile("tar", ["xf", archivePath, "-C", directory]);
 		await fs.mkdir(outputDir, { recursive: true });
 		await fs.copyFile(
 			path.join(extractDir, "lib", "libonnxruntime.dylib"),
@@ -490,14 +476,7 @@ async function setupWindowsOnnxRuntime() {
 		.then((value) => value.trim())
 		.catch(() => null);
 
-	if (!(await fileExists(archivePath))) {
-		console.log(`Downloading ${asset.name}`);
-		const bytes = await fetch(url)
-			.then((r) => r.blob())
-			.then((b) => b.arrayBuffer());
-		await fs.writeFile(archivePath, Buffer.from(bytes));
-		console.log(`Downloaded ${asset.name}`);
-	} else console.log(`Using cached ${asset.name}`);
+	await downloadVerifiedAsset({ ...asset, url });
 
 	if (!(await fileExists(outputPath)) || marker !== asset.name) {
 		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
@@ -556,17 +535,10 @@ async function setupLinuxOnnxRuntime() {
 		.then((value) => value.trim())
 		.catch(() => null);
 
-	if (!(await fileExists(archivePath))) {
-		const response = await fetch(
-			`https://github.com/microsoft/onnxruntime/releases/download/v${version}/${archiveName}`,
-		);
-		if (!response.ok)
-			throw new Error(
-				`Failed to download ${archiveName}: HTTP ${response.status}`,
-			);
-		await fs.writeFile(archivePath, Buffer.from(await response.arrayBuffer()));
-		console.log(`Downloaded ${archiveName}`);
-	} else console.log(`Using cached ${archiveName}`);
+	await downloadVerifiedAsset({
+		name: archiveName,
+		url: `https://github.com/microsoft/onnxruntime/releases/download/v${version}/${archiveName}`,
+	});
 
 	if (!(await fileExists(outputPath)) || marker !== archiveName) {
 		await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
@@ -660,27 +632,84 @@ async function setupWindowsDxc() {
 	console.log("Copied DXC DLLs to target profile directories");
 }
 
-async function downloadVerifiedAsset(asset) {
-	const archivePath = path.join(targetDir, asset.name);
-	if (!(await fileExists(archivePath))) {
+export async function installFfmpegRoot(directory, outputDir) {
+	const entries = await fs.readdir(directory, { withFileTypes: true });
+	if (entries.length !== 1 || !entries[0].isDirectory())
+		throw new Error("FFmpeg archive must contain exactly one directory");
+	const root = await fs.realpath(path.join(directory, entries[0].name));
+	for (const file of [
+		"bin/ffmpeg.exe",
+		"bin/ffprobe.exe",
+		"bin/avcodec-61.dll",
+		"lib/avcodec.lib",
+		"include/libavcodec/avcodec.h",
+	]) {
+		const candidate = path.join(root, file);
+		const valid = await fs
+			.lstat(candidate)
+			.then(
+				async (stat) =>
+					stat.isFile() &&
+					(await fs.realpath(candidate)).startsWith(`${root}${path.sep}`),
+			)
+			.catch(() => false);
+		if (!valid) throw new Error(`FFmpeg archive is missing a regular ${file}`);
+	}
+	await fs.rm(outputDir, { recursive: true, force: true });
+	await fs.rename(root, outputDir);
+}
+
+export async function downloadVerifiedAsset(asset, directory = targetDir) {
+	if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(asset.name))
+		throw new Error(`Invalid asset name: ${asset.name}`);
+	const url = new URL(asset.url);
+	if (url.protocol !== "https:" || url.username || url.password)
+		throw new Error("Asset URL must use HTTPS without credentials");
+	const archivePath = path.join(directory, asset.name);
+	const cached = await fileExists(archivePath);
+	let bytes;
+	if (!cached) {
 		const response = await fetch(asset.url);
 		if (!response.ok)
 			throw new Error(
 				`Failed to download ${asset.name}: HTTP ${response.status}`,
 			);
-		await fs.writeFile(archivePath, Buffer.from(await response.arrayBuffer()));
-		console.log(`Downloaded ${asset.name}`);
-	} else console.log(`Using cached ${asset.name}`);
+		bytes = Buffer.from(await response.arrayBuffer());
+	} else bytes = await fs.readFile(archivePath);
 
-	const actualHash = createHash("sha256")
-		.update(await fs.readFile(archivePath))
-		.digest("hex");
-	if (actualHash !== asset.sha256) {
+	const actualHash = createHash("sha256").update(bytes).digest("hex");
+	if (asset.sha256 !== undefined && actualHash !== asset.sha256) {
 		await fs.rm(archivePath, { force: true });
 		throw new Error(
 			`${asset.name} SHA-256 mismatch: got ${actualHash}, expected ${asset.sha256}; removed invalid cached archive`,
 		);
 	}
+	const magic = asset.name.endsWith(".zip")
+		? "504b0304"
+		: asset.name.endsWith(".tgz")
+			? "1f8b"
+			: asset.name.endsWith(".tar.xz")
+				? "fd377a585a00"
+				: null;
+	if (
+		!magic ||
+		!bytes.subarray(0, magic.length / 2).equals(Buffer.from(magic, "hex"))
+	) {
+		await fs.rm(archivePath, { force: true });
+		throw new Error(
+			`${asset.name} has an invalid archive format; removed invalid cached archive`,
+		);
+	}
+	if (!cached) {
+		const temporaryPath = `${archivePath}.${process.pid}.download`;
+		try {
+			await fs.writeFile(temporaryPath, bytes);
+			await fs.rename(temporaryPath, archivePath);
+		} finally {
+			await fs.rm(temporaryPath, { force: true });
+		}
+		console.log(`Downloaded ${asset.name}`);
+	} else console.log(`Using cached ${asset.name}`);
 
 	return archivePath;
 }
@@ -887,3 +916,6 @@ async function canUseSccache(sccachePath) {
 		await fs.rm(probeDir, { recursive: true, force: true });
 	}
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename)
+	await main();
