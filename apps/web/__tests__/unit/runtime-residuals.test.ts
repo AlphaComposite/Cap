@@ -276,6 +276,24 @@ describe("effect mutation runtime contract", () => {
 		},
 	);
 
+	it("honors the predicate for a genuine Effect UnknownException defect", async () => {
+		const defect = new Cause.UnknownException("effect defect");
+		const predicate = vi.fn(() => false);
+		const view = await renderHook(() =>
+			useMutation({
+				mutationFn: () => Effect.die(defect),
+				throwOnError: predicate,
+			}),
+		);
+		await act(async () => {
+			await view.current.mutateAsync(undefined);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		});
+		expect(predicate).toHaveBeenCalledWith(
+			expect.objectContaining({ _tag: "Die", defect }),
+		);
+	});
+
 	it("preserves synchronous-throw escalation with a throwOnError predicate", async () => {
 		const predicate = vi.fn(() => false);
 		const view = await renderHook(() =>

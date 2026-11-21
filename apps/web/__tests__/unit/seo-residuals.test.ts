@@ -99,7 +99,9 @@ describe("scoped SEO residual repairs", () => {
 			b.props.children,
 		]);
 		expect(a.props.id).not.toBe(b.props.id);
-		handleClientScriptLoad(scriptsFor(DailyStandupSoftwarePage)[0].props);
+		const [repeatA] = scriptsFor(DailyStandupSoftwarePage);
+		if (!repeatA) throw new Error("Missing repeated FAQ script");
+		handleClientScriptLoad(repeatA.props);
 		expect(document.querySelectorAll("script[data-nscript]")).toHaveLength(2);
 		expect(document.getElementById(a.props.id ?? "")).toBe(loaded[0]);
 		expect(document.getElementById(b.props.id ?? "")).toBe(loaded[1]);
