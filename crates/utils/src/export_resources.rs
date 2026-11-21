@@ -120,12 +120,10 @@ impl ExportResources {
                 disk.description
             ));
         }
-        if match sample.memory {
-            #[cfg(any(target_os = "macos", test))]
-            MemoryPressure::Warning => true,
-            MemoryPressure::Critical => true,
-            _ => false,
-        } {
+        let memory_warning = sample.memory == MemoryPressure::Critical;
+        #[cfg(any(target_os = "macos", test))]
+        let memory_warning = memory_warning || sample.memory == MemoryPressure::Warning;
+        if memory_warning {
             warnings.push("Your computer is already under memory pressure. Close other applications before exporting.".to_string());
         }
         if warnings.is_empty() {
