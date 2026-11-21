@@ -125,12 +125,14 @@ export const metadata: Metadata = {
 export default function Page() {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical agencies FAQ identity keeps Next Script dedup stable across repeated mounts without colliding with other routes. */}
 			<Script
 				id="solutions-agencies-faq-structured-data"
 				type="application/ld+json"
 			>
 				{createFaqStructuredData()}
 			</Script>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical agencies software identity is distinct from FAQ and other routes in Next Script's cache. */}
 			<Script
 				id="solutions-agencies-software-structured-data"
 				type="application/ld+json"

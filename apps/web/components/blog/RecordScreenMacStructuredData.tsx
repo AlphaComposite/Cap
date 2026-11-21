@@ -48,12 +48,14 @@ const createFaqStructuredData = () => {
 export const RecordScreenMacStructuredData = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical article identity preserves Next Script dedup on repeat mounts while remaining distinct from other routes and schemas. */}
 			<Script
 				id="blog-record-screen-mac-system-audio-article-structured-data"
 				type="application/ld+json"
 			>
 				{createArticleStructuredData()}
 			</Script>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical blog FAQ identity is distinct from the article and other routes in Next Script's cache. */}
 			<Script
 				id="blog-record-screen-mac-system-audio-faq-structured-data"
 				type="application/ld+json"

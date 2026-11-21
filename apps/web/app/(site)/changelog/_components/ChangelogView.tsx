@@ -74,6 +74,7 @@ const markdownComponents: Components = {
 		</code>
 	),
 	img: (props) => (
+		// biome-ignore lint/performance/noImgElement: Markdown images have unknown intrinsic dimensions; retain natural sizing without inventing Next Image geometry.
 		<img
 			src={typeof props.src === "string" ? props.src : undefined}
 			alt={props.alt ?? ""}

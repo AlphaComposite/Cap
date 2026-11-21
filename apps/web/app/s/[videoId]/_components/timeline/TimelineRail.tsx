@@ -290,6 +290,7 @@ const FilmstripTiles = memo(function FilmstripTiles({
 					const src = tiles[index] ?? null;
 					return (
 						<div
+							// biome-ignore lint/suspicious/noArrayIndexKey: Filmstrip slots retain identity while asynchronous thumbnail URLs fill or replace their contents.
 							key={index}
 							className={clsx(
 								"relative h-full min-w-0 flex-1",

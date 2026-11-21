@@ -617,6 +617,7 @@ export const SpeedController = () => {
 					<p className="text-green-700 font-medium mb-3">
 						Video {selectedSpeed < 1 ? "slowed down" : "sped up"} successfully!
 					</p>
+					{/* biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: local speed output lacks caption import and retiming; see docs/LINT_EXCEPTIONS.md. */}
 					<video
 						ref={videoPreviewRef}
 						src={outputUrl}

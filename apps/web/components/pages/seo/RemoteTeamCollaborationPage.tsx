@@ -223,6 +223,7 @@ const createFaqStructuredData = () => {
 export const RemoteTeamCollaborationPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical remote-team FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
 				id="solutions-remote-team-collaboration-faq-structured-data"
 				type="application/ld+json"

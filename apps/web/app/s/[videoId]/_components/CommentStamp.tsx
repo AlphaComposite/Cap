@@ -28,6 +28,7 @@ const CommentStamp: React.FC<CommentStampsProps> = ({
 	hoveredComment,
 }: CommentStampsProps) => {
 	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: The native button provides focus, Enter/Space seeking and tooltip access; outer hover ownership preserves traversal into the tooltip.
 		<div
 			key={comment.id}
 			data-comment-stamp=""

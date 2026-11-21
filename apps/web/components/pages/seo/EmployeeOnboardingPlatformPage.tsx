@@ -227,6 +227,7 @@ const createFaqStructuredData = () => {
 export const EmployeeOnboardingPlatformPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical onboarding FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
 				id="solutions-employee-onboarding-platform-faq-structured-data"
 				type="application/ld+json"

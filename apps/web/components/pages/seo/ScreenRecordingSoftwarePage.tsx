@@ -215,6 +215,7 @@ const createFaqStructuredData = () => {
 export const ScreenRecordingSoftwarePage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical recording-software FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
 				id="screen-recording-software-faq-structured-data"
 				type="application/ld+json"

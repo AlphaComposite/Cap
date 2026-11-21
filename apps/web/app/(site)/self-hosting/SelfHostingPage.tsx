@@ -56,6 +56,7 @@ export const SelfHostingPage = () => {
 				/>
 			</div>
 			<LogoSection />
+			{/* biome-ignore lint/correctness/useUniqueElementIds: This single page section is the public #features fragment target; per-instance IDs would break incoming links. */}
 			<div className="pb-32 wrapper md:pb-40" id="features">
 				<div className="space-y-3">
 					{/* Section 1: 35% / 65% split */}

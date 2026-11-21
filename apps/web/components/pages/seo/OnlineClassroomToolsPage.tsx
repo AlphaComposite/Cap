@@ -223,6 +223,7 @@ const createFaqStructuredData = () => {
 export const OnlineClassroomToolsPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical classroom FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
 				id="solutions-online-classroom-tools-faq-structured-data"
 				type="application/ld+json"

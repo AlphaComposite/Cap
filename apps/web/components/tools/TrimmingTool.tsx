@@ -757,6 +757,7 @@ export const TrimmingTool = () => {
 						: "bg-black rounded-lg overflow-hidden mb-4"
 				}
 			>
+				{/* biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: the local source preview lacks caption import; see docs/LINT_EXCEPTIONS.md. */}
 				<video
 					ref={videoPreviewRef}
 					src={fileState.videoSrc || undefined}
@@ -1017,6 +1018,7 @@ export const TrimmingTool = () => {
 					<p className="text-green-700 font-medium mb-3">
 						Video trimmed successfully!
 					</p>
+					{/* biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: trimmed output lacks caption clipping/rebasing; see docs/LINT_EXCEPTIONS.md. */}
 					<video
 						ref={outputVideoRef}
 						src={processingState.outputUrl}

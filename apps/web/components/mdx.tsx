@@ -13,11 +13,14 @@ interface TableData {
 
 function Table({ data }: { data: TableData }) {
 	const headers = data.headers.map((header, index) => (
+		// biome-ignore lint/suspicious/noArrayIndexKey: Primitive text headers have no entity IDs or interactive state; duplicate labels are valid.
 		<th key={index}>{header}</th>
 	));
 	const rows = data.rows.map((row, index) => (
+		// biome-ignore lint/suspicious/noArrayIndexKey: Text-only MDX rows use positional identity; editable or stateful rows would require source IDs.
 		<tr key={index}>
 			{row.map((cell, cellIndex) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: Primitive text cells retain column positions, including repeated values, without per-cell state.
 				<td key={cellIndex}>{cell}</td>
 			))}
 		</tr>

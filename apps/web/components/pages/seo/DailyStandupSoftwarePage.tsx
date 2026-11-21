@@ -222,6 +222,7 @@ const createFaqStructuredData = () => {
 export const DailyStandupSoftwarePage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical daily-standup FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
 				id="solutions-daily-standup-software-faq-structured-data"
 				type="application/ld+json"

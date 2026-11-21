@@ -59,6 +59,7 @@ const SubscribeContent = () => {
 				<div className="flex relative z-10">
 					{capsDomainText.split("").map((letter, idx) => (
 						<motion.span
+							// biome-ignore lint/suspicious/noArrayIndexKey: Fixed domain characters animate by position; repeated letters are not unique identities.
 							key={idx}
 							className="text-[13px] font-medium relative z-0 text-black/50 mix-blend-screen"
 							initial={{ opacity: 0, y: -5 }}

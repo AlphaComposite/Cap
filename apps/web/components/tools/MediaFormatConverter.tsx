@@ -1071,6 +1071,7 @@ export const MediaFormatConverter = ({
 						Conversion complete!
 					</p>
 					{config.outputType.startsWith("video/") && (
+						// biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: local converted video has no caption import/timing contract; see docs/LINT_EXCEPTIONS.md.
 						<video
 							src={outputUrl}
 							controls
@@ -1079,6 +1080,7 @@ export const MediaFormatConverter = ({
 						></video>
 					)}
 					{config.outputType.startsWith("audio/") && (
+						// biome-ignore lint/a11y/useMediaCaption: Deferred accessibility limitation: local converted audio has no transcript display contract; see docs/LINT_EXCEPTIONS.md.
 						<audio
 							src={outputUrl}
 							controls
@@ -1086,6 +1088,7 @@ export const MediaFormatConverter = ({
 						></audio>
 					)}
 					{config.outputType.startsWith("image/") && (
+						// biome-ignore lint/performance/noImgElement: Converted Blob GIFs retain their natural aspect ratio under the preview height limit; intrinsic dimensions are not known.
 						<img
 							src={outputUrl}
 							alt="Converted GIF"

@@ -135,6 +135,7 @@ const createFaqStructuredData = () => {
 export const ScreenRecordMacPage = () => {
 	return (
 		<>
+			{/* biome-ignore lint/correctness/useUniqueElementIds: Canonical Mac-recorder FAQ identity preserves Next Script dedup on repeat mounts without cross-route cache collisions. */}
 			<Script
 				id="screen-recorder-mac-faq-structured-data"
 				type="application/ld+json"
