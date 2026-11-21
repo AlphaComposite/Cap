@@ -163,5 +163,12 @@ describe("Apple Silicon future release policy", () => {
 			"x86_64-unknown-linux-gnu",
 		])
 			expect(workflow).toContain(`target: ${target}`);
+		const ci = readFileSync(
+			new URL("../../../../.github/workflows/ci.yml", import.meta.url),
+			"utf8",
+		);
+		expect(ci).not.toContain("target: x86_64-apple-darwin");
+		expect(ci).toContain("target: aarch64-apple-darwin");
+		expect(ci).toContain("target: x86_64-pc-windows-msvc");
 	});
 });

@@ -79,10 +79,10 @@ FREE ONLINE TOOLS (no account needed, works in browser):
   - MP4 to WebM: https://cap.so/tools/convert/mp4-to-webm
 
 PLATFORM SUPPORT:
-- macOS: Apple Silicon (M1/M2/M3/M4) and Intel supported. Recommend macOS 13.1 or newer. Uses Metal for GPU acceleration and ScreenCaptureKit for screen recording.
+- macOS: Future Mac releases support Apple Silicon only and require macOS 14.0 or newer. Historical Intel Mac builds are unsupported; do not direct Intel users to an Apple Silicon binary. Uses Metal for GPU acceleration and ScreenCaptureKit for screen recording.
 - Windows: supported (currently in beta). Recommend Windows 10 version 1903 (build 18362) or newer, and Windows 11. Uses Windows Graphics Capture API.
 - Web: the dashboard and web recorder work in any modern browser. Shareable video links viewable from any browser.
-- Linux: not yet supported, but it's on the roadmap.
+- Linux: x86_64 Linux .deb packages remain supported; the Mac architecture policy does not change Linux support.
 
 PRICING (early adopter beta pricing, locked in for lifetime of subscription):
 - Free plan: personal use, Studio Mode, unlimited local recordings, shareable links up to 5 minutes, export to MP4 or GIF, web recorder

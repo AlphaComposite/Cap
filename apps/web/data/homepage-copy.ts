@@ -396,7 +396,7 @@ export const homepageCopy: HomePageCopy = {
 			{
 				question: "Which platforms do you support?",
 				answer:
-					"Native desktop apps for macOS (Apple Silicon & Intel), Windows, and Linux, plus a Chrome extension. View your shareable links from anywhere.",
+					"Native desktop apps for Apple Silicon Macs running macOS 14.0 or newer, Windows, and Linux, plus a Chrome extension. Historical Intel Mac builds are unsupported. View your shareable links from anywhere.",
 			},
 			{
 				question: "Can I use Cap for commercial purposes?",
