@@ -119,6 +119,8 @@ jobs:
           __tests__/unit/sso-login-pages.test.ts
 
       - name: Typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=5120
         run: bun run typecheck
 
   mobile:
