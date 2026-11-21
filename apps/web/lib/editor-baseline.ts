@@ -1,7 +1,7 @@
 import type { VideoEditSpec } from "@cap/database/types";
 import {
-	areEditSpecsEquivalent,
 	areEditSpecDocumentsEquivalent,
+	areEditSpecsEquivalent,
 	createIdentityEditSpec,
 	createTimelineStateFromEditSpec,
 	getTimelineEditSpec,
@@ -20,10 +20,16 @@ export function selectEditorBaselineSpec(input: {
 	sourceDuration: number;
 }): VideoEditSpec {
 	if (input.instantFinish && input.publishedIntentSpec) {
-    if (input.publishedIntentSpec.version===2 && input.legacySpec?.version===2 && input.legacySpec.autoCutsInitialized===true) {
-      const resetMedia={...input.legacySpec}; delete resetMedia.autoCutsInitialized;
-      if (areEditSpecDocumentsEquivalent(input.publishedIntentSpec,resetMedia)) return {...input.publishedIntentSpec,autoCutsInitialized:true};
-    }
+		if (
+			input.publishedIntentSpec.version === 2 &&
+			input.legacySpec?.version === 2 &&
+			input.legacySpec.autoCutsInitialized === true
+		) {
+			const resetMedia = { ...input.legacySpec };
+			delete resetMedia.autoCutsInitialized;
+			if (areEditSpecDocumentsEquivalent(input.publishedIntentSpec, resetMedia))
+				return { ...input.publishedIntentSpec, autoCutsInitialized: true };
+		}
 		return input.publishedIntentSpec;
 	}
 	if (input.legacySpec) return input.legacySpec;

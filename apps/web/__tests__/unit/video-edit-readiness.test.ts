@@ -104,7 +104,7 @@ describe("independent editing readiness", () => {
 				...facts,
 				editorOpenable: true,
 				sourcePrepare: "failed",
-			}).rows[4].state,
+			}).rows[4]?.state,
 		).toBe("failed");
 	});
 	it("derives the five completed steps and collapses only after completion", () => {
