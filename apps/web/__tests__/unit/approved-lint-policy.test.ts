@@ -34,7 +34,7 @@ describe("per-site lint policy", () => {
 				const [, rule, reason] = match;
 				if (!rule || !reason)
 					throw new Error("Missing per-site rule or reason");
-				expect(rule).toMatch(/^lint\/[a-z]+\/[A-Za-z]+$/);
+				expect(rule).toMatch(/^lint\/[a-z0-9]+\/[A-Za-z]+$/);
 				expect(reason.length).toBeGreaterThan(60);
 				counts[rule] = (counts[rule] ?? 0) + 1;
 			}
