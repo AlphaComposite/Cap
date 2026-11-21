@@ -19,7 +19,9 @@ function OpeningEditor({ href, cancel }: { href: string; cancel: () => void }) {
 		const element = dialog.current;
 		if (!element) return;
 		element.showModal();
-		element.querySelector<HTMLElement>('[role="status"]')?.focus();
+		element
+			.querySelector<HTMLElement>("main[data-edit-opening-focus]")
+			?.focus();
 		return () => element.close();
 	}, []);
 	useEffect(() => {

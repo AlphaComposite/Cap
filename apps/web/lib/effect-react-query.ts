@@ -235,13 +235,14 @@ export function makeUseEffectMutation<R, RuntimeError>(
 			) => void;
 		}
 	> {
-		const mutationFn = options.mutationFn;
-		const throwOnDefect = options.throwOnDefect ?? false;
-		const throwOnError = options.throwOnError;
-		const _onMutate = options.onMutate;
-		const _onSuccess = options.onSuccess;
-		const _onError = options.onError;
-		const _onSettled = options.onSettled;
+		const {
+			mutationFn,
+			throwOnDefect = false,
+			throwOnError,
+			onError,
+			onSettled,
+			...mutationOptions
+		} = options;
 
 		const runtime = useEffectRuntime();
 
@@ -251,7 +252,7 @@ export function makeUseEffectMutation<R, RuntimeError>(
 			TVariables,
 			TContext
 		>({
-			...(options as any),
+			...mutationOptions,
 			mutationFn:
 				typeof mutationFn === "function"
 					? async (variables: TVariables) => {
@@ -259,7 +260,9 @@ export function makeUseEffectMutation<R, RuntimeError>(
 							try {
 								mutationEffect = mutationFn(variables);
 							} catch (e) {
-								throw new Cause.UnknownException(e, "mutationFn threw");
+								throw Cause.die(
+									new Cause.UnknownException(e, "mutationFn threw"),
+								);
 							}
 							const effectToRun = mutationEffect;
 							// .pipe(
@@ -270,7 +273,7 @@ export function makeUseEffectMutation<R, RuntimeError>(
 							//   })
 							// );
 							const result = await runtime.runPromiseExit(effectToRun);
-							console.log({ result });
+
 							if (Exit.isFailure(result)) {
 								// we always throw the cause
 								throw result.cause;
@@ -279,42 +282,37 @@ export function makeUseEffectMutation<R, RuntimeError>(
 							}
 						}
 					: mutationFn,
-			throwOnError:
-				typeof throwOnError === "function"
-					? (error: Cause.Cause<TError>) => {
-							// this is safe because internally when we call useQuery we always throw the full cause or UnknownException
-							const cause = error as
-								| Cause.Cause<TError>
-								| Cause.UnknownException;
-
-							// if the cause is UnknownException, we always return true and throw it
-							if (Cause.isUnknownException(cause)) {
-								return true;
-							}
-
-							const failureOrCause = Cause.failureOrCause(cause);
-
-							if (throwOnDefect) {
-								// in this case options.throwOnError expects a TError
-
-								// the cause was a fail, so we have TError
-								if (Either.isLeft(failureOrCause)) {
-									// this is safe because if throwOnDefect is true then TExposedError is TError
-									const exposedError =
-										failureOrCause.left as unknown as TExposedError;
-									return throwOnError(exposedError);
-								} else {
-									// the cause was a die or interrupt, so we return true
-									return true;
-								}
-							} else {
-								// in this case options.throwOnError expects a Cause<TError>
-								// this is safe because if throwOnDefect is false then TExposedError is Cause<TError>
-								const exposedError = cause as unknown as TExposedError;
-								return throwOnError(exposedError);
-							}
-						}
-					: throwOnError,
+			throwOnError: (cause) => {
+				const failureOrCause = Cause.failureOrCause(cause);
+				if (throwOnDefect && Either.isRight(failureOrCause)) return true;
+				const error = (throwOnDefect && Either.isLeft(failureOrCause)
+					? failureOrCause.left
+					: cause) as unknown as TExposedError;
+				return typeof throwOnError === "function"
+					? throwOnError(error)
+					: (throwOnError ?? false);
+			},
+			onError: onError
+				? (cause, ...args) => {
+						const failureOrCause = Cause.failureOrCause(cause);
+						if (throwOnDefect && Either.isRight(failureOrCause)) return;
+						const error = (throwOnDefect && Either.isLeft(failureOrCause)
+							? failureOrCause.left
+							: cause) as unknown as TExposedError;
+						return onError(error, ...args);
+					}
+				: undefined,
+			onSettled: onSettled
+				? (data, cause, ...args) => {
+						if (cause === null) return onSettled(data, null, ...args);
+						const failureOrCause = Cause.failureOrCause(cause);
+						if (throwOnDefect && Either.isRight(failureOrCause)) return;
+						const error = (throwOnDefect && Either.isLeft(failureOrCause)
+							? failureOrCause.left
+							: cause) as unknown as TExposedError;
+						return onSettled(data, error, ...args);
+					}
+				: undefined,
 			// onMutate:
 			//   typeof onMutate === "function"
 			//     ? async (...args) => {

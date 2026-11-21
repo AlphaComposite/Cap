@@ -54,9 +54,12 @@ function composeRefs<T>(...refs: PossibleRef<T>[]): React.RefCallback<T> {
  * A custom hook that composes multiple refs
  * Accepts callback refs and RefObject(s)
  */
-function useComposedRefs<T>(...refs: PossibleRef<T>[]): React.RefCallback<T> {
-	// eslint-disable-next-line react-hooks/exhaustive-deps
-	return React.useCallback(composeRefs(...refs), refs);
+function useComposedRefs<T>(
+	ref1: PossibleRef<T>,
+	ref2: PossibleRef<T>,
+	ref3: PossibleRef<T>,
+): React.RefCallback<T> {
+	return React.useMemo(() => composeRefs(ref1, ref2, ref3), [ref1, ref2, ref3]);
 }
 
 export { composeRefs, useComposedRefs };

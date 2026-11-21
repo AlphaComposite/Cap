@@ -49,6 +49,7 @@ import {
 	useMediaDispatch,
 } from "media-chrome/react/media-store";
 import { AnimatePresence, motion } from "motion/react";
+import NextImage from "next/image";
 import * as React from "react";
 import { forwardRef, useEffect } from "react";
 import * as ReactDOM from "react-dom";
@@ -2378,7 +2379,7 @@ function MediaPlayerSeek(props: MediaPlayerSeekProps) {
 								{thumbnail?.src && (
 									<div
 										data-slot="media-player-seek-thumbnail"
-										className="overflow-hidden rounded-md rounded-b-none"
+										className="relative overflow-hidden rounded-md rounded-b-none"
 										style={{
 											width: `${SPRITE_CONTAINER_WIDTH}px`,
 											height: `${SPRITE_CONTAINER_HEIGHT}px`,
@@ -2387,7 +2388,9 @@ function MediaPlayerSeek(props: MediaPlayerSeekProps) {
 										{thumbnail.coords ? (
 											<div style={spriteStyle} />
 										) : (
-											<img
+											<NextImage
+												fill
+												unoptimized
 												src={thumbnail.src}
 												alt={`Preview at ${hoverTime}`}
 												className="object-cover size-full"
@@ -2436,8 +2439,7 @@ function MediaPlayerSeek(props: MediaPlayerSeekProps) {
 }
 
 interface MediaPlayerVolumeProps
-	extends React.ComponentProps<typeof SliderPrimitive.Root> {
-	asChild?: boolean;
+	extends Omit<React.ComponentProps<typeof SliderPrimitive.Root>, "asChild"> {
 	expandable?: boolean;
 	enhancedAudioEnabled?: boolean;
 	enhancedAudioMuted?: boolean;
@@ -2446,7 +2448,6 @@ interface MediaPlayerVolumeProps
 
 function MediaPlayerVolume(props: MediaPlayerVolumeProps) {
 	const {
-		asChild,
 		expandable = false,
 		enhancedAudioEnabled = false,
 		enhancedAudioMuted,
@@ -2738,8 +2739,8 @@ function MediaPlayerTime(props: MediaPlayerTimeProps) {
 }
 
 interface MediaPlayerPlaybackSpeedProps
-	extends React.ComponentProps<typeof DropdownMenuTrigger>,
-		React.ComponentProps<typeof Button>,
+	extends Omit<React.ComponentProps<typeof DropdownMenuTrigger>, "asChild">,
+		Omit<React.ComponentProps<typeof Button>, "asChild">,
 		Omit<React.ComponentProps<typeof DropdownMenu>, "dir">,
 		Pick<React.ComponentProps<typeof DropdownMenuContent>, "sideOffset"> {
 	speeds?: number[];
@@ -2752,7 +2753,6 @@ function MediaPlayerPlaybackSpeed(props: MediaPlayerPlaybackSpeedProps) {
 		onOpenChange: onOpenChangeProp,
 		sideOffset = FLOATING_MENU_SIDE_OFFSET,
 		speeds = SPEEDS,
-		asChild,
 		modal = false,
 		className,
 		disabled,
@@ -3564,7 +3564,6 @@ function MediaPlayerSettings(props: MediaPlayerSettingsProps) {
 		onOpenChange: onOpenChangeProp,
 		sideOffset = FLOATING_MENU_SIDE_OFFSET,
 		speeds = SPEEDS,
-		asChild,
 		modal = false,
 		className,
 		disabled,
