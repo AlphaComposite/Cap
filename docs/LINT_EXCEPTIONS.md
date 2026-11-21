@@ -2,7 +2,7 @@
 
 CI's Biome lint command is enforcing, not advisory. The exceptions below are
 adjacent, rule-specific suppressions, not rule/configuration disables. They cover
-33 findings in 24 source files: 14 stable IDs, eight positional keys, three
+the original 33 findings in 24 source files: 14 stable IDs, eight positional keys, three
 interaction wrappers, five missing-caption previews and three natural/imperative
 images. A zero-diagnostic lint result does not establish accessibility compliance.
 
@@ -28,6 +28,12 @@ of earlier routes' scripts from the document.
 | `apps/web/components/pages/seo/ScreenRecordWindowsPage.tsx`        | Windows-recorder FAQ and software-app (2)                                            |
 | `apps/web/components/pages/seo/ScreenRecordingSoftwarePage.tsx`    | Recording-software FAQ (1)                                                           |
 | `apps/web/app/(site)/self-hosting/SelfHostingPage.tsx`             | Single public `#features` target (1); incoming fragment links require this stable ID |
+
+The Mac support transition additionally introduces one public `#intel-mac` archive
+anchor in the download versions page. Its adjacent, explicit
+`useUniqueElementIds` exception preserves inbound unsupported-Intel redirects;
+the literal is not hidden behind a constant. This new site is separate from the
+original 33-finding baseline above.
 
 ## Positional identity — `lint/suspicious/noArrayIndexKey` (8)
 

@@ -209,8 +209,9 @@ export default async function VersionsPage() {
 					</p>
 				</div>
 
+				{/* biome-ignore lint/correctness/useUniqueElementIds: This single unsupported Intel archive is the public #intel-mac fragment target; per-instance IDs would break download redirects. */}
 				<section
-					id={lastIntelMacRelease.anchor}
+					id="intel-mac"
 					className="rounded-lg border border-gray-5 p-4 space-y-2"
 				>
 					<h2 className="font-semibold">Intel Mac releases — unsupported</h2>
