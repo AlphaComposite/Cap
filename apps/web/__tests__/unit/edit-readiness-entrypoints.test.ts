@@ -252,7 +252,9 @@ describe.each(["share", "dashboard"])(
 				view = await mount();
 			try {
 				await act(async () => view.edit.click());
-				expect(document.activeElement?.getAttribute("role")).toBe("status");
+				expect(document.activeElement).toBe(
+					document.querySelector("main[data-edit-opening-focus]"),
+				);
 				expect(document.querySelector("dialog[open]")).not.toBeNull();
 				await act(async () => vi.advanceTimersByTime(9999));
 				expect(document.body.textContent).not.toContain("Still opening…");
@@ -382,9 +384,10 @@ describe("owner entrypoint presentation", () => {
 			);
 			expect(edit).toBeDefined();
 			await act(async () => (edit ?? fail("Missing edit entrypoint")).click());
-			expect(document.querySelector('[role="status"]')?.textContent).toContain(
-				"Opening editor…",
-			);
+			expect(
+				document.querySelector("main[data-edit-opening-focus] output")
+					?.textContent,
+			).toContain("Opening editor…");
 			expect(mocks.push).toHaveBeenCalledWith("/s/video/edit");
 			await act(async () => resolve());
 			expect(document.body.textContent).not.toContain("Opening editor…");
