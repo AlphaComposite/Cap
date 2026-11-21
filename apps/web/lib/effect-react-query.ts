@@ -174,6 +174,7 @@ export function makeUseEffectQuery<R, RuntimeError>(
 export function makeUseEffectMutation<R, RuntimeError>(
 	useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, RuntimeError>,
 ) {
+	const synchronousThrows = new WeakSet<object>();
 	return function useEffectMutation<
 		TData,
 		TError,
@@ -260,9 +261,11 @@ export function makeUseEffectMutation<R, RuntimeError>(
 							try {
 								mutationEffect = mutationFn(variables);
 							} catch (e) {
-								throw Cause.die(
+								const cause = Cause.die(
 									new Cause.UnknownException(e, "mutationFn threw"),
 								);
+								synchronousThrows.add(cause);
+								throw cause;
 							}
 							const effectToRun = mutationEffect;
 							// .pipe(
@@ -283,11 +286,7 @@ export function makeUseEffectMutation<R, RuntimeError>(
 						}
 					: mutationFn,
 			throwOnError: (cause) => {
-				if (
-					typeof throwOnError === "function" &&
-					Cause.isDieType(cause) &&
-					Cause.isUnknownException(cause.defect)
-				)
+				if (typeof throwOnError === "function" && synchronousThrows.has(cause))
 					return true;
 				const failureOrCause = Cause.failureOrCause(cause);
 				if (throwOnDefect && Either.isRight(failureOrCause)) return true;
