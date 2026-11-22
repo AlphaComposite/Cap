@@ -1290,7 +1290,7 @@ with http.open(request, timeout=15) as response:
             }
             if (any(headers.get(key) != value for key, value in expected.items())
                     or re.fullmatch(r"[a-f0-9]{64}(?:/[a-f0-9]{64}){3}", namespace) is None
-                    or (_namespace(self.cache, rev.revision_id) and _namespace(self.cache, rev.revision_id) != namespace)
+                    or (_namespace(self.cache, rev.revision_id) and _namespace(self.cache, rev.revision_id) != namespace.split("/")[2])
                     or hashlib.sha256(body).hexdigest() != headers.get("x-cap-sha256")
                     or len(body) != int(headers.get("content-length", "0"))
                     or (kind in SIDE_CONTENT_TYPES and len(body) > SIDE_MAX_BYTES)):
