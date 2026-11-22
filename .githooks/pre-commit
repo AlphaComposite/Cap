@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+biome_files=()
+has_rust=0
+
+while IFS= read -r -d '' file; do
+	case "$file" in
+	*.ts | *.tsx | *.js | *.jsx | *.mjs | *.cjs | *.mts | *.cts | *.json | *.jsonc | *.css)
+		biome_files+=("$file")
+		;;
+	*.rs)
+		has_rust=1
+		;;
+	esac
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if ((${#biome_files[@]} > 0)); then
+	if [[ -x node_modules/.bin/biome ]]; then
+		bunx biome check --linter-enabled=false -- "${biome_files[@]}"
+	elif command -v biome >/dev/null 2>&1; then
+		biome check --linter-enabled=false -- "${biome_files[@]}"
+	else
+		printf '%s\n' "pre-commit: biome is not installed; run bun install" >&2
+		exit 1
+	fi
+fi
+
+if ((has_rust)); then
+	cargo fmt --check
+fi
+
+bash scripts/check-public-hygiene.sh
