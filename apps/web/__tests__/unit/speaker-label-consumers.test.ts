@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { getActiveCaptionText } from "@/app/s/[videoId]/_components/caption-cues";
-import { parseVTT } from "@/app/s/[videoId]/_components/utils/transcript-utils";
+import {
+	formatTranscriptAsVTT,
+	parseVTT,
+} from "@/app/s/[videoId]/_components/utils/transcript-utils";
 import { parseAgentVtt } from "@/lib/agent-api";
 import { formatTranscriptAsParagraphs } from "@/lib/transcript-text";
 import {
@@ -46,6 +49,20 @@ describe("speaker text projections", () => {
 			]),
 		).toBe(literal);
 	});
+
+	it.each(["<v cap-speaker-B>literal</v>", "literal &lt; text"])(
+		"re-escapes decoded text in an embed track: %s",
+		(literal) => {
+			const source = asVtt(formatTranscriptCuePayload(literal, "A"));
+			const output = formatTranscriptAsVTT(parseVTT(source));
+			expect(output.split("\n")[4]).toBe(
+				literal
+					.replace(/&/g, "&amp;")
+					.replace(/</g, "&lt;")
+					.replace(/>/g, "&gt;"),
+			);
+		},
+	);
 
 	it("leaves every unmarked entity and native markup behavior unchanged", () => {
 		const legacy = "Hello &amp; &lt;v cap-speaker-B&gt;literal&lt;/v&gt;";

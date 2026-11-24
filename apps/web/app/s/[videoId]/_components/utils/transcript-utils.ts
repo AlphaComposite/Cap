@@ -1,10 +1,14 @@
-import { projectTranscriptCueText } from "@/lib/transcript-vtt";
+import {
+	escapeTranscriptCueText,
+	parseTranscriptCuePayload,
+} from "@/lib/transcript-vtt";
 
 export interface TranscriptEntry {
 	id: number;
 	timestamp: string | number; // Allow both string and number types
 	text: string;
 	startTime: number;
+	decodedCueText?: boolean;
 }
 
 export const formatTime = (seconds: number): string => {
@@ -38,10 +42,13 @@ export const formatTranscriptAsVTT = (entries: TranscriptEntry[]): string => {
 		const startSeconds = entry.startTime;
 		const nextEntry = entries[index + 1];
 		const endSeconds = nextEntry ? nextEntry.startTime : startSeconds + 3;
+		const payload = entry.decodedCueText
+			? escapeTranscriptCueText(entry.text)
+			: entry.text;
 
 		return `${entry.id}\n${formatTime(startSeconds)} --> ${formatTime(
 			endSeconds,
-		)}\n${entry.text}\n`;
+		)}\n${payload}\n`;
 	});
 
 	return vttHeader + vttEntries.join("\n");
@@ -156,7 +163,9 @@ export const parseVTT = (vttContent: string): TranscriptEntry[] => {
 					? trimmedLine.slice(1, -1)
 					: trimmedLine;
 
-			currentEntry.text = projectTranscriptCueText(textContent);
+			const payload = parseTranscriptCuePayload(textContent);
+			currentEntry.text = payload?.text ?? textContent;
+			if (payload) currentEntry.decodedCueText = true;
 			if (
 				currentEntry.id !== undefined &&
 				currentEntry.timestamp &&
