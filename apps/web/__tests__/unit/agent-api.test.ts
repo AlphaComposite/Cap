@@ -77,6 +77,14 @@ describe("agent API normalization", () => {
 		expect(agentTranscriptRevision(rendered)).toMatch(/^[a-f0-9]{64}$/);
 	});
 
+	it("keeps literal speaker markup as text in agent cue replacements", () => {
+		const text = "<v cap-speaker-A>literal</v> &lt;";
+		const cues = [{ startMs: 0, endMs: 1000, text }];
+		const vtt = renderAgentVtt(cues);
+		expect(vtt).not.toContain("<v cap-speaker-A>");
+		expect(parseAgentVtt(vtt)).toEqual(cues);
+	});
+
 	it("removes complete and unterminated VTT tags", () => {
 		const cues = parseAgentVtt(
 			"WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nSafe <script>alert(1)</script> text\n\n2\n00:00:01.000 --> 00:00:02.000\nBefore <script\n",

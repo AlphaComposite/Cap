@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import type { VideoMetadata } from "@cap/database/types";
 import type { Agent } from "@cap/web-domain";
-import { parseTranscriptCuePayload } from "@/lib/transcript-vtt";
+import {
+	formatTranscriptCuePayload,
+	normalizeTranscriptCueText,
+	parseTranscriptCuePayload,
+} from "@/lib/transcript-vtt";
 
 export type AgentCursor = {
 	updatedAt: string;
@@ -196,7 +200,7 @@ export const renderAgentVtt = (
 		...cues.flatMap((cue, index) => [
 			String(index + 1),
 			`${formatVttTimestamp(cue.startMs)} --> ${formatVttTimestamp(cue.endMs)}`,
-			cue.text.replace(/\s+/g, " ").trim(),
+			formatTranscriptCuePayload(normalizeTranscriptCueText(cue.text)),
 			"",
 		]),
 	].join("\n");
