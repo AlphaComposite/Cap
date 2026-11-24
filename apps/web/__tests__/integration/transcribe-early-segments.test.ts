@@ -55,11 +55,13 @@ const videoRow = vi.hoisted(() => ({
 const state = vi.hoisted(() => ({
 	editRows: [] as unknown[],
 	fakeAudioPath: "",
+	speakerLabels: false,
 }));
 
 vi.mock("@cap/env", () => ({
 	serverEnv: () => ({
 		ASSEMBLY_API_KEY: "test-assembly-api-key",
+		CAP_TRANSCRIPT_SPEAKER_LABELS: state.speakerLabels,
 		NEXTAUTH_SECRET: "test-secret-with-enough-entropy",
 	}),
 }));
@@ -215,6 +217,7 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 	beforeEach(async () => {
 		mocks.updates.length = 0;
 		state.editRows = [];
+		state.speakerLabels = false;
 		videoRow.duration = null;
 		videoRow.source = { type: "desktopSegments" };
 		mocks.transcribe.mockReset();
@@ -273,6 +276,7 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 	it.each([false, true])(
 		"transcribes straight from segment audio before any mux exists (flagged=%s)",
 		async (flagged) => {
+			state.speakerLabels = true;
 			vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", flagged ? "user-456" : "");
 			const { transcribeVideoWorkflow } = await import(
 				"@/workflows/transcribe"
@@ -287,6 +291,9 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 
 			expect(result.success).toBe(true);
 			expect(mocks.transcribe).toHaveBeenCalledTimes(1);
+			expect(mocks.transcribe.mock.calls[0]?.[0]).not.toHaveProperty(
+				"speaker_labels",
+			);
 
 			const signedKeys = mocks.getInternalSignedObjectUrl.mock.calls.map(
 				(call) => call[0],

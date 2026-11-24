@@ -142,6 +142,38 @@ beforeEach(() => {
 });
 
 describe("recoverStalledVideoPipeline", () => {
+	it("re-enqueues stale transcription without a provider job identity, blocking speaker-label activation", async () => {
+		const candidate = {
+			videoId: "possibly-accepted-transcription",
+			userId: "user-1",
+			transcriptionStatus: "PROCESSING",
+			updatedAt: staleAt,
+			stripeSubscriptionStatus: "active",
+			thirdPartyStripeSubscriptionId: null,
+		};
+		const update = makeUpdateChain(1);
+		let dbCall = 0;
+		mockDb.mockImplementation(() => {
+			dbCall++;
+			if (dbCall === 2) return makeSelectChain([candidate]);
+			if (dbCall <= 3) return makeSelectChain([]);
+			return update;
+		});
+		const { recoverStalledVideoPipeline } = await import(
+			"@/lib/video-pipeline-recovery"
+		);
+		const result = await recoverStalledVideoPipeline({ now, concurrency: 1 });
+		expect(update.set).toHaveBeenCalledExactlyOnceWith({
+			transcriptionStatus: null,
+		});
+		expect(mockTranscribeVideo).toHaveBeenCalledExactlyOnceWith(
+			candidate.videoId,
+			candidate.userId,
+			true,
+		);
+		expect(result.transcription.statuses).toEqual({ started: 1 });
+	});
+
 	it("atomically restarts recent stale media, transcription, and AI work", async () => {
 		const mediaCandidate = {
 			videoId: "video-media",

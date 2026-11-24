@@ -96,6 +96,12 @@ function createServerEnv() {
 
 			/// AI providers
 			ASSEMBLY_API_KEY: z.string().optional().describe("Audio transcription"),
+			CAP_TRANSCRIPT_SPEAKER_LABELS: boolString()
+				.refine(
+					(enabled) => !enabled,
+					"Speaker labels remain disabled until cross-run submission protection is implemented",
+				)
+				.describe("Private completed-recording speaker-label pilot (disabled)"),
 			ANTHROPIC_API_KEY: z.string().optional().describe("AI chat"),
 			OPENAI_API_KEY: z.string().optional().describe("AI summaries"),
 			GROQ_API_KEY: z.string().optional().describe("AI summaries"),
@@ -206,6 +212,7 @@ function createServerEnv() {
 			// supplied only through a process.env spread in standalone builds.
 			AI_PROVIDER: process.env.AI_PROVIDER,
 			ASSEMBLY_API_KEY: process.env.ASSEMBLY_API_KEY,
+			CAP_TRANSCRIPT_SPEAKER_LABELS: process.env.CAP_TRANSCRIPT_SPEAKER_LABELS,
 			ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 			OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 			GROQ_API_KEY: process.env.GROQ_API_KEY,

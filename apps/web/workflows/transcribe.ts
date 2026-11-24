@@ -73,6 +73,7 @@ interface VideoData {
 	video: typeof videos.$inferSelect;
 	transcriptionDisabled: boolean;
 	aiGenerationLanguage: AiGenerationLanguage;
+	speakerLabels: boolean;
 }
 
 interface BackfillEditTranscriptPayload {
@@ -160,11 +161,20 @@ export async function transcribeVideoWorkflow(
 			};
 		}
 
-		const transcription = await transcribeWithAssemblyAI(
-			audioUrl,
-			videoData.aiGenerationLanguage,
-			videoDurationMs,
-		);
+		const transcription =
+			videoData.speakerLabels && !payload.earlyFromSegments
+				? await pollSpeakerLabeledTranscription(
+						await submitSpeakerLabeledTranscription(
+							audioUrl,
+							videoData.aiGenerationLanguage,
+						),
+						videoDurationMs,
+					)
+				: await transcribeWithAssemblyAI(
+						audioUrl,
+						videoData.aiGenerationLanguage,
+						videoDurationMs,
+					);
 
 		await saveTranscription(videoId, userId, videoData.video, transcription);
 	} catch (error) {
@@ -301,6 +311,7 @@ async function validateVideo(videoId: string): Promise<VideoData> {
 		aiGenerationLanguage: parseAiGenerationLanguage(
 			result.orgSettings?.aiGenerationLanguage,
 		),
+		speakerLabels: serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS === true,
 	};
 }
 
@@ -845,6 +856,74 @@ async function extractAudioFromSegmentsImpl(
 			reason: error instanceof Error ? error.message : String(error),
 		};
 	}
+}
+
+export async function submitSpeakerLabeledTranscription(
+	audioUrl: string,
+	language: AiGenerationLanguage,
+): Promise<string> {
+	"use step";
+
+	const audioResponse = await fetch(audioUrl);
+	if (!audioResponse.ok) {
+		throw new FatalError("Speaker-labeled transcription audio is unavailable");
+	}
+	const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+	const client = new AssemblyAI({
+		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
+	});
+	try {
+		const transcript = await client.transcripts.submit({
+			audio: audioBuffer,
+			...getAssemblyAITranscriptionOptions(language),
+			disfluencies: true,
+			speaker_labels: true,
+		});
+		if (typeof transcript.id !== "string" || !transcript.id) {
+			throw new Error("Missing transcript ID");
+		}
+		return transcript.id;
+	} catch {
+		throw new FatalError(
+			"Speaker-labeled submission outcome unknown; do not resubmit",
+		);
+	}
+}
+
+submitSpeakerLabeledTranscription.maxRetries = 0;
+
+export async function pollSpeakerLabeledTranscription(
+	transcriptId: string,
+	videoDurationMs: number,
+): Promise<TranscriptionArtifacts> {
+	"use step";
+
+	const client = new AssemblyAI({
+		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
+	});
+	const transcript = await client.transcripts.waitUntilReady(transcriptId, {
+		pollingInterval: 1000,
+	});
+	if (transcript.id !== transcriptId) {
+		throw new FatalError("Speaker-labeled transcript ID mismatch");
+	}
+	if (transcript.status === "error") {
+		throw new FatalError(
+			`AssemblyAI transcription failed (id=${transcriptId}): ${transcript.error ?? "Unknown error"}`,
+		);
+	}
+	if (transcript.status !== "completed") {
+		throw new FatalError("Speaker-labeled transcript is not completed");
+	}
+	const durationMs =
+		videoDurationMs > 0
+			? videoDurationMs
+			: (transcript.audio_duration ?? 0) * 1000;
+	const editTranscript = createEditTranscript(transcript, durationMs);
+	return {
+		vtt: editTranscriptWordsToCaptionVtt(editTranscript.words),
+		editTranscript: serializeEditTranscript(editTranscript),
+	};
 }
 
 async function transcribeWithAssemblyAI(
