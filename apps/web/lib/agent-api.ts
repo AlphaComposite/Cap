@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { VideoMetadata } from "@cap/database/types";
 import type { Agent } from "@cap/web-domain";
+import { parseTranscriptCuePayload } from "@/lib/transcript-vtt";
 
 export type AgentCursor = {
 	updatedAt: string;
@@ -129,8 +130,12 @@ const stripVttCueTags = (value: string) => {
 	return text.join("");
 };
 
-const normalizeCueText = (lines: string[]) =>
-	stripVttCueTags(lines.join("\n")).trim();
+const normalizeCueText = (lines: string[]) => {
+	const value = lines.join("\n");
+	return (
+		parseTranscriptCuePayload(value)?.text ?? stripVttCueTags(value)
+	).trim();
+};
 
 export const parseAgentVtt = (
 	vtt: string,

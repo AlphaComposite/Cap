@@ -1,8 +1,14 @@
+import {
+	formatTranscriptCuePayload,
+	validateTranscriptSpeaker,
+} from "@/lib/transcript-vtt";
+
 export interface AssemblyAIWord {
 	text: string;
 	start: number;
 	end: number;
 	confidence?: number;
+	speaker?: unknown;
 }
 
 export interface AssemblyAIResult {
@@ -35,6 +41,7 @@ export function formatToWebVTT(result: AssemblyAIResult): string {
 	let group: string[] = [];
 	let start = formatTimestamp(words[0]?.start ?? 0);
 	let wordCount = 0;
+	let speaker = validateTranscriptSpeaker(words[0]?.speaker);
 
 	for (let i = 0; i < words.length; i++) {
 		const word = words[i];
@@ -47,15 +54,17 @@ export function formatToWebVTT(result: AssemblyAIResult): string {
 		const shouldBreak =
 			/[,.!?;:]$/.test(word.text) ||
 			(nextWord && nextWord.start - word.end > 500) ||
+			(nextWord && validateTranscriptSpeaker(nextWord.speaker) !== speaker) ||
 			wordCount === 8;
 
 		if (shouldBreak) {
 			const end = formatTimestamp(word.end);
-			output += `${captionIndex}\n${start} --> ${end}\n${group.join(" ")}\n\n`;
+			output += `${captionIndex}\n${start} --> ${end}\n${formatTranscriptCuePayload(group.join(" "), speaker)}\n\n`;
 			captionIndex++;
 			group = [];
 			start = nextWord ? formatTimestamp(nextWord.start) : start;
 			wordCount = 0;
+			speaker = validateTranscriptSpeaker(nextWord?.speaker);
 		}
 	}
 
@@ -63,7 +72,7 @@ export function formatToWebVTT(result: AssemblyAIResult): string {
 		const lastWord = words[words.length - 1];
 		if (lastWord) {
 			const end = formatTimestamp(lastWord.end);
-			output += `${captionIndex}\n${start} --> ${end}\n${group.join(" ")}\n\n`;
+			output += `${captionIndex}\n${start} --> ${end}\n${formatTranscriptCuePayload(group.join(" "), speaker)}\n\n`;
 		}
 	}
 

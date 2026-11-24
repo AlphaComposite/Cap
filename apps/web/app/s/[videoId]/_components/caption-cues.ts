@@ -1,3 +1,5 @@
+import { parseTranscriptCuePayload } from "@/lib/transcript-vtt";
+
 export function getActiveCaptionText(
 	activeCues: TextTrackCueList | null | undefined,
 ): string {
@@ -20,5 +22,6 @@ export function getActiveCaptionText(
 		}
 	}
 
-	return selectedCue?.text.replace(/<[^>]*>/g, "") ?? "";
+	const text = selectedCue?.text ?? "";
+	return parseTranscriptCuePayload(text)?.text ?? text.replace(/<[^>]*>/g, "");
 }

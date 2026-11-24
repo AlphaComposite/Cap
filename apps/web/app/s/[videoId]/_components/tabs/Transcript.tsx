@@ -22,7 +22,12 @@ import {
 } from "@/actions/videos/translation-languages";
 import { useCurrentUser } from "@/app/Layout/AuthContext";
 import { formatTranscriptAsParagraphs } from "@/lib/transcript-text";
-import { normalizeTranscriptCueText } from "@/lib/transcript-vtt";
+import {
+	escapeTranscriptCueText,
+	formatTranscriptCuePayload,
+	normalizeTranscriptCueText,
+	parseTranscriptCuePayload,
+} from "@/lib/transcript-vtt";
 import type { VideoData } from "../../types";
 import { type CaptionLanguage, useCaptionContext } from "../CaptionContext";
 
@@ -38,9 +43,14 @@ interface TranscriptEntry {
 	text: string;
 	startTime: number;
 	endTime: number;
+	speaker: string | null;
+	marked: boolean;
 }
 
-const parseVTT = (vttContent: string): TranscriptEntry[] => {
+const parseVTT = (
+	vttContent: string,
+	sourceAttribution = false,
+): TranscriptEntry[] => {
 	const lines = vttContent.split("\n");
 	const entries: TranscriptEntry[] = [];
 	let currentEntry: Partial<TranscriptEntry & { startTime: number }> = {};
@@ -125,7 +135,12 @@ const parseVTT = (vttContent: string): TranscriptEntry[] => {
 					? trimmedLine.slice(1, -1)
 					: trimmedLine;
 
-			currentEntry.text = textContent;
+			const payload = parseTranscriptCuePayload(textContent);
+			currentEntry.text = payload?.text ?? textContent;
+			currentEntry.marked = payload !== null;
+			currentEntry.speaker = sourceAttribution
+				? (payload?.speaker ?? null)
+				: null;
 			if (
 				currentEntry.id !== undefined &&
 				currentEntry.timestamp &&
@@ -313,10 +328,10 @@ export const Transcript: React.FC<TranscriptProps> = ({ data, onSeek }) => {
 	useEffect(() => {
 		const vttContent = captionContext.currentVttContent;
 		if (vttContent) {
-			const parsed = parseVTT(vttContent);
+			const parsed = parseVTT(vttContent, selectedLanguage === "original");
 			setTranscriptData(parsed);
 		} else if (transcriptContent && selectedLanguage === "original") {
-			const parsed = parseVTT(transcriptContent);
+			const parsed = parseVTT(transcriptContent, true);
 			setTranscriptData(parsed);
 		}
 	}, [captionContext.currentVttContent, transcriptContent, selectedLanguage]);
@@ -453,9 +468,12 @@ export const Transcript: React.FC<TranscriptProps> = ({ data, onSeek }) => {
 					.padStart(3, "0")}`;
 			};
 
+			const payload = entry.marked
+				? `<c.cap-text>${escapeTranscriptCueText(entry.text)}</c>`
+				: formatTranscriptCuePayload(entry.text);
 			return `${entry.id}\n${formatTime(startSeconds)} --> ${formatTime(
 				endSeconds,
-			)}\n${entry.text}\n`;
+			)}\n${payload}\n`;
 		});
 
 		return vttHeader + vttEntries.join("\n");
@@ -903,7 +921,7 @@ export const Transcript: React.FC<TranscriptProps> = ({ data, onSeek }) => {
 					</div>
 				)}
 				<div className="px-3 py-3">
-					{transcriptData.map((entry) => (
+					{transcriptData.map((entry, index) => (
 						<div
 							key={entry.id}
 							className={`group flex items-start gap-1 rounded-lg px-2 transition-colors ${
@@ -963,6 +981,13 @@ export const Transcript: React.FC<TranscriptProps> = ({ data, onSeek }) => {
 											{entry.timestamp}
 										</span>
 										<span className="min-w-0 flex-1 text-[13px] leading-[22px] text-gray-11">
+											{entry.speaker &&
+												entry.speaker !==
+													transcriptData[index - 1]?.speaker && (
+													<span className="block text-[11px] font-medium text-gray-9">
+														Speaker {entry.speaker}
+													</span>
+												)}
 											{entry.text}
 										</span>
 									</button>

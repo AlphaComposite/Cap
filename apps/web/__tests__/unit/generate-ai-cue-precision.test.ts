@@ -296,6 +296,22 @@ beforeEach(() => {
 });
 
 describe("exact cue display", () => {
+	it("projects marked cues to plain text before AI prompts", async () => {
+		state.transcript =
+			state.transcript?.replace(
+				/^(SYNTHETIC[^\n]*)$/gm,
+				"<v cap-speaker-A>$1 &lt;v cap-speaker-B&gt;literal&lt;/v&gt; &amp;amp;</v>",
+			) ?? null;
+		expect(state.transcript).toContain("<v cap-speaker-A>");
+		await runWorkflow().catch((error: unknown) => error);
+		const prompts = chunkPrompts();
+		expect(prompts.length).toBeGreaterThan(0);
+		for (const prompt of prompts) {
+			expect(prompt).not.toContain("<v cap-speaker-A>");
+			expect(prompt).toContain("<v cap-speaker-B>literal</v> &amp;");
+		}
+	});
+
 	it("renders both chunk openings as absolute seconds the section validator accepts", async () => {
 		await runWorkflow().catch((error: unknown) => error);
 

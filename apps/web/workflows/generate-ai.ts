@@ -40,6 +40,7 @@ import {
 import { mapGeneratedSourceChapters } from "@/lib/ai-generated-chapter-clock";
 import { isInstantFinishEnabledForOwner } from "@/lib/instant-finish-flag";
 import { enqueueVideoStorageNameSync } from "@/lib/sync-video-storage-names";
+import { projectTranscriptCueText } from "@/lib/transcript-vtt";
 import { parseRenderedCanonicalSpec } from "@/lib/video-edits";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import { runWorkflowPromise } from "@/lib/workflow-runtime";
@@ -822,7 +823,11 @@ function parseVttWithTimestamps(vttContent: string): VttSegment[] {
 			!/^\d+$/.test(line) &&
 			!line.includes("-->")
 		) {
-			segments.push({ start: currentStart, end: currentEnd, text: line });
+			segments.push({
+				start: currentStart,
+				end: currentEnd,
+				text: projectTranscriptCueText(line),
+			});
 		}
 	}
 

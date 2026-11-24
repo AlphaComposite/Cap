@@ -1,5 +1,6 @@
 import type { VideoEditRange, VideoEditSpec } from "@cap/database/types";
 import { formatToWebVTT } from "@/lib/transcribe-utils";
+import { validateTranscriptSpeaker } from "@/lib/transcript-vtt";
 import {
 	getEditSpecOutputDuration,
 	mapSourceTimeToOutputTime,
@@ -171,7 +172,7 @@ export function createEditTranscript(
 					rawConfidence === null
 						? null
 						: Math.min(Math.max(rawConfidence, 0), 1),
-				speaker: nullableString(word.speaker),
+				speaker: validateTranscriptSpeaker(word.speaker),
 				channel: nullableString(word.channel),
 			};
 		})
@@ -258,7 +259,7 @@ export function parseEditTranscript(value: string): EditTranscript | null {
 				Number.isFinite(value.confidence)
 					? Math.min(Math.max(value.confidence, 0), 1)
 					: null,
-			speaker: nullableString(value.speaker),
+			speaker: validateTranscriptSpeaker(value.speaker),
 			channel: nullableString(value.channel),
 		});
 	}
@@ -377,6 +378,7 @@ export function editTranscriptWordsToCaptionVtt(
 				text: word.text,
 				start: word.startMs,
 				end: word.endMs,
+				speaker: word.speaker,
 			})),
 	});
 }

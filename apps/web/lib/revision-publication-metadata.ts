@@ -290,6 +290,7 @@ function captionsVtt(
 			text: word.text,
 			start: word.startMs,
 			end: word.endMs,
+			speaker: word.speaker,
 		})),
 	}).replace(/^WEBVTT\n\n/, "");
 	return [

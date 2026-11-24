@@ -12,6 +12,10 @@ import { runWithAiProviders } from "@/lib/ai/run";
 import { isRateLimited, RATE_LIMIT_IDS } from "@/lib/rate-limit";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
+import {
+	parseTranscriptCuePayload,
+	stripTranscriptVoiceAnnotations,
+} from "@/lib/transcript-vtt";
 import { decodeStorageVideo } from "@/lib/video-storage";
 import {
 	type LanguageCode,
@@ -141,6 +145,12 @@ async function translateVttContent(
 	targetLanguage: LanguageCode,
 ): Promise<string | null> {
 	const targetLanguageName = SUPPORTED_LANGUAGES[targetLanguage];
+	const marked = vttContent
+		.split(/\r?\n/)
+		.some((line) => parseTranscriptCuePayload(line.trim()) !== null);
+	const textVtt = marked
+		? stripTranscriptVoiceAnnotations(vttContent)
+		: vttContent;
 
 	const prompt = `Translate the following WebVTT subtitle file to ${targetLanguageName}.
 
@@ -155,7 +165,7 @@ IMPORTANT RULES:
 
 VTT content to translate:
 
-${vttContent}`;
+${textVtt}`;
 
 	try {
 		return await runWithAiProviders("generation", async (selection) => {
@@ -172,7 +182,9 @@ ${vttContent}`;
 				throw new Error("translation response did not contain WEBVTT");
 			}
 
-			return response.text.trim();
+			return marked
+				? stripTranscriptVoiceAnnotations(response.text.trim())
+				: response.text.trim();
 		});
 	} catch (error) {
 		console.error("[translateVttContent] Translation error:", error);

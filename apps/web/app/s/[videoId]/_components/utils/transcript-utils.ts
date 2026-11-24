@@ -1,4 +1,4 @@
-// Utility functions for transcript formatting
+import { projectTranscriptCueText } from "@/lib/transcript-vtt";
 
 export interface TranscriptEntry {
 	id: number;
@@ -156,7 +156,7 @@ export const parseVTT = (vttContent: string): TranscriptEntry[] => {
 					? trimmedLine.slice(1, -1)
 					: trimmedLine;
 
-			currentEntry.text = textContent;
+			currentEntry.text = projectTranscriptCueText(textContent);
 			if (
 				currentEntry.id !== undefined &&
 				currentEntry.timestamp &&

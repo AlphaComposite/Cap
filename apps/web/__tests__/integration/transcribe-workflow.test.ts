@@ -236,6 +236,9 @@ describe("transcribeVideoWorkflow", () => {
 			disfluencies: true,
 			speech_models: ["universal-3-5-pro", "universal-2"],
 		});
+		expect(mocks.transcribe.mock.calls[0]?.[0]).not.toHaveProperty(
+			"speaker_labels",
+		);
 
 		const writes = new Map(
 			mocks.putObject.mock.calls.map((call) => [call[0] as string, call[1]]),
@@ -402,6 +405,10 @@ describe("backfillEditTranscriptWorkflow", () => {
 		expect(result.success).toBe(true);
 		expect(mocks.getInternalSignedObjectUrl.mock.calls[0]?.[0]).toBe(
 			"user-456/video-123/original.mp4",
+		);
+		expect(mocks.transcribe).toHaveBeenCalledOnce();
+		expect(mocks.transcribe.mock.calls[0]?.[0]).not.toHaveProperty(
+			"speaker_labels",
 		);
 
 		const { parseEditTranscript } = await import("@/lib/edit-transcript");
