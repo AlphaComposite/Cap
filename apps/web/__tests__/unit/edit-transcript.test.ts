@@ -1,5 +1,5 @@
 import type { VideoEditSpec } from "@cap/database/types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	createEditTranscript,
 	editTranscriptWordsToCaptionVtt,
@@ -464,6 +464,55 @@ describe("edit transcript", () => {
 });
 
 describe("remapEditTranscriptThroughSpec", () => {
+	it("remaps labeled words without repeating the source-time lookup", async () => {
+		const videoEdits = await import("@/lib/video-edits");
+		const lookup = vi.spyOn(videoEdits, "mapSourceTimeToOutputTime");
+		try {
+			const transcript = createEditTranscript(
+				{
+					words: [
+						{ text: "first", start: 900, end: 1_020, speaker: "A" },
+						{ text: "cut", start: 1_100, end: 1_300 },
+						{ text: "last", start: 2_960, end: 3_140, speaker: "B" },
+					],
+				},
+				4_000,
+			);
+			const remapped = remapEditTranscriptThroughSpec(
+				transcript,
+				editSpec(4, [
+					{ start: 0.125, end: 1 },
+					{ start: 2, end: 2.4 },
+					{ start: 3, end: 4 },
+				]),
+			);
+			expect(remapped).toEqual({
+				...transcript,
+				durationMs: 2_275,
+				words: [
+					{ ...transcript.words[0], startMs: 775, endMs: 875 },
+					{ ...transcript.words[2], startMs: 1_275, endMs: 1_415 },
+				],
+			});
+			expect(lookup).not.toHaveBeenCalled();
+		} finally {
+			lookup.mockRestore();
+		}
+	});
+
+	it("drops words when the source duration overflows during normalization", () => {
+		const transcript = createEditTranscript(
+			{ words: [{ text: "word", start: 200, end: 300 }] },
+			1_000,
+		);
+		expect(
+			remapEditTranscriptThroughSpec(
+				transcript,
+				editSpec(Number.MAX_VALUE, [{ start: 0, end: 1 }]),
+			),
+		).toEqual({ ...transcript, words: [] });
+	});
+
 	it("leaves word timing untouched for an identity spec", () => {
 		const transcript = createEditTranscript(assemblyAIEditResponse, 4_000);
 		const remapped = remapEditTranscriptThroughSpec(

@@ -2,9 +2,10 @@ import type { VideoEditRange, VideoEditSpec } from "@cap/database/types";
 import { formatToWebVTT } from "@/lib/transcribe-utils";
 import { validateTranscriptSpeaker } from "@/lib/transcript-vtt";
 import {
+	clampEditTime,
 	getEditSpecOutputDuration,
-	mapSourceTimeToOutputTime,
 	normalizeKeepRanges,
+	roundEditTime,
 } from "@/lib/video-edits";
 
 /**
@@ -301,20 +302,23 @@ export function remapEditTranscriptThroughSpec(
 		editSpec.sourceDuration,
 	);
 	const durationMs = Math.round(getEditSpecOutputDuration(spec) * 1000);
-	const keepRanges = spec.keepRanges;
+	// Preserve the old lookup's rejection of a duration that overflowed rounding.
+	const keepRanges = Number.isFinite(spec.sourceDuration)
+		? spec.keepRanges
+		: [];
 	const words: EditTranscriptWord[] = [];
 	let rangeIndex = 0;
+	let outputOffset = 0;
 
 	for (const word of transcript.words) {
 		const midpointSeconds = (word.startMs + word.endMs) / 2000;
-		while (
-			rangeIndex < keepRanges.length &&
-			(keepRanges[rangeIndex]?.end ?? 0) < midpointSeconds
-		) {
+		let range = keepRanges[rangeIndex];
+		while (range && range.end < midpointSeconds) {
+			outputOffset += range.end - range.start;
 			rangeIndex++;
+			range = keepRanges[rangeIndex];
 		}
 
-		const range = keepRanges[rangeIndex];
 		if (
 			!range ||
 			midpointSeconds < range.start ||
@@ -331,11 +335,15 @@ export function remapEditTranscriptThroughSpec(
 			Math.max(word.endMs / 1000, range.start),
 			range.end,
 		);
-		const outputStartSeconds = mapSourceTimeToOutputTime(
-			clampedStartSeconds,
-			spec,
+		if (!Number.isFinite(clampedStartSeconds)) continue;
+		const outputStartSeconds = roundEditTime(
+			outputOffset +
+				clampEditTime(
+					clampedStartSeconds - range.start,
+					0,
+					range.end - range.start,
+				),
 		);
-		if (outputStartSeconds === null) continue;
 
 		const startMs = clampMilliseconds(outputStartSeconds * 1000, durationMs);
 		const endMs = Math.max(
