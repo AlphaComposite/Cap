@@ -33,6 +33,7 @@ const videoRow = vi.hoisted(() => ({
 	id: "video-123",
 	ownerId: "user-456",
 	bucket: null as string | null,
+	storageIntegrationId: null as string | null,
 	duration: 4,
 	createdAt: new Date(),
 	settings: null as { disableTranscript: boolean } | null,
@@ -109,6 +110,9 @@ vi.mock("@cap/database", () => ({
 					[
 						{
 							id: videoRow.id,
+							ownerId: videoRow.ownerId,
+							bucket: videoRow.bucket,
+							storageIntegrationId: videoRow.storageIntegrationId,
 							transcriptionStatus: videoRow.transcriptionStatus,
 						},
 					],
@@ -121,8 +125,8 @@ vi.mock("@cap/database", () => ({
 							videoId: videoRow.id,
 							ownerId: videoRow.ownerId,
 							transcriptionStatus: videoRow.transcriptionStatus,
-							bucket: null,
-							storageIntegrationId: null,
+							bucket: videoRow.bucket,
+							storageIntegrationId: videoRow.storageIntegrationId,
 							sourceKey: state.sourceKey,
 							sourceSha256: state.sourceSha256,
 							sourceType: videoRow.source.type,
@@ -437,7 +441,9 @@ describe("transcribeVideoWorkflow", () => {
 	beforeEach(() => {
 		mocks.updates.length = 0;
 		videoRow.transcriptionStatus = "PROCESSING";
+		videoRow.ownerId = "user-456";
 		videoRow.bucket = null;
+		videoRow.storageIntegrationId = null;
 		videoRow.settings = null;
 		state.editRows = [];
 		state.speakerLabels = false;
@@ -1290,7 +1296,7 @@ describe("transcribeVideoWorkflow", () => {
 		expect(mocks.submit).toHaveBeenCalledOnce();
 		const lock = state.queries.findIndex(
 			(query) =>
-				query.includes("SELECT id, transcriptionStatus FROM videos") &&
+				query.includes("SELECT id, transcriptionStatus,") &&
 				query.includes("FOR UPDATE"),
 		);
 		const insert = state.queries.findIndex((query) =>
@@ -1444,6 +1450,85 @@ describe("transcribeVideoWorkflow", () => {
 				"user-456/video-123/audio-temp-speaker.mp3",
 			);
 			expect(mocks.getInternalSignedObjectUrl).not.toHaveBeenCalled();
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["ownerId", "bucket", "storageIntegrationId"] as const)(
+		"does not reopen an accepted ID when %s changes before admission locks the row",
+		async (field) => {
+			const { submitSpeakerLabeledTranscription, transcribeVideoWorkflow } =
+				await import("@/workflows/transcribe");
+			await submitSpeakerLabeledTranscription(
+				"https://storage.test/audio",
+				"auto",
+				...(await speakerSubmitBinding()),
+			);
+			videoRow.transcriptionStatus = "ERROR";
+			state.claimRead = async () => {
+				videoRow[field] = "changed";
+			};
+			await expect(
+				transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: "user-456",
+					aiGenerationEnabled: false,
+				}),
+			).rejects.toThrow("recording storage changed");
+			expect(videoRow.transcriptionStatus).toBe("ERROR");
+			expect(mocks.updates).toHaveLength(0);
+			expect(mocks.deleteObject).not.toHaveBeenCalled();
+			expect(mocks.waitUntilReady).not.toHaveBeenCalled();
+			expect(mocks.putObject).not.toHaveBeenCalled();
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		"complete",
+		"completed during admission",
+		"moved bucket",
+		"wrong owner",
+	])(
+		"recovers only bound speaker audio after completion: %s",
+		async (scenario) => {
+			const { submitSpeakerLabeledTranscription, transcribeVideoWorkflow } =
+				await import("@/workflows/transcribe");
+			await submitSpeakerLabeledTranscription(
+				"https://storage.test/audio",
+				"auto",
+				...(await speakerSubmitBinding()),
+			);
+			if (scenario === "completed during admission") {
+				state.claimRead = async () => {
+					videoRow.transcriptionStatus = "COMPLETE";
+				};
+			} else {
+				videoRow.transcriptionStatus = "COMPLETE";
+			}
+			if (scenario === "moved bucket") videoRow.bucket = "other-bucket";
+			const resumed = transcribeVideoWorkflow({
+				videoId: videoRow.id,
+				userId: scenario === "wrong owner" ? "other-user" : videoRow.ownerId,
+				aiGenerationEnabled: true,
+			});
+			if (scenario === "moved bucket" || scenario === "wrong owner") {
+				await expect(resumed).rejects.toThrow("changed");
+				expect(mocks.deleteObject).not.toHaveBeenCalled();
+			} else {
+				await expect(resumed).resolves.toMatchObject({ success: true });
+				expect(mocks.deleteObject).toHaveBeenCalledExactlyOnceWith(
+					"user-456/video-123/audio-temp-speaker.mp3",
+				);
+			}
+			expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+			expect(mocks.updates).toHaveLength(0);
+			expect(mocks.getInternalSignedObjectUrl).not.toHaveBeenCalled();
+			expect(mocks.waitUntilReady).not.toHaveBeenCalled();
+			expect(mocks.putObject).not.toHaveBeenCalled();
+			expect(mocks.startAiGeneration).not.toHaveBeenCalled();
 			expect(mocks.submit).toHaveBeenCalledOnce();
 			expect(mocks.transcribe).not.toHaveBeenCalled();
 		},

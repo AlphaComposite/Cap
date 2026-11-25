@@ -100,6 +100,7 @@ interface BackfillEditTranscriptPayload {
 }
 
 const EDIT_TRANSCRIPT_TEMP_AUDIO_FILENAME = "audio-edit-transcript-v3-temp.mp3";
+const SPEAKER_LABEL_TEMP_AUDIO_FILENAME = "audio-temp-speaker.mp3";
 
 interface TranscriptionArtifacts {
 	vtt: string;
@@ -123,6 +124,15 @@ export async function transcribeVideoWorkflow(
 	}
 
 	if (videoData.speakerLabelCompleted) {
+		// Completion can persist before the original run has deleted its audio.
+		if (videoData.speakerLabelTranscriptId) {
+			await cleanupTempAudio(
+				videoId,
+				userId,
+				videoData.video,
+				SPEAKER_LABEL_TEMP_AUDIO_FILENAME,
+			);
+		}
 		return {
 			success: true,
 			message: "Speaker-labeled transcription already completed",
@@ -136,7 +146,7 @@ export async function transcribeVideoWorkflow(
 	// An accepted ID no longer needs the uploaded audio, even after a crash.
 	const tempAudioFilename =
 		videoData.speakerLabelReservationToken || videoData.speakerLabelTranscriptId
-			? "audio-temp-speaker.mp3"
+			? SPEAKER_LABEL_TEMP_AUDIO_FILENAME
 			: undefined;
 	const ownsTempAudio =
 		!videoData.speakerLabels || tempAudioFilename !== undefined;
@@ -388,52 +398,18 @@ async function validateVideo(
 	let existingClaim = await loadSpeakerLabelClaim(videoId);
 	const speakerLabels =
 		existingClaim !== null || (selected && !legacyAdmission);
-	if (speakerLabels && result.video.transcriptionStatus === "COMPLETE") {
-		if (!existingClaim?.transcriptId) {
-			throw new FatalError(
-				"Speaker-label canary cannot backfill an existing transcript",
-			);
-		}
-		return {
-			video: result.video,
-			transcriptionDisabled,
-			aiGenerationLanguage: parseAiGenerationLanguage(
-				result.orgSettings?.aiGenerationLanguage,
-			),
-			speakerLabels,
-			speakerLabelCompleted: true,
-		};
-	}
-	if (speakerLabels && (earlyFromSegments || transcriptionDisabled)) {
-		throw new FatalError(
-			"Speaker-label claim holds this recording; reconciliation required",
-		);
-	}
 	if (speakerLabels && result.video.ownerId !== userId) {
 		throw new FatalError("Speaker-label recording owner changed");
-	}
-	if (existingClaim && !existingClaim.transcriptId) {
-		throw new FatalError(
-			"Speaker-labeled submission outcome unknown; do not resubmit",
-		);
 	}
 	let speakerLabelCompleted = false;
 	if (speakerLabels) {
 		const admission = await reserveSpeakerLabelRecording(
 			result.video,
 			parseAiGenerationLanguage(result.orgSettings?.aiGenerationLanguage),
+			earlyFromSegments || transcriptionDisabled,
 		);
 		existingClaim = admission.claim;
 		speakerLabelCompleted = admission.completed;
-		if (
-			existingClaim.state === "accepted" &&
-			(existingClaim.ownerId !== result.video.ownerId ||
-				existingClaim.bucket !== (result.video.bucket ?? null) ||
-				existingClaim.storageIntegrationId !==
-					(result.video.storageIntegrationId ?? null))
-		) {
-			throw new FatalError("Speaker-label recording storage changed");
-		}
 	} else {
 		const transition = await db()
 			.update(videos)

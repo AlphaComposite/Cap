@@ -57,7 +57,8 @@ function rows(result: unknown): Record<string, unknown>[] {
 async function lockRecording(videoId: string, executor: Executor) {
 	const found = rows(
 		await executor.execute(sql`
-		SELECT id, transcriptionStatus FROM videos WHERE id = ${videoId} FOR UPDATE
+		SELECT id, transcriptionStatus, ownerId, bucket, storageIntegrationId
+		FROM videos WHERE id = ${videoId} FOR UPDATE
 	`),
 	);
 	if (
@@ -194,6 +195,7 @@ export async function reserveSpeakerLabelRecording(
 		storageIntegrationId?: string | null;
 	},
 	language: AiGenerationLanguage,
+	completedOnly = false,
 ) {
 	return db().transaction(async (tx) => {
 		// Outbox has no unique job key; every claimant locks the same parent first.
@@ -204,6 +206,17 @@ export async function reserveSpeakerLabelRecording(
 				"Legacy transcription holds this recording; no label admission",
 			);
 		}
+		if (
+			existing?.state === "accepted" &&
+			(existing.ownerId !== current.ownerId ||
+				existing.bucket !== current.bucket ||
+				existing.storageIntegrationId !== current.storageIntegrationId ||
+				existing.ownerId !== video.ownerId ||
+				existing.bucket !== (video.bucket ?? null) ||
+				existing.storageIntegrationId !== (video.storageIntegrationId ?? null))
+		) {
+			throw new FatalError("Speaker-label recording storage changed");
+		}
 		if (current.transcriptionStatus === "COMPLETE") {
 			if (existing?.state !== "accepted") {
 				throw new FatalError(
@@ -211,6 +224,11 @@ export async function reserveSpeakerLabelRecording(
 				);
 			}
 			return { claim: existing, completed: true };
+		}
+		if (completedOnly) {
+			throw new FatalError(
+				"Speaker-label claim holds this recording; reconciliation required",
+			);
 		}
 		if (existing && existing.state !== "accepted") {
 			throw new FatalError(
