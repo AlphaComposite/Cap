@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { db } from "@cap/database";
 import { serverEnv } from "@cap/env";
 import type { AiGenerationLanguage } from "@cap/web-domain";
@@ -93,12 +94,33 @@ function requireOneWrite(result: unknown) {
 	}
 }
 
+function speakerLabelSelection() {
+	const {
+		CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY: startup,
+		CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY_FILE: file,
+	} = serverEnv();
+	if (!file) return startup;
+	if (startup) throw new FatalError("Conflicting speaker-label selectors");
+	let selection: string;
+	try {
+		selection = readFileSync(file, "utf8");
+	} catch (error) {
+		// An empty selector directory is the normal state before the operator binds.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw new FatalError("Cannot read speaker-label selector");
+	}
+	if (!/^[0-9a-z]{15}\/[0-9a-z]{15}\/[0-9]{13}$/.test(selection)) {
+		throw new FatalError("Invalid speaker-label selector");
+	}
+	return selection;
+}
+
 export function isSpeakerLabelCanary(video: {
 	id: string;
 	ownerId: string;
 	createdAt: Date;
 }): boolean {
-	const selection = serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY;
+	const selection = speakerLabelSelection();
 	if (!selection) return false;
 	const [ownerId, videoId, since] = selection.split("/");
 	return (
@@ -375,10 +397,7 @@ export async function assertNoSpeakerLabelClaim(videoId: string) {
 		}
 		// This fence only excludes labels; legacy step retries keep their existing semantics.
 		if (await hasLegacyTranscriptAdmission(videoId, tx)) return;
-		if (
-			serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY?.split("/")[1] ===
-			videoId
-		) {
+		if (speakerLabelSelection()?.split("/")[1] === videoId) {
 			throw new FatalError(
 				"Speaker-label claim holds this recording; no fallback submission",
 			);

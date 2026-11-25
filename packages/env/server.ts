@@ -109,6 +109,11 @@ function createServerEnv() {
 				.describe(
 					"One new synthetic recording: ownerId/videoId/createdAfterEpochMs",
 				),
+			CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY_FILE: z
+				.string()
+				.startsWith("/")
+				.optional()
+				.describe("Private write-once selector file for an isolated recording"),
 			ANTHROPIC_API_KEY: z.string().optional().describe("AI chat"),
 			OPENAI_API_KEY: z.string().optional().describe("AI summaries"),
 			GROQ_API_KEY: z.string().optional().describe("AI summaries"),
@@ -222,6 +227,8 @@ function createServerEnv() {
 			CAP_TRANSCRIPT_SPEAKER_LABELS: process.env.CAP_TRANSCRIPT_SPEAKER_LABELS,
 			CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY:
 				process.env.CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY,
+			CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY_FILE:
+				process.env.CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY_FILE,
 			ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 			OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 			GROQ_API_KEY: process.env.GROQ_API_KEY,

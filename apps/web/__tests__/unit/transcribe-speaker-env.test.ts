@@ -44,6 +44,17 @@ it("accepts only an exact new-recording canary, not global activation", async ()
 	expect(serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS).toBe(false);
 });
 
+it("reads the private selector path without enabling global labels", async () => {
+	const key = "CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY_FILE";
+	process.env[key] = "relative/selection";
+	vi.spyOn(console, "error").mockImplementation(() => {});
+	const { serverEnv } = await import("../../../../packages/env/server");
+	expect(() => serverEnv()).toThrow();
+	process.env[key] = "/private-test/selection";
+	expect(serverEnv()[key]).toBe("/private-test/selection");
+	expect(serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS).toBe(false);
+});
+
 it.each(["*", "owner/*", "000000000000001/000000000000002/not-a-time"])(
 	"rejects unbounded canary selection %s",
 	async (selection) => {
