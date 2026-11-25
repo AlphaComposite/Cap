@@ -316,7 +316,7 @@ export function TranscriptSidebar({
 		endIndex: number;
 	} | null>(null);
 	const [searchQuery, setSearchQuery] = useState("");
-	const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+	const [searchMatchIndex, setSearchMatchIndex] = useState(-1);
 	const [previewFillers, setPreviewFillers] = useState(false);
 	const silenceToggleId = useId();
 	const fillersToggleId = useId();
@@ -655,9 +655,14 @@ export function TranscriptSidebar({
 	const moveSearchMatch = useCallback(
 		(direction: -1 | 1) => {
 			if (searchMatches.length === 0) return;
-			const next =
-				(searchMatchIndex + direction + searchMatches.length) %
-				searchMatches.length;
+			let next: number;
+			if (searchMatchIndex === -1) {
+				next = direction === 1 ? 0 : searchMatches.length - 1;
+			} else {
+				next =
+					(searchMatchIndex + direction + searchMatches.length) %
+					searchMatches.length;
+			}
 			setSearchMatchIndex(next);
 			const wordIndex = searchMatches[next];
 			if (wordIndex === undefined) return;
@@ -895,7 +900,7 @@ export function TranscriptSidebar({
 						value={searchQuery}
 						onChange={(event) => {
 							setSearchQuery(event.target.value);
-							setSearchMatchIndex(0);
+							setSearchMatchIndex(-1);
 						}}
 						onKeyDown={(event) => {
 							if (event.key === "Enter") {
@@ -907,7 +912,7 @@ export function TranscriptSidebar({
 								event.preventDefault();
 								event.stopPropagation();
 								setSearchQuery("");
-								setSearchMatchIndex(0);
+								setSearchMatchIndex(-1);
 							}
 						}}
 						placeholder="Search transcript"
@@ -916,8 +921,10 @@ export function TranscriptSidebar({
 					{searchQuery && (
 						<>
 							<span className="shrink-0 text-[10px] font-medium tabular-nums text-gray-9">
-								{searchMatches.length === 0 ? 0 : searchMatchIndex + 1}/
-								{searchMatches.length}
+								{searchMatches.length === 0
+									? 0
+									: Math.max(searchMatchIndex + 1, 1)}
+								/{searchMatches.length}
 							</span>
 							<button
 								type="button"
