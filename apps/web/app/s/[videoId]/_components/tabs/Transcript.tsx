@@ -450,16 +450,13 @@ export const Transcript: React.FC<TranscriptProps> = ({ data, onSeek }) => {
 	const formatTranscriptAsVTT = (entries: TranscriptEntry[]): string => {
 		const vttHeader = "WEBVTT\n\n";
 
-		const vttEntries = entries.map((entry, index) => {
-			const startSeconds = entry.startTime;
-			const nextEntry = entries[index + 1];
-			const endSeconds = nextEntry ? nextEntry.startTime : startSeconds + 3;
-
+		const vttEntries = entries.map((entry) => {
 			const formatTime = (seconds: number): string => {
-				const hours = Math.floor(seconds / 3600);
-				const minutes = Math.floor((seconds % 3600) / 60);
-				const secs = Math.floor(seconds % 60);
-				const milliseconds = Math.floor((seconds % 1) * 1000);
+				const totalMilliseconds = Math.round(seconds * 1000);
+				const hours = Math.floor(totalMilliseconds / 3_600_000);
+				const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000);
+				const secs = Math.floor((totalMilliseconds % 60_000) / 1000);
+				const milliseconds = totalMilliseconds % 1000;
 
 				return `${hours.toString().padStart(2, "0")}:${minutes
 					.toString()
@@ -471,8 +468,8 @@ export const Transcript: React.FC<TranscriptProps> = ({ data, onSeek }) => {
 			const payload = entry.marked
 				? `<c.cap-text>${escapeTranscriptCueText(entry.text)}</c>`
 				: formatTranscriptCuePayload(entry.text);
-			return `${entry.id}\n${formatTime(startSeconds)} --> ${formatTime(
-				endSeconds,
+			return `${entry.id}\n${formatTime(entry.startTime)} --> ${formatTime(
+				entry.endTime,
 			)}\n${payload}\n`;
 		});
 
