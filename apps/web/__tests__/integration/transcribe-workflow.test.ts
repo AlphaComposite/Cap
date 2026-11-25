@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 	deleteObject: vi.fn(),
 	getInternalSignedObjectUrl: vi.fn(),
 	startAiGeneration: vi.fn(),
+	probeVideo: vi.fn(),
 	updates: [] as Record<string, unknown>[],
 }));
 
@@ -33,7 +34,7 @@ const videoRow = vi.hoisted(() => ({
 	ownerId: "user-456",
 	duration: 4,
 	createdAt: new Date(),
-	settings: null,
+	settings: null as { disableTranscript: boolean } | null,
 	source: { type: "webMP4" },
 	isScreenshot: false,
 	transcriptionStatus: "COMPLETE" as string | null,
@@ -53,6 +54,7 @@ const state = vi.hoisted(() => ({
 	claim: null as Record<string, unknown> | null,
 	legacy: false,
 	claimRead: null as null | (() => Promise<void>),
+	afterValidation: null as null | (() => void),
 	parentResult: undefined as unknown,
 	writeResult: undefined as unknown,
 	failPersist: false,
@@ -218,6 +220,11 @@ vi.mock("@cap/database", () => ({
 							videoRow.transcriptionStatus = values.transcriptionStatus as
 								| string
 								| null;
+						if (values.transcriptionStatus === "PROCESSING") {
+							const hook = state.afterValidation;
+							state.afterValidation = null;
+							hook?.();
+						}
 						return [{ affectedRows: 1 }];
 					},
 				};
@@ -243,7 +250,9 @@ vi.mock("workflow", async () => {
 	const { RetryableError } =
 		await vi.importActual<typeof import("workflow")>("workflow");
 	return {
-		FatalError: runInNewContext("(class FatalError extends Error {})"),
+		FatalError: runInNewContext(
+			"(class FatalError extends Error { name = 'FatalError'; fatal = true; })",
+		),
 		RetryableError,
 	};
 });
@@ -287,13 +296,7 @@ vi.mock("@/lib/video-storage", () => ({
 
 vi.mock("@/lib/media-client", () => ({
 	isMediaServerConfigured: () => true,
-	probeVideoViaMediaServer: async () => ({
-		audioCodec: "aac",
-		videoCodec: "h264",
-		duration: 4,
-		audioChannels: 2,
-		sampleRate: 48_000,
-	}),
+	probeVideoViaMediaServer: mocks.probeVideo,
 	extractAudioViaMediaServer: async () => Buffer.from("audio"),
 	checkHasAudioTrackViaMediaServer: async () => true,
 }));
@@ -357,6 +360,7 @@ async function stepRuntime(loseCompletion = false) {
 		events: {
 			create: vi.fn(async (_runId: string, event: (typeof events)[number]) => {
 				if (loseCompletion && event.eventType === "step_completed") {
+					loseCompletion = false;
 					throw new Error("event storage outage after acceptance");
 				}
 				events.push(event);
@@ -432,12 +436,14 @@ describe("transcribeVideoWorkflow", () => {
 	beforeEach(() => {
 		mocks.updates.length = 0;
 		videoRow.transcriptionStatus = "PROCESSING";
+		videoRow.settings = null;
 		state.editRows = [];
 		state.speakerLabels = false;
 		mocks.submit.mockReset();
 		state.claim = null;
 		state.legacy = false;
 		state.claimRead = null;
+		state.afterValidation = null;
 		state.failPersist = false;
 		state.parentResult = undefined;
 		state.writeResult = undefined;
@@ -448,6 +454,8 @@ describe("transcribeVideoWorkflow", () => {
 		state.queries = [];
 		state.transaction = Promise.resolve();
 		mocks.waitUntilReady.mockReset();
+		mocks.probeVideo.mockReset();
+		mocks.probeVideo.mockResolvedValue({ audioCodec: "aac" });
 		mocks.submit.mockResolvedValue({ id: "labeled-job" });
 		mocks.waitUntilReady.mockResolvedValue({
 			...assemblyAIEditResponse,
@@ -485,6 +493,215 @@ describe("transcribeVideoWorkflow", () => {
 			pollingInterval: 1000,
 		});
 	});
+
+	it.each([false, true])(
+		"marks a disabled transcript SKIPPED only while PROCESSING (completed late=%s)",
+		async (completed) => {
+			videoRow.settings = { disableTranscript: true };
+			state.afterValidation = () => {
+				if (completed) videoRow.transcriptionStatus = "COMPLETE";
+			};
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			await expect(
+				transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: true,
+				}),
+			).resolves.toMatchObject({ message: "Transcription disabled - skipped" });
+			expect(videoRow.transcriptionStatus).toBe(
+				completed ? "COMPLETE" : "SKIPPED",
+			);
+			expect(mocks.probeVideo).not.toHaveBeenCalled();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+			expect(mocks.submit).not.toHaveBeenCalled();
+			expect(mocks.putObject).not.toHaveBeenCalled();
+			expect(mocks.deleteObject).not.toHaveBeenCalled();
+			expect(mocks.startAiGeneration).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		"null extraction",
+		"legacy no spoken audio",
+		"labeled no spoken audio",
+	])("preserves a completion after validation before late %s", async (path) => {
+		state.speakerLabels = path === "labeled no spoken audio";
+		if (path === "null extraction") {
+			mocks.probeVideo.mockImplementationOnce(async () => {
+				videoRow.transcriptionStatus = "COMPLETE";
+				return { audioCodec: null };
+			});
+		} else {
+			const provider = state.speakerLabels
+				? mocks.waitUntilReady
+				: mocks.transcribe;
+			provider.mockImplementationOnce(async () => {
+				videoRow.transcriptionStatus = "COMPLETE";
+				return { id: "labeled-job", status: "error", error: "no spoken audio" };
+			});
+		}
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		await expect(
+			transcribeVideoWorkflow({
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: true,
+			}),
+		).resolves.toMatchObject({ success: true });
+		expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+		expect(mocks.updates).not.toContainEqual({
+			transcriptionStatus: "NO_AUDIO",
+		});
+		expect(mocks.startAiGeneration).not.toHaveBeenCalled();
+		expect(
+			mocks.putObject.mock.calls.filter(([key]) =>
+				String(key).includes("transcription"),
+			),
+		).toEqual([]);
+		expect(
+			mocks.deleteObject.mock.calls.every(([key]) =>
+				String(key).endsWith("audio-temp.mp3"),
+			),
+		).toBe(true);
+	});
+
+	it.each(["http", "network", "body"])(
+		"the installed handler retries known pre-provider %s failure under the same reservation",
+		async (failure) => {
+			const runtime = await stepRuntime();
+			const { submitSpeakerLabeledTranscription, transcribeVideoWorkflow } =
+				await import("@/workflows/transcribe");
+			const binding = await speakerSubmitBinding();
+			const reservation = structuredClone(state.claim);
+			vi.mocked(fetch).mockImplementationOnce(async () => {
+				if (failure === "network") throw new Error("audio GET outage");
+				if (failure === "http") return new Response(null, { status: 503 });
+				const response = new Response("audio");
+				vi.spyOn(response, "arrayBuffer").mockRejectedValueOnce(
+					new Error("audio body outage"),
+				);
+				return response;
+			});
+			await runtime.register("submit", submitSpeakerLabeledTranscription, [
+				"https://storage.test/audio",
+				"auto",
+				...binding,
+			]);
+			expect(await runtime.deliver("submit")).toEqual({ timeoutSeconds: 1 });
+			expect(state.claim).toEqual(reservation);
+			expect(mocks.submit).not.toHaveBeenCalled();
+			await expect(
+				transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: false,
+				}),
+			).rejects.toThrow("outcome unknown");
+			mocks.submit.mockImplementationOnce(async () => {
+				expect(state.claim).toMatchObject({
+					state: "submitting",
+					token: binding[1],
+				});
+				return { id: "labeled-job" };
+			});
+			await runtime.deliver("submit");
+			expect(await runtime.result("submit")).toBe("labeled-job");
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+		},
+	);
+
+	it("leaves a known failed audio GET reserved and refuses a fresh workflow takeover", async () => {
+		state.speakerLabels = true;
+		const fetcher = vi.mocked(fetch).getMockImplementation();
+		vi.mocked(fetch).mockImplementation(async (url, options) => {
+			if (!options) {
+				expect(state.claim?.state).toBe("reserved");
+				return new Response(null, { status: 503 });
+			}
+			return fetcher ? fetcher(url, options) : new Response("audio");
+		});
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		const payload = {
+			videoId: videoRow.id,
+			userId: videoRow.ownerId,
+			aiGenerationEnabled: false,
+		};
+		await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
+			"audio is unavailable",
+		);
+		expect(state.claim?.state).toBe("reserved");
+		const reservation = structuredClone(state.claim);
+		state.speakerLabels = false;
+		await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
+			"outcome unknown",
+		);
+		expect(state.claim).toEqual(reservation);
+		expect(mocks.submit).not.toHaveBeenCalled();
+		expect(mocks.transcribe).not.toHaveBeenCalled();
+	});
+
+	it("exhausts pre-provider retries without consuming or releasing the reservation", async () => {
+		const runtime = await stepRuntime();
+		const { submitSpeakerLabeledTranscription } = await import(
+			"@/workflows/transcribe"
+		);
+		const binding = await speakerSubmitBinding();
+		const reservation = structuredClone(state.claim);
+		vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 503 }));
+		await runtime.register("submit", submitSpeakerLabeledTranscription, [
+			"https://storage.test/audio",
+			"auto",
+			...binding,
+		]);
+		for (let attempt = 0; attempt < 4; attempt++)
+			await runtime.deliver("submit");
+		expect(
+			runtime.events.filter((event) => event.eventType === "step_retrying"),
+		).toHaveLength(3);
+		expect(runtime.events.at(-1)?.eventType).toBe("step_failed");
+		expect(state.claim).toEqual(reservation);
+		expect(mocks.submit).not.toHaveBeenCalled();
+	});
+
+	it.each(["completion", "source", "token", "owner"])(
+		"revalidates %s after the audio body and before the first provider operation",
+		async (change) => {
+			const { submitSpeakerLabeledTranscription } = await import(
+				"@/workflows/transcribe"
+			);
+			const binding = await speakerSubmitBinding();
+			vi.mocked(fetch).mockImplementationOnce(async () => {
+				const response = new Response("audio");
+				vi.spyOn(response, "arrayBuffer").mockImplementationOnce(async () => {
+					if (change === "completion")
+						videoRow.transcriptionStatus = "COMPLETE";
+					if (change === "source") state.sourceSha256 = "b".repeat(64);
+					if (change === "token")
+						state.claim = {
+							...state.claim,
+							token: "42f78038-50c7-4695-bef5-40842b24e047",
+						};
+					if (change === "owner")
+						state.claim = { ...state.claim, ownerId: "another-owner" };
+					return new ArrayBuffer(8);
+				});
+				return response;
+			});
+			await expect(
+				submitSpeakerLabeledTranscription(
+					"https://storage.test/audio",
+					"auto",
+					...binding,
+				),
+			).rejects.toThrow();
+			expect(state.claim?.state).toBe("reserved");
+			expect(mocks.submit).not.toHaveBeenCalled();
+		},
+	);
 
 	it("uses separate labeled submit and same-job polling when the env gate is mocked open", async () => {
 		state.speakerLabels = true;
@@ -1229,7 +1446,7 @@ describe("transcribeVideoWorkflow", () => {
 			submitSpeakerLabeledTranscription,
 			pollSpeakerLabeledTranscription,
 		} = await import("@/workflows/transcribe");
-		expect(submitSpeakerLabeledTranscription.maxRetries).toBe(0);
+		expect(submitSpeakerLabeledTranscription.maxRetries).toBe(3);
 		await runtime.register("submit", submitSpeakerLabeledTranscription, [
 			"https://storage.test/audio",
 			"auto",
@@ -1264,31 +1481,40 @@ describe("transcribeVideoWorkflow", () => {
 		]);
 	});
 
-	it("the installed step handler never re-executes ambiguous submit on redelivery", async () => {
-		const runtime = await stepRuntime();
-		const { submitSpeakerLabeledTranscription } = await import(
-			"@/workflows/transcribe"
-		);
-		mocks.submit.mockRejectedValueOnce(new Error("acceptance response lost"));
-		await runtime.register("submit", submitSpeakerLabeledTranscription, [
-			"https://storage.test/audio",
-			"auto",
-			...(await speakerSubmitBinding()),
-		]);
-		await runtime.deliver("submit");
-		await runtime.deliver("submit");
-		expect(mocks.submit).toHaveBeenCalledOnce();
-		expect(mocks.waitUntilReady).not.toHaveBeenCalled();
-		expect(mocks.transcribe).not.toHaveBeenCalled();
-		expect(runtime.events.map((event) => event.eventType)).not.toContain(
-			"step_retrying",
-		);
-		expect(runtime.events.map((event) => event.eventType)).toContain(
-			"step_failed",
-		);
-	});
+	it.each([
+		"upload response lost",
+		"acceptance response lost",
+		"accepted ID write outage",
+	])(
+		"the installed step handler never re-executes ambiguous submit on redelivery: %s",
+		async (failure) => {
+			const runtime = await stepRuntime();
+			const { submitSpeakerLabeledTranscription } = await import(
+				"@/workflows/transcribe"
+			);
+			if (failure === "accepted ID write outage") state.failPersist = true;
+			else mocks.submit.mockRejectedValueOnce(new Error(failure));
+			await runtime.register("submit", submitSpeakerLabeledTranscription, [
+				"https://storage.test/audio",
+				"auto",
+				...(await speakerSubmitBinding()),
+			]);
+			await runtime.deliver("submit");
+			await runtime.deliver("submit");
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(state.claim?.state).toBe("submitting");
+			expect(mocks.waitUntilReady).not.toHaveBeenCalled();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+			expect(runtime.events.map((event) => event.eventType)).not.toContain(
+				"step_retrying",
+			);
+			expect(runtime.events.map((event) => event.eventType)).toContain(
+				"step_failed",
+			);
+		},
+	);
 
-	it("the installed step handler fails closed if accepted ID persistence fails", async () => {
+	it("the installed step handler reuses the durable accepted ID after step completion persistence fails", async () => {
 		const runtime = await stepRuntime(true);
 		const { submitSpeakerLabeledTranscription } = await import(
 			"@/workflows/transcribe"
@@ -1301,13 +1527,17 @@ describe("transcribeVideoWorkflow", () => {
 		await expect(runtime.deliver("submit")).rejects.toThrow(
 			"event storage outage",
 		);
+		vi.mocked(fetch).mockRejectedValue(
+			new Error("audio is no longer available"),
+		);
 		await runtime.deliver("submit");
+		expect(await runtime.result("submit")).toBe("labeled-job");
 		expect(mocks.submit).toHaveBeenCalledOnce();
 		expect(mocks.waitUntilReady).not.toHaveBeenCalled();
 		expect(runtime.events.map((event) => event.eventType)).toEqual([
 			"step_started",
 			"step_started",
-			"step_failed",
+			"step_completed",
 		]);
 	});
 

@@ -541,7 +541,12 @@ async function markSkipped(videoId: string): Promise<void> {
 	await db()
 		.update(videos)
 		.set({ transcriptionStatus: "SKIPPED" })
-		.where(eq(videos.id, videoId as Video.VideoId));
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				eq(videos.transcriptionStatus, "PROCESSING"),
+			),
+		);
 	await clearLiveTranscriptFlag(videoId);
 }
 
@@ -551,7 +556,12 @@ async function markNoAudio(videoId: string): Promise<void> {
 	await db()
 		.update(videos)
 		.set({ transcriptionStatus: "NO_AUDIO" })
-		.where(eq(videos.id, videoId as Video.VideoId));
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				eq(videos.transcriptionStatus, "PROCESSING"),
+			),
+		);
 	await clearLiveTranscriptFlag(videoId);
 }
 
@@ -1007,6 +1017,26 @@ export async function submitSpeakerLabeledTranscription(
 	if (!source) {
 		throw new FatalError("Speaker-label source binding required");
 	}
+	const existing = await loadSpeakerLabelClaim(source.videoId);
+	if (existing?.state === "accepted") {
+		const accepted = await reserveSpeakerLabelSubmit(
+			source,
+			language,
+			reservationToken,
+		);
+		if (!accepted.submit && accepted.claim.transcriptId) {
+			return accepted.claim.transcriptId;
+		}
+	}
+
+	const audioResponse = await fetch(audioUrl);
+	if (!audioResponse.ok) {
+		throw new Error("Speaker-labeled transcription audio is unavailable");
+	}
+	const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+	const client = new AssemblyAI({
+		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
+	});
 	const reserved = await reserveSpeakerLabelSubmit(
 		source,
 		language,
@@ -1015,15 +1045,6 @@ export async function submitSpeakerLabeledTranscription(
 	if (!reserved.submit && reserved.claim.transcriptId) {
 		return reserved.claim.transcriptId;
 	}
-
-	const audioResponse = await fetch(audioUrl);
-	if (!audioResponse.ok) {
-		throw new FatalError("Speaker-labeled transcription audio is unavailable");
-	}
-	const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
-	const client = new AssemblyAI({
-		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
-	});
 	try {
 		const transcript = await client.transcripts.submit({
 			audio: audioBuffer,
@@ -1043,7 +1064,7 @@ export async function submitSpeakerLabeledTranscription(
 	}
 }
 
-submitSpeakerLabeledTranscription.maxRetries = 0;
+submitSpeakerLabeledTranscription.maxRetries = 3;
 
 export async function pollSpeakerLabeledTranscription(
 	transcriptId: string,

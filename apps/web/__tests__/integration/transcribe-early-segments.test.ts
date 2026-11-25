@@ -47,7 +47,7 @@ const videoRow = vi.hoisted(() => ({
 	settings: null,
 	source: { type: "desktopSegments" },
 	isScreenshot: false,
-	transcriptionStatus: null,
+	transcriptionStatus: null as string | null,
 	updatedAt: new Date("2026-08-01T00:00:00.000Z"),
 	metadata: {},
 }));
@@ -110,7 +110,9 @@ vi.mock("@cap/database", () => ({
 				}
 				return {
 					leftJoin: () => ({
-						where: async () => [{ video: videoRow, orgSettings: null }],
+						where: async () => [
+							{ video: structuredClone(videoRow), orgSettings: null },
+						],
 					}),
 					where: async () => [videoRow],
 				};
@@ -122,8 +124,48 @@ vi.mock("@cap/database", () => ({
 		},
 		update: () => ({
 			set: (values: Record<string, unknown>) => {
-				mocks.updates.push(values);
-				return { where: async () => [{ affectedRows: 1 }] };
+				return {
+					where: async (condition: unknown) => {
+						const matches = (item: unknown): boolean => {
+							if (!item || typeof item !== "object") return false;
+							if ("conditions" in item && Array.isArray(item.conditions))
+								return item.conditions.every(matches);
+							if (
+								"isNull" in item &&
+								item.isNull === schemaMocks.videos.transcriptionStatus
+							)
+								return videoRow.transcriptionStatus === null;
+							if (
+								"field" in item &&
+								"value" in item &&
+								item.field === schemaMocks.videos.transcriptionStatus
+							)
+								return videoRow.transcriptionStatus === item.value;
+							if (
+								"strings" in item &&
+								Array.isArray(item.strings) &&
+								item.strings.join("").includes("<> 'COMPLETE'")
+							)
+								return videoRow.transcriptionStatus !== "COMPLETE";
+							if (
+								"strings" in item &&
+								Array.isArray(item.strings) &&
+								item.strings
+									.join("")
+									.includes("'$.liveTranscript') IS NOT NULL")
+							)
+								return "liveTranscript" in videoRow.metadata;
+							return true;
+						};
+						if (!matches(condition)) return [{ affectedRows: 0 }];
+						mocks.updates.push(values);
+						if ("transcriptionStatus" in values)
+							videoRow.transcriptionStatus = values.transcriptionStatus as
+								| string
+								| null;
+						return [{ affectedRows: 1 }];
+					},
+				};
 			},
 		}),
 	}),
@@ -244,6 +286,7 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 		state.speakerLabels = false;
 		state.legacy = false;
 		videoRow.duration = null;
+		videoRow.transcriptionStatus = null;
 		videoRow.source = { type: "desktopSegments" };
 		mocks.transcribe.mockReset();
 		mocks.startWorkflow.mockReset();
@@ -565,6 +608,44 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 		expect(mocks.transcribe).not.toHaveBeenCalled();
 		expect(mocks.updates).toContainEqual({ transcriptionStatus: null });
 	});
+
+	it.each(["no-audio", "unavailable"])(
+		"preserves a completion after validation before an early %s result",
+		async (outcome) => {
+			mocks.getObject.mockImplementationOnce(() => {
+				expect(videoRow.transcriptionStatus).toBe("PROCESSING");
+				videoRow.transcriptionStatus = "COMPLETE";
+				return pipeValue(
+					outcome === "unavailable"
+						? Option.none()
+						: Option.some(
+								JSON.stringify({
+									...manifest,
+									audio_init_uploaded: false,
+									audio_segments: [],
+								}),
+							),
+				);
+			});
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			await expect(
+				transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: true,
+					earlyFromSegments: true,
+				}),
+			).resolves.toMatchObject({ success: true });
+			expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+			expect(mocks.updates).toEqual([{ transcriptionStatus: "PROCESSING" }]);
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+			expect(mocks.putObject).not.toHaveBeenCalled();
+			expect(mocks.startWorkflow).not.toHaveBeenCalled();
+			expect(mocks.startAiGeneration).not.toHaveBeenCalled();
+		},
+	);
 
 	it("marks NO_AUDIO when the completed manifest has no audio track", async () => {
 		mocks.getObject.mockImplementation(() =>
