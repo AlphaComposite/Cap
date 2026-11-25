@@ -141,6 +141,13 @@ describe("share transcript timed download", () => {
 		expect(await download()).toBe(mocks.content);
 	});
 
+	it("preserves the end timestamp when the cue has settings", async () => {
+		mocks.content =
+			"WEBVTT\n\n1\n00:00:01.001 --> 00:00:02.125 align:start\nCaption\n";
+		await render();
+		expect(await download()).toContain("00:00:01.001 --> 00:00:02.125\n");
+	});
+
 	it("keeps timings after an owner text edit", async () => {
 		await render();
 		await click('button[aria-label="Edit transcript entry"]');

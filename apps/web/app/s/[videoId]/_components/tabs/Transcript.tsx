@@ -117,7 +117,9 @@ const parseVTT = (
 			if (!startTimeStr || !endTimeStr) continue;
 
 			const startTimestamp = parseTimestamp(startTimeStr);
-			const endTimestamp = parseTimestamp(endTimeStr);
+			const endTimestamp = parseTimestamp(
+				endTimeStr.trim().split(/\s+/, 1)[0] ?? "",
+			);
 			if (startTimestamp) {
 				currentEntry = {
 					id: currentId,
