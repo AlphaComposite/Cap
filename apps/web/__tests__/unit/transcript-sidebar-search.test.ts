@@ -9,7 +9,19 @@ import { TranscriptSidebar } from "@/app/s/[videoId]/edit/TranscriptSidebar";
 const mocks = vi.hoisted(() => ({
 	getEditTranscript: vi.fn(),
 	scrollToIndex: vi.fn(),
+	staleSearch: false,
 }));
+
+vi.mock("react", async (importOriginal) => {
+	const react = await importOriginal<typeof import("react")>();
+	return {
+		...react,
+		useDeferredValue: (value: unknown) => {
+			const deferred = react.useDeferredValue(value);
+			return mocks.staleSearch && value === "between" ? "match" : deferred;
+		},
+	};
+});
 
 vi.mock("@/actions/videos/get-edit-transcript", () => ({
 	getEditTranscript: mocks.getEditTranscript,
@@ -55,7 +67,7 @@ let container: HTMLDivElement;
 let root: Root;
 let video: HTMLVideoElement;
 
-async function enterSearch(query: string, counter = "1/3") {
+async function enterSearch(query: string, counter: string | null = "1/3") {
 	const input = container.querySelector<HTMLInputElement>(
 		'input[placeholder="Search transcript"]',
 	);
@@ -67,7 +79,7 @@ async function enterSearch(query: string, counter = "1/3") {
 		)?.set?.call(input, query);
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 	});
-	expect(container.textContent).toContain(counter);
+	if (counter !== null) expect(container.textContent).toContain(counter);
 	return input;
 }
 
@@ -143,12 +155,20 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	mocks.staleSearch = false;
 	await act(async () => root.unmount());
 	container.remove();
 	vi.unstubAllGlobals();
 });
 
 describe("transcript search navigation", () => {
+	it("seeks the new query immediately even if deferred highlights lag", async () => {
+		await enterSearch("match");
+		mocks.staleSearch = true;
+		await enterSearch("between", null);
+		await pressKey("Enter");
+		expect(video.currentTime).toBe(2);
+	});
 	it("starts forward at the first match, wraps, and keeps source time after cuts", async () => {
 		await enterSearch("match");
 		for (const [time, counter] of [

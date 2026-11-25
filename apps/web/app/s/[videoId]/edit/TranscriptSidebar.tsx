@@ -490,13 +490,21 @@ export function TranscriptSidebar({
 		silencePlan,
 		transcript,
 	]);
-	const searchMatches = useMemo(() => {
-		const query = deferredSearchQuery.trim().toLocaleLowerCase();
-		if (!transcript || !query) return [];
-		return transcript.words.flatMap((word, index) =>
-			word.text.toLocaleLowerCase().includes(query) ? [index] : [],
-		);
-	}, [deferredSearchQuery, transcript]);
+	const findSearchMatches = useCallback(
+		(value: string) => {
+			const query = value.trim().toLocaleLowerCase();
+			if (!transcript || !query) return [];
+			return transcript.words.flatMap((word, index) =>
+				word.text.toLocaleLowerCase().includes(query) ? [index] : [],
+			);
+		},
+		[transcript],
+	);
+	const searchMatches = useMemo(
+		() => findSearchMatches(deferredSearchQuery),
+		[deferredSearchQuery, findSearchMatches],
+	);
+	const searchPending = searchQuery !== deferredSearchQuery;
 	const searchMatchSet = useMemo(() => new Set(searchMatches), [searchMatches]);
 	const groupVirtualizer = useVirtualizer({
 		count: groups.length,
@@ -654,17 +662,18 @@ export function TranscriptSidebar({
 
 	const moveSearchMatch = useCallback(
 		(direction: -1 | 1) => {
-			if (searchMatches.length === 0) return;
+			const matches = searchPending
+				? findSearchMatches(searchQuery)
+				: searchMatches;
+			if (matches.length === 0) return;
 			let next: number;
 			if (searchMatchIndex === -1) {
-				next = direction === 1 ? 0 : searchMatches.length - 1;
+				next = direction === 1 ? 0 : matches.length - 1;
 			} else {
-				next =
-					(searchMatchIndex + direction + searchMatches.length) %
-					searchMatches.length;
+				next = (searchMatchIndex + direction + matches.length) % matches.length;
 			}
 			setSearchMatchIndex(next);
-			const wordIndex = searchMatches[next];
+			const wordIndex = matches[next];
 			if (wordIndex === undefined) return;
 			const groupIndex = groups.findIndex(
 				(group) => wordIndex >= group.startIndex && wordIndex <= group.endIndex,
@@ -684,10 +693,13 @@ export function TranscriptSidebar({
 			seekToWord(wordIndex);
 		},
 		[
+			findSearchMatches,
 			groupVirtualizer,
 			groups,
 			searchMatchIndex,
 			searchMatches,
+			searchPending,
+			searchQuery,
 			seekToWord,
 			updateSelection,
 		],
@@ -930,7 +942,7 @@ export function TranscriptSidebar({
 								type="button"
 								aria-label="Previous search result"
 								onClick={() => moveSearchMatch(-1)}
-								disabled={searchMatches.length === 0}
+								disabled={!searchPending && searchMatches.length === 0}
 								className="inline-flex size-5 shrink-0 items-center justify-center rounded text-gray-9 transition hover:bg-gray-4 hover:text-gray-12 disabled:pointer-events-none disabled:opacity-30"
 							>
 								<ChevronUp className="size-3.5" />
@@ -939,7 +951,7 @@ export function TranscriptSidebar({
 								type="button"
 								aria-label="Next search result"
 								onClick={() => moveSearchMatch(1)}
-								disabled={searchMatches.length === 0}
+								disabled={!searchPending && searchMatches.length === 0}
 								className="inline-flex size-5 shrink-0 items-center justify-center rounded text-gray-9 transition hover:bg-gray-4 hover:text-gray-12 disabled:pointer-events-none disabled:opacity-30"
 							>
 								<ChevronDown className="size-3.5" />
