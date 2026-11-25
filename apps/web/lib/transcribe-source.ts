@@ -4,14 +4,17 @@ import {
 	resolveLegacySourceKey,
 } from "@/lib/source-relocation";
 
+export const SPEAKER_LABEL_TEMP_AUDIO_FILENAME = "audio-temp-speaker.mp3";
+
 export function transcribeTempAudioKey(
 	userId: string,
 	videoId: string,
 	filename: string,
 	env: Record<string, string | undefined> = process.env,
 ): string {
-	// Inventory may finish between audio extraction and the transcription step.
-	return isInstantFinishEnabledForOwner(userId, env)
+	// Speaker recovery must find the same private object after allowlist changes.
+	return filename === SPEAKER_LABEL_TEMP_AUDIO_FILENAME ||
+		isInstantFinishEnabledForOwner(userId, env)
 		? `private/source/${videoId}/${filename}`
 		: `${userId}/${videoId}/${filename}`;
 }

@@ -432,6 +432,7 @@ async function stepRuntime(loseCompletion = false) {
 
 describe("transcribeVideoWorkflow", () => {
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		Reflect.deleteProperty(globalThis, Symbol.for("@workflow/world//cache"));
 		Reflect.deleteProperty(
 			globalThis,
@@ -1422,6 +1423,47 @@ describe("transcribeVideoWorkflow", () => {
 	});
 
 	it.each([false, true])(
+		"keeps one private speaker audio key across an owner allowlist change (initially listed=%s)",
+		async (listed) => {
+			vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", listed ? videoRow.ownerId : "");
+			state.speakerLabels = true;
+			mocks.deleteObject.mockImplementationOnce(() => {
+				throw new Error("temporary cleanup outage");
+			});
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			const payload = {
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: false,
+			};
+			await transcribeVideoWorkflow(payload);
+			const key = "private/source/video-123/audio-temp-speaker.mp3";
+
+			vi.stubEnv("CAP_INSTANT_FINISH_OWNERS", listed ? "" : videoRow.ownerId);
+			state.speakerLabels = false;
+			await expect(transcribeVideoWorkflow(payload)).resolves.toMatchObject({
+				message: "Speaker-labeled transcription already completed",
+			});
+			expect(mocks.deleteObject.mock.calls).toEqual([[key], [key]]);
+			expect(
+				mocks.putObject.mock.calls
+					.map(([objectKey]) => objectKey)
+					.filter((objectKey) => String(objectKey).endsWith(".mp3")),
+			).toEqual([key]);
+			expect(mocks.getInternalSignedObjectUrl.mock.calls).toEqual([
+				[state.sourceKey],
+				[key],
+			]);
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(mocks.waitUntilReady).toHaveBeenCalledOnce();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+			expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+		},
+	);
+
+	it.each([false, true])(
 		"cleans only bound speaker audio when resuming an accepted ID after a crash (bucket changed=%s)",
 		async (changed) => {
 			const { submitSpeakerLabeledTranscription, transcribeVideoWorkflow } =
@@ -1447,7 +1489,7 @@ describe("transcribeVideoWorkflow", () => {
 			await resumed;
 			expect(videoRow.transcriptionStatus).toBe("COMPLETE");
 			expect(mocks.deleteObject).toHaveBeenCalledExactlyOnceWith(
-				"user-456/video-123/audio-temp-speaker.mp3",
+				"private/source/video-123/audio-temp-speaker.mp3",
 			);
 			expect(mocks.getInternalSignedObjectUrl).not.toHaveBeenCalled();
 			expect(mocks.submit).toHaveBeenCalledOnce();
@@ -1520,7 +1562,7 @@ describe("transcribeVideoWorkflow", () => {
 			} else {
 				await expect(resumed).resolves.toMatchObject({ success: true });
 				expect(mocks.deleteObject).toHaveBeenCalledExactlyOnceWith(
-					"user-456/video-123/audio-temp-speaker.mp3",
+					"private/source/video-123/audio-temp-speaker.mp3",
 				);
 			}
 			expect(videoRow.transcriptionStatus).toBe("COMPLETE");

@@ -65,6 +65,7 @@ import {
 	type SpeakerLabelSource,
 } from "@/lib/speaker-label-claim";
 import {
+	SPEAKER_LABEL_TEMP_AUDIO_FILENAME,
 	transcribeSourceCandidateKeys,
 	transcribeTempAudioKey,
 } from "@/lib/transcribe-source";
@@ -100,7 +101,6 @@ interface BackfillEditTranscriptPayload {
 }
 
 const EDIT_TRANSCRIPT_TEMP_AUDIO_FILENAME = "audio-edit-transcript-v3-temp.mp3";
-const SPEAKER_LABEL_TEMP_AUDIO_FILENAME = "audio-temp-speaker.mp3";
 
 interface TranscriptionArtifacts {
 	vtt: string;
