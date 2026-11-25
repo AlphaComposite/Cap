@@ -112,6 +112,8 @@ export default async function EmbedVideoPage(
 	const videoId = params.videoId as Video.VideoId;
 	const autoplay = searchParams.autoplay === "true";
 	const minimal = searchParams.slack === "true";
+	const showTitle = searchParams.title !== "false";
+	const showOwner = searchParams.owner !== "false";
 	// `?t=` mirrors the share page, so an embed snippet copied "at 1:23" opens
 	// there too. Repeated params arrive as an array; take the first.
 	const startTimeParam = Array.isArray(searchParams.t)
@@ -201,6 +203,8 @@ export default async function EmbedVideoPage(
 						autoplay={autoplay}
 						startTime={startTime}
 						minimal={minimal}
+						showTitle={showTitle}
+						showOwner={showOwner}
 					/>
 				)}
 			</div>
@@ -219,6 +223,8 @@ async function EmbedContent({
 	autoplay,
 	startTime,
 	minimal,
+	showTitle,
+	showOwner,
 }: {
 	video: Omit<typeof videos.$inferSelect, "password"> & {
 		sharedOrganization: { organizationId: Organisation.OrganisationId } | null;
@@ -231,6 +237,8 @@ async function EmbedContent({
 	autoplay: boolean;
 	startTime: number | null;
 	minimal: boolean;
+	showTitle: boolean;
+	showOwner: boolean;
 }) {
 	const user = await getCurrentUser();
 	const sharedSpaces = await db()
@@ -449,6 +457,8 @@ async function EmbedContent({
 				autoplay={autoplay}
 				startTime={startTime}
 				minimal={minimal}
+				showTitle={showTitle}
+				showOwner={showOwner}
 				defaultPlaybackSpeed={resolveDefaultPlaybackSpeed(
 					video.settings?.defaultPlaybackSpeed,
 					video.orgSettings?.defaultPlaybackSpeed,

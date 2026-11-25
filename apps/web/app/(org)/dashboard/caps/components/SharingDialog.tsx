@@ -94,6 +94,8 @@ export const SharingDialog: React.FC<SharingDialogProps> = ({
 		useState(hasPassword);
 	const tabs = ["Share", "Embed"] as const;
 	const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Share");
+	const [showTitle, setShowTitle] = useState(true);
+	const [showOwner, setShowOwner] = useState(true);
 
 	const updateSharing = useMutation({
 		mutationFn: async ({
@@ -241,6 +243,8 @@ export const SharingDialog: React.FC<SharingDialogProps> = ({
 			setInitialPasswordEnabled(hasPassword);
 			setSearchTerm("");
 			setActiveTab(tabs[0]);
+			setShowTitle(true);
+			setShowOwner(true);
 		}
 	}, [isOpen, sharedSpaces, isPublic, hasPassword, tabs[0]]);
 
@@ -265,7 +269,7 @@ export const SharingDialog: React.FC<SharingDialogProps> = ({
 		});
 	};
 
-	const embedCode = useEmbedCode(capId);
+	const embedCode = useEmbedCode(capId, showTitle, showOwner);
 
 	const handleCopyEmbedCode = async () => {
 		try {
@@ -502,6 +506,24 @@ export const SharingDialog: React.FC<SharingDialogProps> = ({
 						</>
 					) : (
 						<div className="space-y-4">
+							<div className="flex flex-wrap gap-4 text-sm text-gray-12">
+								<label className="flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={showTitle}
+										onChange={(event) => setShowTitle(event.target.checked)}
+									/>
+									Show title
+								</label>
+								<label className="flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={showOwner}
+										onChange={(event) => setShowOwner(event.target.checked)}
+									/>
+									Show owner
+								</label>
+							</div>
 							<div className="p-3 rounded-lg border bg-gray-3 border-gray-4">
 								<code className="font-mono text-xs break-all text-gray-11">
 									{embedCode}
@@ -639,11 +661,20 @@ const SpaceCard = ({
 	);
 };
 
-function useEmbedCode(capId: Video.VideoId) {
+function useEmbedCode(
+	capId: Video.VideoId,
+	showTitle: boolean,
+	showOwner: boolean,
+) {
 	const publicEnv = usePublicEnv();
 
 	return useMemo(
-		() => buildEmbedCode({ webUrl: publicEnv.webUrl, videoId: capId }),
-		[publicEnv.webUrl, capId],
+		() =>
+			buildEmbedCode({
+				webUrl: publicEnv.webUrl,
+				videoId: capId,
+				options: { showTitle, showOwner },
+			}),
+		[publicEnv.webUrl, capId, showTitle, showOwner],
 	);
 }

@@ -30,7 +30,9 @@ Use the ID from the Cap's share URL. For example, `https://cap.so/s/abc123` uses
 ## Responsive iframe
 
 ```html
-<div style="position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; border-radius: 8px;">
+<div
+  style="position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; border-radius: 8px;"
+>
   <iframe
     src="https://cap.so/embed/<video-id>"
     title="Cap recording"
@@ -42,6 +44,12 @@ Use the ID from the Cap's share URL. For example, `https://cap.so/s/abc123` uses
 ```
 
 Adjust the aspect ratio to match the recording or the space reserved by your site.
+
+## Title and owner visibility
+
+When your host page already supplies the title or owner, uncheck **Show title** or **Show owner** in either Embed dialog. Both are shown by default; copying without changing them produces the same embed code as before.
+
+For a manually constructed URL, use `title=false` and/or `owner=false`, for example `https://cap.so/embed/abc123?t=83&title=false&owner=false`. Only the exact, single value `false` hides that field; other values and repeated display parameters leave it visible. The timestamp, player controls, duration, branding, and access requirements are unchanged. These are display options, not a way to remove metadata from the recording or grant access.
 
 ## Access and viewer settings
 

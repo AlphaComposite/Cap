@@ -67,6 +67,8 @@ export const EmbedVideo = forwardRef<
 		/** Seconds to open at, from the embed URL's `?t=`. */
 		startTime?: number | null;
 		minimal?: boolean;
+		showTitle?: boolean;
+		showOwner?: boolean;
 		defaultPlaybackSpeed?: number;
 		viewerSettings?: ViewerSettings | null;
 		showPlaybackStatusBadge?: boolean;
@@ -85,6 +87,8 @@ export const EmbedVideo = forwardRef<
 			autoplay = false,
 			startTime = null,
 			minimal = false,
+			showTitle = true,
+			showOwner = true,
 			defaultPlaybackSpeed,
 			viewerSettings,
 			showPlaybackStatusBadge = false,
@@ -350,7 +354,7 @@ export const EmbedVideo = forwardRef<
 									className="z-10 bg-black/50 backdrop-blur-md rounded-lg sm:rounded-xl px-2 py-1.5 sm:px-4 sm:py-3 border border-white/10 shadow-2xl"
 								>
 									<div className="flex gap-2 items-center sm:gap-3">
-										{ownerName && (
+										{showOwner && ownerName && (
 											<Avatar
 												name={ownerName}
 												imageUrl={ownerImageUrl}
@@ -359,26 +363,30 @@ export const EmbedVideo = forwardRef<
 											/>
 										)}
 										<div className="flex-1 min-w-0">
-											<a
-												href={`/s/${data.id}`}
-												target="_blank"
-												rel="noopener noreferrer"
-												className="block"
-												onClick={(e) => e.stopPropagation()}
-											>
-												<h1 className="text-xs max-w-[175px] xs:max-w-[300px] sm:max-w-[400px] font-semibold md:max-w-[500px] leading-tight text-white truncate transition-all duration-200 cursor-pointer sm:text-xl md:text-2xl hover:underline">
-													{data.name}
-												</h1>
-											</a>
+											{showTitle && (
+												<a
+													href={`/s/${data.id}`}
+													target="_blank"
+													rel="noopener noreferrer"
+													className="block"
+													onClick={(e) => e.stopPropagation()}
+												>
+													<h1 className="text-xs max-w-[175px] xs:max-w-[300px] sm:max-w-[400px] font-semibold md:max-w-[500px] leading-tight text-white truncate transition-all duration-200 cursor-pointer sm:text-xl md:text-2xl hover:underline">
+														{data.name}
+													</h1>
+												</a>
+											)}
 											<div className="flex items-center gap-1 sm:gap-2 mt-0.5 sm:mt-1">
-												{ownerName && (
+												{showOwner && ownerName && (
 													<p className="text-xs font-medium text-gray-300 truncate sm:text-sm">
 														{ownerName}
 													</p>
 												)}
 												{ownerName && longestDuration > 0 && (
 													<>
-														<span className="text-xs text-gray-400">•</span>
+														{showOwner && (
+															<span className="text-xs text-gray-400">•</span>
+														)}
 														<p className="text-xs text-gray-300 sm:text-sm">
 															{formatTime(longestDuration)}
 														</p>

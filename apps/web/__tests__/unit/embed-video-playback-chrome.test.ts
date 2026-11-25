@@ -29,7 +29,7 @@ vi.mock("@cap/env", () => ({ NODE_ENV: "test" }));
 vi.mock("@cap/ui", async () => {
 	const { createElement } = await import("react");
 	return {
-		Avatar: () => null,
+		Avatar: () => createElement("span", { "data-owner-avatar": true }),
 		Logo: () => createElement("span", { "data-cap-logo": true }),
 	};
 });
@@ -188,6 +188,46 @@ describe("EmbedVideo playback chrome", () => {
 	afterAll(() => {
 		delete actEnvironment.IS_REACT_ACT_ENVIRONMENT;
 	});
+
+	it.each(
+		["desktopMP4", "MediaConvert"].flatMap((type) =>
+			[true, false].flatMap((showTitle) =>
+				[true, false].map((showOwner) => ({ type, showTitle, showOwner })),
+			),
+		),
+	)(
+		"renders $type title=$showTitle owner=$showOwner independently",
+		async ({ type, showTitle, showOwner }) => {
+			const container = document.createElement("div");
+			document.body.append(container);
+			const root = createRoot(container);
+			await act(async () => {
+				root.render(
+					createElement(EmbedVideo, {
+						...createProps({ type } as EmbedVideoProps["data"]["source"]),
+						showTitle,
+						showOwner,
+					}),
+				);
+			});
+			expect(container.querySelector("h1")?.textContent ?? null).toBe(
+				showTitle ? "Test video" : null,
+			);
+			expect(container.querySelector('[href="/s/video-id"]') !== null).toBe(
+				showTitle,
+			);
+			expect(container.textContent?.includes("Owner")).toBe(showOwner);
+			expect(container.querySelector("[data-owner-avatar]") !== null).toBe(
+				showOwner,
+			);
+			expect(container.textContent).toContain("01:00");
+			expect(
+				container.querySelector('[aria-label="Powered by Cap"]'),
+			).not.toBeNull();
+			expect(container.querySelector("video")).not.toBeNull();
+			await act(async () => root.unmount());
+		},
+	);
 
 	it.each(
 		["desktopMP4", "webMP4", "MediaConvert", "desktopSegments"].flatMap(

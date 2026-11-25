@@ -107,6 +107,8 @@ export const ShareLinkDialog = ({
 	const [withTimestamp, setWithTimestamp] = useState(false);
 	const [startTime, setStartTime] = useState(0);
 	const [copied, setCopied] = useState(false);
+	const [showTitle, setShowTitle] = useState(true);
+	const [showOwner, setShowOwner] = useState(true);
 
 	// The offset is sampled once, when the dialog opens. Subscribing would
 	// re-render the dialog at frame rate while the video plays on behind it, and
@@ -117,6 +119,8 @@ export const ShareLinkDialog = ({
 		setTab("social");
 		setWithTimestamp(false);
 		setCopied(false);
+		setShowTitle(true);
+		setShowOwner(true);
 	}, [open, playback]);
 
 	useEffect(() => {
@@ -133,8 +137,14 @@ export const ShareLinkDialog = ({
 	);
 
 	const embedCode = useMemo(
-		() => buildEmbedCode({ webUrl, videoId, startTime: timestamp }),
-		[webUrl, videoId, timestamp],
+		() =>
+			buildEmbedCode({
+				webUrl,
+				videoId,
+				startTime: timestamp,
+				options: { showTitle, showOwner },
+			}),
+		[webUrl, videoId, timestamp, showTitle, showOwner],
 	);
 
 	const handleCopy = useCallback(async () => {
@@ -247,6 +257,24 @@ export const ShareLinkDialog = ({
 						</div>
 					) : (
 						<div className="flex flex-col gap-3">
+							<div className="flex flex-wrap gap-4 text-sm text-gray-12">
+								<label className="flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={showTitle}
+										onChange={(event) => setShowTitle(event.target.checked)}
+									/>
+									Show title
+								</label>
+								<label className="flex items-center gap-2">
+									<input
+										type="checkbox"
+										checked={showOwner}
+										onChange={(event) => setShowOwner(event.target.checked)}
+									/>
+									Show owner
+								</label>
+							</div>
 							<div className="rounded-xl border border-gray-4 bg-gray-3 p-4">
 								<code className="block max-h-40 overflow-y-auto break-all font-mono text-xs leading-relaxed text-gray-11">
 									{embedCode}

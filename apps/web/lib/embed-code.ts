@@ -8,21 +8,30 @@ export const buildEmbedCode = ({
 	webUrl,
 	videoId,
 	startTime,
+	options,
 }: {
 	webUrl: string;
 	videoId: string;
 	/** Seconds to start playback at, if the sharer picked a moment. */
 	startTime?: number | null;
+	options?: { showTitle?: boolean; showOwner?: boolean };
 }): string => {
 	const start =
 		typeof startTime === "number" && Number.isFinite(startTime) && startTime > 0
 			? `?t=${Math.floor(startTime)}`
 			: "";
+	const display = [
+		options?.showTitle === false ? "title=false" : "",
+		options?.showOwner === false ? "owner=false" : "",
+	]
+		.filter(Boolean)
+		.join("&");
+	const query = start + (display ? `${start ? "&" : "?"}${display}` : "");
 
 	return `
 	<div style="position: relative; padding-bottom: 56.25%; height: 0;">
 			<iframe
-			src="${webUrl}/embed/${videoId}${start}"
+			src="${webUrl}/embed/${videoId}${query}"
 			frameborder="0"
 			webkitallowfullscreen
 			mozallowfullscreen
