@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+	linkSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -20,7 +21,18 @@ const env = vi.hoisted(() => ({
 	file: undefined as string | undefined,
 	staticSelection: undefined as string | undefined,
 	execute: vi.fn(),
+	beforeList: undefined as (() => void) | undefined,
 }));
+vi.mock("node:fs", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs")>();
+	return {
+		...fs,
+		readdirSync: (path: string) => {
+			env.beforeList?.();
+			return fs.readdirSync(path);
+		},
+	};
+});
 vi.mock("@cap/env", () => ({
 	serverEnv: () => ({
 		CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY: env.staticSelection,
@@ -52,6 +64,7 @@ beforeEach(() => {
 	env.execute.mockReset();
 });
 afterEach(() => {
+	env.beforeList = undefined;
 	rmSync(directory, { recursive: true });
 	vi.useRealTimers();
 });
@@ -130,6 +143,14 @@ it("rejects a missing selector directory or dangling selector instead of treatin
 	expect(() => isSpeakerLabelCanary(video)).toThrow(
 		"Cannot read speaker-label selector",
 	);
+});
+
+it("reads the binding if it is published while checking for an absent selector", () => {
+	const createdAt = new Date();
+	const staged = join(directory, "staged");
+	writeFileSync(staged, `${ownerId}/${videoId}/${createdAt.getTime()}`);
+	env.beforeList = () => linkSync(staged, file);
+	expect(isSpeakerLabelCanary({ id: videoId, ownerId, createdAt })).toBe(true);
 });
 
 it("publishes one complete binding even when two operators bind concurrently", async () => {

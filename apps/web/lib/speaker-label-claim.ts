@@ -106,17 +106,18 @@ function speakerLabelSelection() {
 	try {
 		selection = readFileSync(file, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			try {
-				// Only a missing entry in a readable directory means unbound.
-				if (!readdirSync(dirname(file)).includes(basename(file))) {
-					return undefined;
-				}
-			} catch {
-				throw new FatalError("Cannot read speaker-label selector");
-			}
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			throw new FatalError("Cannot read speaker-label selector");
 		}
-		throw new FatalError("Cannot read speaker-label selector");
+		try {
+			// Only a missing entry in a readable directory means unbound.
+			if (!readdirSync(dirname(file)).includes(basename(file))) {
+				return undefined;
+			}
+			selection = readFileSync(file, "utf8");
+		} catch {
+			throw new FatalError("Cannot read speaker-label selector");
+		}
 	}
 	if (!/^[0-9a-z]{15}\/[0-9a-z]{15}\/[0-9]{13}$/.test(selection)) {
 		throw new FatalError("Invalid speaker-label selector");
