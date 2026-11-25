@@ -64,8 +64,8 @@ import {
 	type SpeakerLabelClaim,
 	type SpeakerLabelSource,
 } from "@/lib/speaker-label-claim";
+import { SPEAKER_LABEL_TEMP_AUDIO_FILENAME } from "@/lib/transcribe-constants";
 import {
-	SPEAKER_LABEL_TEMP_AUDIO_FILENAME,
 	transcribeSourceCandidateKeys,
 	transcribeTempAudioKey,
 } from "@/lib/transcribe-source";

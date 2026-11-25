@@ -3,8 +3,7 @@ import {
 	type RelocationState,
 	resolveLegacySourceKey,
 } from "@/lib/source-relocation";
-
-export const SPEAKER_LABEL_TEMP_AUDIO_FILENAME = "audio-temp-speaker.mp3";
+import { SPEAKER_LABEL_TEMP_AUDIO_FILENAME } from "@/lib/transcribe-constants";
 
 export function transcribeTempAudioKey(
 	userId: string,
