@@ -70,6 +70,7 @@ vi.mock("@cap/database/schema", () => schemaMocks);
 
 vi.mock("@cap/database", () => ({
 	db: () => ({
+		execute: async () => [[]],
 		select: () => ({
 			from: (table: unknown) => {
 				if (table === schemaMocks.videoUploads) {

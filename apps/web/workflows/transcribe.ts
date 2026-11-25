@@ -51,6 +51,19 @@ import { planSegmentsAudioExtraction } from "@/lib/segments-audio";
 import { downloadConcatenatedSegments } from "@/lib/segments-audio-download";
 import type { RelocationState } from "@/lib/source-relocation";
 import {
+	assertNoSpeakerLabelClaim,
+	assertSpeakerLabelSource,
+	isSpeakerLabelCanary,
+	loadSpeakerLabelClaim,
+	loadSpeakerLabelSource,
+	persistSpeakerLabelId,
+	pollSpeakerLabelTranscript,
+	reserveSpeakerLabelRecording,
+	reserveSpeakerLabelSubmit,
+	type SpeakerLabelClaim,
+	type SpeakerLabelSource,
+} from "@/lib/speaker-label-claim";
+import {
 	transcribeSourceCandidateKeys,
 	transcribeTempAudioKey,
 } from "@/lib/transcribe-source";
@@ -74,6 +87,9 @@ interface VideoData {
 	transcriptionDisabled: boolean;
 	aiGenerationLanguage: AiGenerationLanguage;
 	speakerLabels: boolean;
+	speakerLabelCompleted?: boolean;
+	speakerLabelTranscriptId?: string;
+	speakerLabelReservationToken?: string;
 }
 
 interface BackfillEditTranscriptPayload {
@@ -87,6 +103,7 @@ const EDIT_TRANSCRIPT_TEMP_AUDIO_FILENAME = "audio-edit-transcript-v3-temp.mp3";
 interface TranscriptionArtifacts {
 	vtt: string;
 	editTranscript: string;
+	speakerLabelClaim?: SpeakerLabelClaim;
 }
 
 export async function transcribeVideoWorkflow(
@@ -98,29 +115,92 @@ export async function transcribeVideoWorkflow(
 
 	let videoData: VideoData;
 	try {
-		videoData = await validateVideo(videoId);
+		videoData = await validateVideo(videoId, userId, payload.earlyFromSegments);
 	} catch (error) {
 		await markError(videoId);
 		throw error;
 	}
 
+	if (videoData.speakerLabelCompleted) {
+		return {
+			success: true,
+			message: "Speaker-labeled transcription already completed",
+		};
+	}
 	if (videoData.transcriptionDisabled) {
 		await markSkipped(videoId);
 		return { success: true, message: "Transcription disabled - skipped" };
 	}
 
 	try {
-		let audioUrl: string | null;
-		let videoDurationMs = Math.max(0, (videoData.video.duration ?? 0) * 1000);
-
-		if (payload.earlyFromSegments) {
-			const segments = await extractAudioFromSegmentsStep(
+		if (videoData.speakerLabelTranscriptId) {
+			await saveTranscription(
 				videoId,
 				userId,
 				videoData.video,
+				await pollSpeakerLabeledTranscription(
+					videoData.speakerLabelTranscriptId,
+					Math.max(0, (videoData.video.duration ?? 0) * 1000),
+					videoId,
+				),
 			);
+		} else {
+			const speakerLabelSource = videoData.speakerLabels
+				? await prepareSpeakerLabelSource(videoId, userId, videoData.video)
+				: undefined;
+			let audioUrl: string | null;
+			let videoDurationMs = Math.max(0, (videoData.video.duration ?? 0) * 1000);
 
-			if (segments.status === "no-audio") {
+			if (payload.earlyFromSegments) {
+				const segments = await extractAudioFromSegmentsStep(
+					videoId,
+					userId,
+					videoData.video,
+				);
+
+				if (segments.status === "no-audio") {
+					await markNoAudio(videoId);
+					return {
+						success: true,
+						message: "Video has no audio track - skipped transcription",
+					};
+				}
+
+				if (segments.status !== "ok" || !segments.audioUrl) {
+					// The early path must never end worse than today's timing: clean up
+					// while we still hold the claim, release it, then explicitly re-offer
+					// the video to the normal path — the post-mux queue may have already
+					// run and been rejected by our claim, so we cannot rely on it firing
+					// again.
+					await cleanupTempAudio(videoId, userId, videoData.video);
+					await deferEarlyTranscription(videoId);
+					await requeueAfterEarlyDefer(videoId, userId, aiGenerationEnabled);
+					return {
+						success: true,
+						message: `Early transcription deferred: ${
+							segments.status === "unavailable"
+								? segments.reason
+								: "no audio URL"
+						}`,
+					};
+				}
+
+				audioUrl = segments.audioUrl;
+				if (videoDurationMs <= 0 && (segments.durationMs ?? 0) > 0) {
+					videoDurationMs = segments.durationMs ?? 0;
+				}
+			} else {
+				audioUrl = await extractAudio(
+					videoId,
+					userId,
+					videoData.video,
+					undefined,
+					speakerLabelSource?.sourceKey,
+					videoData.speakerLabels,
+				);
+			}
+
+			if (!audioUrl) {
 				await markNoAudio(videoId);
 				return {
 					success: true,
@@ -128,55 +208,27 @@ export async function transcribeVideoWorkflow(
 				};
 			}
 
-			if (segments.status !== "ok" || !segments.audioUrl) {
-				// The early path must never end worse than today's timing: clean up
-				// while we still hold the claim, release it, then explicitly re-offer
-				// the video to the normal path — the post-mux queue may have already
-				// run and been rejected by our claim, so we cannot rely on it firing
-				// again.
-				await cleanupTempAudio(videoId, userId, videoData.video);
-				await deferEarlyTranscription(videoId);
-				await requeueAfterEarlyDefer(videoId, userId, aiGenerationEnabled);
-				return {
-					success: true,
-					message: `Early transcription deferred: ${
-						segments.status === "unavailable" ? segments.reason : "no audio URL"
-					}`,
-				};
-			}
-
-			audioUrl = segments.audioUrl;
-			if (videoDurationMs <= 0 && (segments.durationMs ?? 0) > 0) {
-				videoDurationMs = segments.durationMs ?? 0;
-			}
-		} else {
-			audioUrl = await extractAudio(videoId, userId, videoData.video);
-		}
-
-		if (!audioUrl) {
-			await markNoAudio(videoId);
-			return {
-				success: true,
-				message: "Video has no audio track - skipped transcription",
-			};
-		}
-
-		const transcription =
-			videoData.speakerLabels && !payload.earlyFromSegments
-				? await pollSpeakerLabeledTranscription(
-						await submitSpeakerLabeledTranscription(
+			const transcription =
+				videoData.speakerLabels && !payload.earlyFromSegments
+					? await pollSpeakerLabeledTranscription(
+							await submitSpeakerLabeledTranscription(
+								audioUrl,
+								videoData.aiGenerationLanguage,
+								speakerLabelSource,
+								videoData.speakerLabelReservationToken,
+							),
+							videoDurationMs,
+							videoId,
+						)
+					: await transcribeWithAssemblyAI(
 							audioUrl,
 							videoData.aiGenerationLanguage,
-						),
-						videoDurationMs,
-					)
-				: await transcribeWithAssemblyAI(
-						audioUrl,
-						videoData.aiGenerationLanguage,
-						videoDurationMs,
-					);
+							videoDurationMs,
+							videoId,
+						);
 
-		await saveTranscription(videoId, userId, videoData.video, transcription);
+			await saveTranscription(videoId, userId, videoData.video, transcription);
+		}
 	} catch (error) {
 		if (
 			typeof error === "object" &&
@@ -235,6 +287,7 @@ export async function backfillEditTranscriptWorkflow(
 		const editTranscript = await transcribeEditTranscriptWithAssemblyAI(
 			audioUrl,
 			videoEdit ? videoEdit.editSpec.sourceDuration : (video.duration ?? 0),
+			videoId,
 		);
 		await saveEditTranscriptBackfill(
 			videoId,
@@ -269,7 +322,11 @@ export async function backfillEditTranscriptWorkflow(
 	}
 }
 
-async function validateVideo(videoId: string): Promise<VideoData> {
+async function validateVideo(
+	videoId: string,
+	userId: string,
+	earlyFromSegments?: boolean,
+): Promise<VideoData> {
 	"use step";
 
 	if (!serverEnv().ASSEMBLY_API_KEY) {
@@ -299,6 +356,45 @@ async function validateVideo(videoId: string): Promise<VideoData> {
 		result.video.settings?.disableTranscript ??
 		result.orgSettings?.disableTranscript ??
 		false;
+	let existingClaim = await loadSpeakerLabelClaim(videoId);
+	const speakerLabels =
+		existingClaim !== null ||
+		(!earlyFromSegments && isSpeakerLabelCanary(result.video));
+	if (speakerLabels && result.video.transcriptionStatus === "COMPLETE") {
+		if (!existingClaim?.transcriptId) {
+			throw new FatalError(
+				"Speaker-label canary cannot backfill an existing transcript",
+			);
+		}
+		return {
+			video: result.video,
+			transcriptionDisabled,
+			aiGenerationLanguage: parseAiGenerationLanguage(
+				result.orgSettings?.aiGenerationLanguage,
+			),
+			speakerLabels,
+			speakerLabelCompleted: true,
+		};
+	}
+	if (speakerLabels && (earlyFromSegments || transcriptionDisabled)) {
+		throw new FatalError(
+			"Speaker-label claim holds this recording; reconciliation required",
+		);
+	}
+	if (speakerLabels && result.video.ownerId !== userId) {
+		throw new FatalError("Speaker-label recording owner changed");
+	}
+	if (existingClaim && !existingClaim.transcriptId) {
+		throw new FatalError(
+			"Speaker-labeled submission outcome unknown; do not resubmit",
+		);
+	}
+	if (speakerLabels && !existingClaim) {
+		existingClaim = await reserveSpeakerLabelRecording(
+			result.video,
+			parseAiGenerationLanguage(result.orgSettings?.aiGenerationLanguage),
+		);
+	}
 
 	await db()
 		.update(videos)
@@ -311,9 +407,30 @@ async function validateVideo(videoId: string): Promise<VideoData> {
 		aiGenerationLanguage: parseAiGenerationLanguage(
 			result.orgSettings?.aiGenerationLanguage,
 		),
-		speakerLabels: serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS === true,
+		speakerLabels,
+		speakerLabelTranscriptId: existingClaim?.transcriptId,
+		speakerLabelReservationToken:
+			existingClaim?.state === "reserved" ? existingClaim.token : undefined,
 	};
 }
+
+export async function prepareSpeakerLabelSource(
+	videoId: string,
+	userId: string,
+	video: typeof videos.$inferSelect,
+): Promise<SpeakerLabelSource> {
+	"use step";
+	const source = await loadSpeakerLabelSource(videoId, userId);
+	if (
+		(video.bucket ?? null) !== source.bucket ||
+		(video.storageIntegrationId ?? null) !== source.storageIntegrationId
+	) {
+		throw new FatalError("Speaker-label recording storage changed");
+	}
+	return source;
+}
+
+prepareSpeakerLabelSource.maxRetries = 60;
 
 async function loadVideoForEditTranscriptBackfill(videoId: string) {
 	"use step";
@@ -560,6 +677,7 @@ async function extractAudio(
 	video: typeof videos.$inferSelect,
 	tempAudioFilename = "audio-temp.mp3",
 	sourceKeyOverride?: string,
+	strictSourceKey = false,
 ): Promise<string | null> {
 	"use step";
 
@@ -574,6 +692,7 @@ async function extractAudio(
 			userId,
 			video,
 			sourceKeyOverride,
+			strictSourceKey,
 		);
 	} catch (error) {
 		// Instant-mode recordings can be transcribed straight from their uploaded
@@ -609,6 +728,7 @@ async function extractAudio(
 				userId,
 				video,
 				sourceKeyOverride,
+				strictSourceKey,
 			);
 		} catch {
 			throw error;
@@ -697,6 +817,7 @@ async function resolveVideoSourceUrl(
 	userId: string,
 	video: typeof videos.$inferSelect,
 	sourceKeyOverride?: string,
+	strictSourceKey = false,
 ): Promise<string> {
 	const [resolvedBucket] = await Storage.getAccessForVideo(
 		decodeStorageVideo(video),
@@ -708,14 +829,17 @@ async function resolveVideoSourceUrl(
 		.where(eq(videoUploads.videoId, videoId as Video.VideoId))
 		.limit(1);
 	const located = await loadTranscribeSourceContext(videoId);
-	const candidateKeys = transcribeSourceCandidateKeys({
-		userId,
-		videoId,
-		sourceKeyOverride,
-		rawFileKey: upload[0]?.rawFileKey,
-		liveKey: located.liveKey,
-		relocations: located.relocations,
-	});
+	const candidateKeys =
+		strictSourceKey && sourceKeyOverride
+			? [sourceKeyOverride]
+			: transcribeSourceCandidateKeys({
+					userId,
+					videoId,
+					sourceKeyOverride,
+					rawFileKey: upload[0]?.rawFileKey,
+					liveKey: located.liveKey,
+					relocations: located.relocations,
+				});
 
 	for (const key of candidateKeys) {
 		const url = await resolvedBucket
@@ -861,8 +985,21 @@ async function extractAudioFromSegmentsImpl(
 export async function submitSpeakerLabeledTranscription(
 	audioUrl: string,
 	language: AiGenerationLanguage,
+	source?: SpeakerLabelSource,
+	reservationToken?: string,
 ): Promise<string> {
 	"use step";
+	if (!source) {
+		throw new FatalError("Speaker-label source binding required");
+	}
+	const reserved = await reserveSpeakerLabelSubmit(
+		source,
+		language,
+		reservationToken,
+	);
+	if (!reserved.submit && reserved.claim.transcriptId) {
+		return reserved.claim.transcriptId;
+	}
 
 	const audioResponse = await fetch(audioUrl);
 	if (!audioResponse.ok) {
@@ -882,6 +1019,7 @@ export async function submitSpeakerLabeledTranscription(
 		if (typeof transcript.id !== "string" || !transcript.id) {
 			throw new Error("Missing transcript ID");
 		}
+		await persistSpeakerLabelId(reserved.claim, transcript.id);
 		return transcript.id;
 	} catch {
 		throw new FatalError(
@@ -895,15 +1033,20 @@ submitSpeakerLabeledTranscription.maxRetries = 0;
 export async function pollSpeakerLabeledTranscription(
 	transcriptId: string,
 	videoDurationMs: number,
+	videoId: string,
 ): Promise<TranscriptionArtifacts> {
 	"use step";
 
-	const client = new AssemblyAI({
-		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
-	});
-	const transcript = await client.transcripts.waitUntilReady(transcriptId, {
-		pollingInterval: 1000,
-	});
+	const claim = await loadSpeakerLabelClaim(videoId);
+	if (
+		!claim ||
+		claim.state === "reserved" ||
+		claim.transcriptId !== transcriptId
+	) {
+		throw new FatalError("Speaker-label accepted ID requires reconciliation");
+	}
+	await assertSpeakerLabelSource(claim);
+	const transcript = await pollSpeakerLabelTranscript(claim);
 	if (transcript.id !== transcriptId) {
 		throw new FatalError("Speaker-labeled transcript ID mismatch");
 	}
@@ -923,6 +1066,7 @@ export async function pollSpeakerLabeledTranscription(
 	return {
 		vtt: editTranscriptWordsToCaptionVtt(editTranscript.words),
 		editTranscript: serializeEditTranscript(editTranscript),
+		speakerLabelClaim: claim,
 	};
 }
 
@@ -930,8 +1074,10 @@ async function transcribeWithAssemblyAI(
 	audioUrl: string,
 	language: AiGenerationLanguage,
 	videoDurationMs: number,
+	videoId?: string,
 ): Promise<TranscriptionArtifacts> {
 	"use step";
+	if (videoId) await assertNoSpeakerLabelClaim(videoId);
 
 	const audioResponse = await fetch(audioUrl);
 	if (!audioResponse.ok) {
@@ -986,8 +1132,10 @@ async function transcribeWithAssemblyAI(
 async function transcribeEditTranscriptWithAssemblyAI(
 	audioUrl: string,
 	videoDurationSeconds: number,
+	videoId?: string,
 ): Promise<string> {
 	"use step";
+	if (videoId) await assertNoSpeakerLabelClaim(videoId);
 
 	const audioResponse = await fetch(audioUrl);
 	if (!audioResponse.ok) {
@@ -1030,6 +1178,18 @@ async function saveTranscription(
 	transcription: TranscriptionArtifacts,
 ): Promise<void> {
 	"use step";
+	if (transcription.speakerLabelClaim) {
+		const current = await loadSpeakerLabelClaim(videoId);
+		if (
+			current?.token !== transcription.speakerLabelClaim.token ||
+			current?.transcriptId !== transcription.speakerLabelClaim.transcriptId
+		) {
+			throw new FatalError("Speaker-label result is stale");
+		}
+		await assertSpeakerLabelSource(transcription.speakerLabelClaim);
+	} else {
+		await assertNoSpeakerLabelClaim(videoId);
+	}
 
 	const [bucket] = await Storage.getAccessForVideo(
 		decodeStorageVideo(video),
