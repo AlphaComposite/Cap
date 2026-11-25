@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { db } from "@cap/database";
 import { serverEnv } from "@cap/env";
 import type { AiGenerationLanguage } from "@cap/web-domain";
@@ -105,8 +106,16 @@ function speakerLabelSelection() {
 	try {
 		selection = readFileSync(file, "utf8");
 	} catch (error) {
-		// An empty selector directory is the normal state before the operator binds.
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			try {
+				// Only a missing entry in a readable directory means unbound.
+				if (!readdirSync(dirname(file)).includes(basename(file))) {
+					return undefined;
+				}
+			} catch {
+				throw new FatalError("Cannot read speaker-label selector");
+			}
+		}
 		throw new FatalError("Cannot read speaker-label selector");
 	}
 	if (!/^[0-9a-z]{15}\/[0-9a-z]{15}\/[0-9]{13}$/.test(selection)) {

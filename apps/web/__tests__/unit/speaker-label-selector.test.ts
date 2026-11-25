@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +116,19 @@ it("fails closed on malformed, unreadable or conflicting configuration", () => {
 	env.staticSelection = `${ownerId}/${videoId}/${Date.now()}`;
 	expect(() => isSpeakerLabelCanary(video)).toThrow(
 		"Conflicting speaker-label selectors",
+	);
+});
+
+it("rejects a missing selector directory or dangling selector instead of treating it as unbound", () => {
+	const video = { id: videoId, ownerId, createdAt: new Date() };
+	env.file = join(directory, "missing-mount", "selection");
+	expect(() => isSpeakerLabelCanary(video)).toThrow(
+		"Cannot read speaker-label selector",
+	);
+	env.file = file;
+	symlinkSync(join(directory, "missing-target"), file);
+	expect(() => isSpeakerLabelCanary(video)).toThrow(
+		"Cannot read speaker-label selector",
 	);
 });
 
