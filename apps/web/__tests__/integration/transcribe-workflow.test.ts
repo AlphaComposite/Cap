@@ -36,7 +36,7 @@ const videoRow = vi.hoisted(() => ({
 	settings: null,
 	source: { type: "webMP4" },
 	isScreenshot: false,
-	transcriptionStatus: "COMPLETE",
+	transcriptionStatus: "COMPLETE" as string | null,
 	updatedAt: new Date("2026-07-30T00:00:00.000Z"),
 	metadata: {
 		editTranscriptBackfill: {
@@ -51,6 +51,10 @@ const state = vi.hoisted(() => ({
 	editRows: [] as unknown[],
 	speakerLabels: false,
 	claim: null as Record<string, unknown> | null,
+	legacy: false,
+	claimRead: null as null | (() => Promise<void>),
+	parentResult: undefined as unknown,
+	writeResult: undefined as unknown,
 	failPersist: false,
 	failTransition: false,
 	sourceSha256: "a".repeat(64),
@@ -85,7 +89,27 @@ vi.mock("@cap/database", () => ({
 			const text = query.strings.join("?");
 			state.queries.push(text);
 			if (text.includes("FROM outbox")) {
-				return [state.claim ? [{ payload: structuredClone(state.claim) }] : []];
+				if (query.values.includes("legacy-transcript-submit")) {
+					return [state.legacy ? [{ payload: { videoId: videoRow.id } }] : []];
+				}
+				const found = state.claim
+					? [{ payload: structuredClone(state.claim) }]
+					: [];
+				const hook = state.claimRead;
+				state.claimRead = null;
+				await hook?.();
+				return [found];
+			}
+			if (text.includes("FROM videos") && text.includes("FOR UPDATE")) {
+				if (state.parentResult !== undefined) return state.parentResult;
+				return [
+					[
+						{
+							id: videoRow.id,
+							transcriptionStatus: videoRow.transcriptionStatus,
+						},
+					],
+				];
 			}
 			if (text.includes("FROM videos v")) {
 				return [
@@ -93,6 +117,7 @@ vi.mock("@cap/database", () => ({
 						{
 							videoId: videoRow.id,
 							ownerId: videoRow.ownerId,
+							transcriptionStatus: videoRow.transcriptionStatus,
 							bucket: null,
 							storageIntegrationId: null,
 							sourceKey: state.sourceKey,
@@ -106,7 +131,9 @@ vi.mock("@cap/database", () => ({
 				];
 			}
 			if (text.includes("INSERT INTO outbox")) {
-				state.claim = JSON.parse(String(query.values[2]));
+				if (query.values.includes("legacy-transcript-submit"))
+					state.legacy = true;
+				else state.claim = JSON.parse(String(query.values[2]));
 			}
 			if (text.includes("UPDATE outbox")) {
 				const payload = JSON.parse(String(query.values[0]));
@@ -116,7 +143,13 @@ vi.mock("@cap/database", () => ({
 					throw new Error("accepted ID write outage");
 				state.claim = payload;
 			}
-			return [[]];
+			if (text.includes("UPDATE videos")) {
+				videoRow.transcriptionStatus = "PROCESSING";
+				mocks.updates.push({ transcriptionStatus: "PROCESSING" });
+			}
+			return state.writeResult === undefined
+				? [{ affectedRows: 1 }]
+				: state.writeResult;
 		},
 		transaction: async (run: (tx: unknown) => Promise<unknown>) => {
 			const { db } = await import("@cap/database");
@@ -139,7 +172,9 @@ vi.mock("@cap/database", () => ({
 					}
 					return {
 						leftJoin: () => ({
-							where: async () => [{ video: videoRow, orgSettings: null }],
+							where: async () => [
+								{ video: structuredClone(videoRow), orgSettings: null },
+							],
 						}),
 						where: async () => [videoRow],
 					};
@@ -149,8 +184,43 @@ vi.mock("@cap/database", () => ({
 		},
 		update: () => ({
 			set: (values: Record<string, unknown>) => {
-				mocks.updates.push(values);
-				return { where: async () => [{ affectedRows: 1 }] };
+				return {
+					where: async (condition: unknown) => {
+						const matches = (item: unknown): boolean => {
+							if (!item || typeof item !== "object") return false;
+							if ("conditions" in item && Array.isArray(item.conditions))
+								return item.conditions.every(matches);
+							if (
+								"strings" in item &&
+								Array.isArray(item.strings) &&
+								item.strings
+									.join("")
+									.includes("'$.liveTranscript') IS NOT NULL")
+							)
+								return "liveTranscript" in videoRow.metadata;
+							if (
+								"strings" in item &&
+								Array.isArray(item.strings) &&
+								item.strings.join("").includes("<> 'COMPLETE'")
+							)
+								return videoRow.transcriptionStatus !== "COMPLETE";
+							if (
+								"field" in item &&
+								"value" in item &&
+								item.field === schemaMocks.videos.transcriptionStatus
+							)
+								return videoRow.transcriptionStatus === item.value;
+							return true;
+						};
+						if (!matches(condition)) return [{ affectedRows: 0 }];
+						mocks.updates.push(values);
+						if ("transcriptionStatus" in values)
+							videoRow.transcriptionStatus = values.transcriptionStatus as
+								| string
+								| null;
+						return [{ affectedRows: 1 }];
+					},
+				};
 			},
 		}),
 	}),
@@ -254,7 +324,10 @@ async function speakerSubmitBinding() {
 	const { loadSpeakerLabelSource, reserveSpeakerLabelRecording } = await import(
 		"@/lib/speaker-label-claim"
 	);
-	const reservation = await reserveSpeakerLabelRecording(videoRow, "auto");
+	const { claim: reservation } = await reserveSpeakerLabelRecording(
+		videoRow,
+		"auto",
+	);
 	return [
 		await loadSpeakerLabelSource("video-123", "user-456"),
 		reservation.token,
@@ -363,7 +436,11 @@ describe("transcribeVideoWorkflow", () => {
 		state.speakerLabels = false;
 		mocks.submit.mockReset();
 		state.claim = null;
+		state.legacy = false;
+		state.claimRead = null;
 		state.failPersist = false;
+		state.parentResult = undefined;
+		state.writeResult = undefined;
 		state.failTransition = false;
 		state.sourceSha256 = "a".repeat(64);
 		state.sourceKey = "private/source/video-123/original";
@@ -551,6 +628,316 @@ describe("transcribeVideoWorkflow", () => {
 		});
 	});
 
+	it.each(["legacy", "backfill"])(
+		"fences %s admission before its first paid POST against a selected run paused before reservation",
+		async (path) => {
+			state.speakerLabels = true;
+			const { transcribeVideoWorkflow, backfillEditTranscriptWorkflow } =
+				await import("@/workflows/transcribe");
+			const payload = {
+				videoId: "video-123",
+				userId: "user-456",
+				aiGenerationEnabled: false,
+			};
+			let resume = () => {};
+			let observed = () => {};
+			const paused = new Promise<void>((resolve) => {
+				observed = resolve;
+			});
+			const gate = new Promise<void>((resolve) => {
+				resume = resolve;
+			});
+			state.claimRead = async () => {
+				observed();
+				await gate;
+			};
+			const selected = transcribeVideoWorkflow(payload).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			await paused;
+			state.speakerLabels = false;
+			if (path === "backfill") videoRow.transcriptionStatus = "COMPLETE";
+			let releaseAudio = () => {};
+			let audioReady = () => {};
+			const ready = new Promise<void>((resolve) => {
+				audioReady = resolve;
+			});
+			const audioGate = new Promise<void>((resolve) => {
+				releaseAudio = resolve;
+			});
+			const fetcher = vi.mocked(fetch).getMockImplementation();
+			let blocked = false;
+			vi.mocked(fetch).mockImplementation(async (url, options) => {
+				if (!blocked && url === "https://storage.test/object" && !options) {
+					blocked = true;
+					if (path === "backfill") videoRow.transcriptionStatus = "PROCESSING";
+					audioReady();
+					await audioGate;
+				}
+				return fetcher ? fetcher(url, options) : new Response("audio");
+			});
+			const legacy =
+				path === "backfill"
+					? backfillEditTranscriptWorkflow({
+							...payload,
+							requestId: "request-1",
+						})
+					: transcribeVideoWorkflow(payload);
+			await ready;
+			state.speakerLabels = true;
+			resume();
+			const selectedError = await selected;
+			releaseAudio();
+			await legacy.catch(() => {});
+			expect({
+				legacy: mocks.transcribe.mock.calls.length,
+				labeled: mocks.submit.mock.calls.length,
+			}).toEqual({ legacy: 1, labeled: 0 });
+			expect(selectedError).toMatchObject({
+				message: expect.stringContaining("Legacy transcription"),
+			});
+		},
+	);
+
+	it.each(["new selection", "accepted resume"])(
+		"does not reopen COMPLETE after a stale validation read: %s",
+		async (path) => {
+			state.speakerLabels = true;
+			if (path === "accepted resume") {
+				const { submitSpeakerLabeledTranscription } = await import(
+					"@/workflows/transcribe"
+				);
+				await submitSpeakerLabeledTranscription(
+					"https://storage.test/audio",
+					"auto",
+					...(await speakerSubmitBinding()),
+				);
+				mocks.submit.mockClear();
+			}
+			mocks.updates.length = 0;
+			state.claimRead = async () => {
+				videoRow.transcriptionStatus = "COMPLETE";
+			};
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			await transcribeVideoWorkflow({
+				videoId: "video-123",
+				userId: "user-456",
+				aiGenerationEnabled: false,
+			}).catch(() => {});
+			expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+			expect(mocks.updates).not.toContainEqual({
+				transcriptionStatus: "PROCESSING",
+			});
+			expect(mocks.submit).not.toHaveBeenCalled();
+			expect(mocks.waitUntilReady).not.toHaveBeenCalled();
+			expect(mocks.putObject).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["accepted", "submitting"])(
+		"fails closed for contradictory durable %s state",
+		async (status) => {
+			const { submitSpeakerLabeledTranscription } = await import(
+				"@/workflows/transcribe"
+			);
+			await submitSpeakerLabeledTranscription(
+				"https://storage.test/audio",
+				"auto",
+				...(await speakerSubmitBinding()),
+			);
+			state.claim = {
+				...state.claim,
+				state: status,
+				transcriptId: status === "submitting" ? "labeled-job" : undefined,
+			};
+			const { loadSpeakerLabelClaim } = await import(
+				"@/lib/speaker-label-claim"
+			);
+			await expect(loadSpeakerLabelClaim("video-123")).rejects.toThrow(
+				"requires reconciliation",
+			);
+		},
+	);
+
+	it.each(["legacy", "backfill"])(
+		"holds a stale %s worker when the label reservation wins first",
+		async (path) => {
+			const { transcribeVideoWorkflow, backfillEditTranscriptWorkflow } =
+				await import("@/workflows/transcribe");
+			const payload = {
+				videoId: "video-123",
+				userId: "user-456",
+				aiGenerationEnabled: false,
+			};
+			if (path === "backfill") videoRow.transcriptionStatus = "COMPLETE";
+			let release = () => {};
+			let observed = () => {};
+			const ready = new Promise<void>((resolve) => {
+				observed = resolve;
+			});
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			vi.mocked(fetch).mockImplementationOnce(async () => {
+				observed();
+				await gate;
+				return new Response("audio");
+			});
+			const stale = (
+				path === "backfill"
+					? backfillEditTranscriptWorkflow({
+							...payload,
+							requestId: "request-1",
+						})
+					: transcribeVideoWorkflow(payload)
+			).catch(() => null);
+			await ready;
+			videoRow.transcriptionStatus = "PROCESSING";
+			state.speakerLabels = true;
+			await transcribeVideoWorkflow(payload);
+			state.speakerLabels = false;
+			release();
+			await stale;
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps legacy retry and backfill admission after a durable legacy marker, even if selection changes", async () => {
+		const { transcribeVideoWorkflow, backfillEditTranscriptWorkflow } =
+			await import("@/workflows/transcribe");
+		const payload = {
+			videoId: "video-123",
+			userId: "user-456",
+			aiGenerationEnabled: false,
+		};
+		mocks.transcribe.mockRejectedValueOnce(new Error("supported legacy retry"));
+		await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
+			"supported legacy retry",
+		);
+		state.speakerLabels = true;
+		await transcribeVideoWorkflow(payload);
+		const { assertNoSpeakerLabelClaim, reserveSpeakerLabelRecording } =
+			await import("@/lib/speaker-label-claim");
+		await expect(
+			assertNoSpeakerLabelClaim(videoRow.id),
+		).resolves.toBeUndefined();
+		await expect(
+			reserveSpeakerLabelRecording(videoRow, "auto"),
+		).rejects.toThrow("Legacy transcription");
+		await expect(
+			backfillEditTranscriptWorkflow({ ...payload, requestId: "request-1" }),
+		).resolves.toEqual({ success: true });
+		expect(mocks.transcribe).toHaveBeenCalledTimes(3);
+		expect(mocks.submit).not.toHaveBeenCalled();
+	});
+
+	it("does not let a stale flag-off validator reopen completed labeled output", async () => {
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		const payload = {
+			videoId: "video-123",
+			userId: "user-456",
+			aiGenerationEnabled: false,
+		};
+		state.claimRead = async () => {
+			state.speakerLabels = true;
+			await transcribeVideoWorkflow(payload);
+			state.speakerLabels = false;
+			mocks.updates.length = 0;
+			mocks.putObject.mockClear();
+		};
+		await transcribeVideoWorkflow(payload).catch(() => {});
+		expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+		expect(mocks.updates).toHaveLength(0);
+		expect(mocks.putObject).not.toHaveBeenCalled();
+		expect(mocks.transcribe).not.toHaveBeenCalled();
+		expect(mocks.submit).toHaveBeenCalledOnce();
+	});
+
+	it("admits a SQL-null status but preserves a pre-enqueue PROCESSING claim", async () => {
+		const { reserveSpeakerLabelRecording } = await import(
+			"@/lib/speaker-label-claim"
+		);
+		videoRow.transcriptionStatus = null;
+		await reserveSpeakerLabelRecording(videoRow, "auto");
+		expect(videoRow.transcriptionStatus).toBe("PROCESSING");
+		expect(
+			state.queries.some((query) =>
+				query.includes(
+					"transcriptionStatus IS NULL OR transcriptionStatus <> 'COMPLETE'",
+				),
+			),
+		).toBe(true);
+		state.claim = null;
+		mocks.updates.length = 0;
+		await reserveSpeakerLabelRecording(videoRow, "auto");
+		expect(mocks.updates).toHaveLength(0);
+	});
+
+	it.each([
+		null,
+		[[]],
+		[[{ id: "wrong", transcriptionStatus: null }]],
+		[
+			[
+				{ id: "video-123", transcriptionStatus: null },
+				{ id: "video-123", transcriptionStatus: null },
+			],
+		],
+	])("rejects inexact parent lock results %j", async (result) => {
+		state.parentResult = result;
+		const { reserveSpeakerLabelRecording, assertNoSpeakerLabelClaim } =
+			await import("@/lib/speaker-label-claim");
+		await expect(
+			reserveSpeakerLabelRecording(videoRow, "auto"),
+		).rejects.toThrow();
+		await expect(assertNoSpeakerLabelClaim(videoRow.id)).rejects.toThrow();
+		expect(state.claim).toBeNull();
+		expect(state.legacy).toBe(false);
+	});
+
+	it.each([
+		null,
+		[],
+		[{}],
+		[{ affectedRows: 0 }],
+		[{ affectedRows: 2 }],
+		[{ affectedRows: "1" }],
+	])("requires exactly one admission write %j", async (result) => {
+		state.speakerLabels = true;
+		state.writeResult = result;
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		await expect(
+			transcribeVideoWorkflow({
+				videoId: "video-123",
+				userId: "user-456",
+				aiGenerationEnabled: false,
+			}),
+		).rejects.toThrow("durable write requires reconciliation");
+		expect(mocks.submit).not.toHaveBeenCalled();
+		expect(mocks.transcribe).not.toHaveBeenCalled();
+	});
+
+	it("refuses a stale submit after completion without a paid POST", async () => {
+		const binding = await speakerSubmitBinding();
+		videoRow.transcriptionStatus = "COMPLETE";
+		const { submitSpeakerLabeledTranscription } = await import(
+			"@/workflows/transcribe"
+		);
+		await expect(
+			submitSpeakerLabeledTranscription(
+				"https://storage.test/audio",
+				"auto",
+				...binding,
+			),
+		).rejects.toThrow("already completed");
+		expect(mocks.submit).not.toHaveBeenCalled();
+		expect(mocks.putObject).not.toHaveBeenCalled();
+	});
+
 	it("does not backfill an already completed transcript selected later", async () => {
 		state.speakerLabels = true;
 		videoRow.transcriptionStatus = "COMPLETE";
@@ -641,7 +1028,8 @@ describe("transcribeVideoWorkflow", () => {
 		expect(mocks.submit).toHaveBeenCalledOnce();
 		const lock = state.queries.findIndex(
 			(query) =>
-				query.includes("SELECT id FROM videos") && query.includes("FOR UPDATE"),
+				query.includes("SELECT id, transcriptionStatus FROM videos") &&
+				query.includes("FOR UPDATE"),
 		);
 		const insert = state.queries.findIndex((query) =>
 			query.includes("INSERT INTO outbox"),
@@ -776,6 +1164,7 @@ describe("transcribeVideoWorkflow", () => {
 		await transcribeVideoWorkflow(payload);
 		mocks.putObject.mockClear();
 		state.sourceSha256 = "b".repeat(64);
+		videoRow.transcriptionStatus = "ERROR";
 		await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
 			"source changed",
 		);
@@ -797,6 +1186,7 @@ describe("transcribeVideoWorkflow", () => {
 		};
 		await transcribeVideoWorkflow(payload);
 		state.claim = { ...state.claim, deadlineMs: Date.now() - 1 };
+		videoRow.transcriptionStatus = "ERROR";
 		state.speakerLabels = false;
 		await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
 			"deadline exhausted",
@@ -817,6 +1207,7 @@ describe("transcribeVideoWorkflow", () => {
 		};
 		await transcribeVideoWorkflow(payload);
 		state.speakerLabels = false;
+		videoRow.transcriptionStatus = "PROCESSING";
 		await expect(
 			transcribeVideoWorkflow({ ...payload, earlyFromSegments: true }),
 		).rejects.toThrow("claim holds");
@@ -1075,6 +1466,9 @@ describe("transcribeVideoWorkflow", () => {
 
 describe("backfillEditTranscriptWorkflow", () => {
 	beforeEach(() => {
+		state.parentResult = undefined;
+		state.writeResult = undefined;
+		state.legacy = false;
 		videoRow.transcriptionStatus = "COMPLETE";
 		state.editRows = [];
 		state.speakerLabels = false;

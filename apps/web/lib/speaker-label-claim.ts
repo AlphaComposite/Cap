@@ -7,6 +7,7 @@ import { FatalError, RetryableError } from "workflow";
 import { z } from "zod";
 
 export const SPEAKER_LABEL_JOB = "speaker-label-submit";
+const LEGACY_TRANSCRIPT_JOB = "legacy-transcript-submit";
 export const SPEAKER_LABEL_DEADLINE_MS = 20 * 60 * 1000;
 
 const bindingSchema = z.object({
@@ -17,13 +18,21 @@ const bindingSchema = z.object({
 	sourceKey: z.string().min(1),
 	sourceSha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
-const claimSchema = bindingSchema.extend({
-	state: z.enum(["submitting", "accepted"]),
+const submitSchema = bindingSchema.extend({
 	token: z.string().uuid(),
 	language: z.string().min(1),
 	deadlineMs: z.number().finite().positive(),
-	transcriptId: z.string().min(1).optional(),
 });
+const claimSchema = z.discriminatedUnion("state", [
+	submitSchema.extend({
+		state: z.literal("submitting"),
+		transcriptId: z.undefined(),
+	}),
+	submitSchema.extend({
+		state: z.literal("accepted"),
+		transcriptId: z.string().min(1),
+	}),
+]);
 const reservationSchema = bindingSchema
 	.omit({ sourceKey: true, sourceSha256: true })
 	.extend({
@@ -43,6 +52,44 @@ function rows(result: unknown): Record<string, unknown>[] {
 		throw new FatalError("Speaker-label durable state unavailable");
 	}
 	return result[0];
+}
+
+async function lockRecording(videoId: string, executor: Executor) {
+	const found = rows(
+		await executor.execute(sql`
+		SELECT id, transcriptionStatus FROM videos WHERE id = ${videoId} FOR UPDATE
+	`),
+	);
+	if (
+		found.length !== 1 ||
+		found[0]?.id !== videoId ||
+		(found[0].transcriptionStatus !== null &&
+			typeof found[0].transcriptionStatus !== "string")
+	) {
+		throw new FatalError("Speaker-label recording requires reconciliation");
+	}
+	return found[0];
+}
+
+export async function hasLegacyTranscriptAdmission(
+	videoId: string,
+	executor: Executor = db(),
+) {
+	return (
+		rows(
+			await executor.execute(sql`
+		SELECT payload FROM outbox
+		WHERE videoId = ${videoId} AND job = ${LEGACY_TRANSCRIPT_JOB}
+		FOR UPDATE
+	`),
+		).length > 0
+	);
+}
+
+function requireOneWrite(result: unknown) {
+	if (!Array.isArray(result) || result[0]?.affectedRows !== 1) {
+		throw new FatalError("Speaker-label durable write requires reconciliation");
+	}
 }
 
 export function isSpeakerLabelCanary(video: {
@@ -90,9 +137,9 @@ export async function loadSpeakerLabelSource(
 	ownerId: string,
 	executor: Executor = db(),
 ): Promise<SpeakerLabelSource> {
-	const [source] = rows(
+	const found = rows(
 		await executor.execute(sql`
-		SELECT v.id AS videoId, v.ownerId, v.bucket, v.storageIntegrationId,
+		SELECT v.id AS videoId, v.ownerId, v.bucket, v.storageIntegrationId, v.transcriptionStatus,
 			s.liveKey AS sourceKey, s.sha256 AS sourceSha256,
 			JSON_UNQUOTE(JSON_EXTRACT(v.source, '$.type')) AS sourceType,
 			u.phase AS uploadPhase,
@@ -104,6 +151,13 @@ export async function loadSpeakerLabelSource(
 		WHERE v.id = ${videoId} AND v.ownerId = ${ownerId}
 	`),
 	);
+	if (found.length !== 1) {
+		throw new FatalError("Speaker-label source requires reconciliation");
+	}
+	const source = found[0];
+	if (source?.transcriptionStatus === "COMPLETE") {
+		throw new FatalError("Speaker-label transcription already completed");
+	}
 	const parsed = bindingSchema.safeParse(source);
 	if (
 		source?.sourceType !== "webMP4" ||
@@ -143,18 +197,36 @@ export async function reserveSpeakerLabelRecording(
 ) {
 	return db().transaction(async (tx) => {
 		// Outbox has no unique job key; every claimant locks the same parent first.
-		await tx.execute(
-			sql`SELECT id FROM videos WHERE id = ${video.id} FOR UPDATE`,
-		);
+		const current = await lockRecording(video.id, tx);
 		const existing = await loadSpeakerLabelClaim(video.id, tx);
-		if (existing) {
-			if (!existing.transcriptId) {
+		if (await hasLegacyTranscriptAdmission(video.id, tx)) {
+			throw new FatalError(
+				"Legacy transcription holds this recording; no label admission",
+			);
+		}
+		if (current.transcriptionStatus === "COMPLETE") {
+			if (existing?.state !== "accepted") {
 				throw new FatalError(
-					"Speaker-labeled submission outcome unknown; do not resubmit",
+					"Speaker-label canary cannot backfill an existing transcript",
 				);
 			}
-			return existing;
+			return { claim: existing, completed: true };
 		}
+		if (existing && existing.state !== "accepted") {
+			throw new FatalError(
+				"Speaker-labeled submission outcome unknown; do not resubmit",
+			);
+		}
+		if (current.transcriptionStatus !== "PROCESSING") {
+			requireOneWrite(
+				await tx.execute(sql`
+				UPDATE videos SET transcriptionStatus = 'PROCESSING'
+				WHERE id = ${video.id}
+				AND (transcriptionStatus IS NULL OR transcriptionStatus <> 'COMPLETE')
+			`),
+			);
+		}
+		if (existing) return { claim: existing, completed: false };
 		const reservation: SpeakerLabelReservation = {
 			state: "reserved",
 			videoId: video.id,
@@ -164,12 +236,14 @@ export async function reserveSpeakerLabelRecording(
 			language,
 			token: randomUUID(),
 		};
-		await tx.execute(sql`
+		requireOneWrite(
+			await tx.execute(sql`
 			INSERT INTO outbox (videoId, revisionId, job, payload, createdAt)
 			VALUES (${video.id}, 'speaker-label-v1', ${SPEAKER_LABEL_JOB},
 				${JSON.stringify(reservation)}, NOW(3))
-		`);
-		return reservation;
+		`),
+		);
+		return { claim: reservation, completed: false };
 	});
 }
 
@@ -179,9 +253,10 @@ export async function reserveSpeakerLabelSubmit(
 	reservationToken?: string,
 ): Promise<{ submit: boolean; claim: SpeakerLabelClaim }> {
 	return db().transaction(async (tx) => {
-		await tx.execute(
-			sql`SELECT id FROM videos WHERE id = ${source.videoId} FOR UPDATE`,
-		);
+		const video = await lockRecording(source.videoId, tx);
+		if (video.transcriptionStatus === "COMPLETE") {
+			throw new FatalError("Speaker-label transcription already completed");
+		}
 		const current = await loadSpeakerLabelSource(
 			source.videoId,
 			source.ownerId,
@@ -222,10 +297,12 @@ export async function reserveSpeakerLabelSubmit(
 			token: existing.token,
 			deadlineMs: Date.now() + SPEAKER_LABEL_DEADLINE_MS,
 		};
-		await tx.execute(sql`
+		requireOneWrite(
+			await tx.execute(sql`
 			UPDATE outbox SET payload = ${JSON.stringify(claim)}
 			WHERE videoId = ${source.videoId} AND job = ${SPEAKER_LABEL_JOB}
-		`);
+		`),
+		);
 		return { submit: true, claim };
 	});
 }
@@ -234,10 +311,9 @@ export async function persistSpeakerLabelId(
 	claim: SpeakerLabelClaim,
 	transcriptId: string,
 ): Promise<void> {
+	if (!transcriptId) throw new FatalError("Speaker-label accepted ID required");
 	await db().transaction(async (tx) => {
-		await tx.execute(
-			sql`SELECT id FROM videos WHERE id = ${claim.videoId} FOR UPDATE`,
-		);
+		await lockRecording(claim.videoId, tx);
 		const current = await loadSpeakerLabelClaim(claim.videoId, tx);
 		if (
 			!current ||
@@ -249,10 +325,12 @@ export async function persistSpeakerLabelId(
 				"Speaker-label claim changed; reconciliation required",
 			);
 		}
-		await tx.execute(sql`
+		requireOneWrite(
+			await tx.execute(sql`
 			UPDATE outbox SET payload = ${JSON.stringify({ ...current, state: "accepted", transcriptId })}
 			WHERE videoId = ${claim.videoId} AND job = ${SPEAKER_LABEL_JOB}
-		`);
+		`),
+		);
 	});
 	const saved = await loadSpeakerLabelClaim(claim.videoId);
 	if (saved?.token !== claim.token || saved.transcriptId !== transcriptId) {
@@ -270,15 +348,31 @@ export async function assertSpeakerLabelSource(claim: SpeakerLabelClaim) {
 }
 
 export async function assertNoSpeakerLabelClaim(videoId: string) {
-	if (
-		serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY?.split("/")[1] ===
-			videoId ||
-		(await loadSpeakerLabelClaim(videoId))
-	) {
-		throw new FatalError(
-			"Speaker-label claim holds this recording; no fallback submission",
+	await db().transaction(async (tx) => {
+		await lockRecording(videoId, tx);
+		if (await loadSpeakerLabelClaim(videoId, tx)) {
+			throw new FatalError(
+				"Speaker-label claim holds this recording; no fallback submission",
+			);
+		}
+		// This fence only excludes labels; legacy step retries keep their existing semantics.
+		if (await hasLegacyTranscriptAdmission(videoId, tx)) return;
+		if (
+			serverEnv().CAP_TRANSCRIPT_SPEAKER_LABELS_CANARY?.split("/")[1] ===
+			videoId
+		) {
+			throw new FatalError(
+				"Speaker-label claim holds this recording; no fallback submission",
+			);
+		}
+		requireOneWrite(
+			await tx.execute(sql`
+			INSERT INTO outbox (videoId, revisionId, job, payload, createdAt)
+			VALUES (${videoId}, 'legacy-transcript-v1', ${LEGACY_TRANSCRIPT_JOB},
+				${JSON.stringify({ videoId })}, NOW(3))
+		`),
 		);
-	}
+	});
 }
 
 const providerResult = z.object({
@@ -292,7 +386,7 @@ const providerResult = z.object({
 });
 
 export async function pollSpeakerLabelTranscript(claim: SpeakerLabelClaim) {
-	if (!claim.transcriptId) {
+	if (claim.state !== "accepted" || !claim.transcriptId) {
 		throw new FatalError(
 			"Speaker-label unknown outcome requires reconciliation",
 		);

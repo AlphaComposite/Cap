@@ -56,6 +56,7 @@ const state = vi.hoisted(() => ({
 	editRows: [] as unknown[],
 	fakeAudioPath: "",
 	speakerLabels: false,
+	legacy: false,
 }));
 
 vi.mock("@cap/env", () => ({
@@ -70,7 +71,29 @@ vi.mock("@cap/database/schema", () => schemaMocks);
 
 vi.mock("@cap/database", () => ({
 	db: () => ({
-		execute: async () => [[]],
+		execute: async (query: {
+			strings: TemplateStringsArray;
+			values: unknown[];
+		}) => {
+			const text = query.strings.join("?");
+			if (text.includes("FROM videos"))
+				return [
+					[
+						{
+							id: videoRow.id,
+							transcriptionStatus: videoRow.transcriptionStatus,
+						},
+					],
+				];
+			if (text.includes("FROM outbox"))
+				return [
+					query.values.includes("legacy-transcript-submit") && state.legacy
+						? [{ payload: { videoId: videoRow.id } }]
+						: [],
+				];
+			if (text.includes("INSERT INTO outbox")) state.legacy = true;
+			return [{ affectedRows: 1 }];
+		},
 		select: () => ({
 			from: (table: unknown) => {
 				if (table === schemaMocks.videoUploads) {
@@ -219,6 +242,7 @@ describe("transcribeVideoWorkflow earlyFromSegments", () => {
 		mocks.updates.length = 0;
 		state.editRows = [];
 		state.speakerLabels = false;
+		state.legacy = false;
 		videoRow.duration = null;
 		videoRow.source = { type: "desktopSegments" };
 		mocks.transcribe.mockReset();

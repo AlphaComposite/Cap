@@ -53,6 +53,7 @@ import type { RelocationState } from "@/lib/source-relocation";
 import {
 	assertNoSpeakerLabelClaim,
 	assertSpeakerLabelSource,
+	hasLegacyTranscriptAdmission,
 	isSpeakerLabelCanary,
 	loadSpeakerLabelClaim,
 	loadSpeakerLabelSource,
@@ -356,10 +357,12 @@ async function validateVideo(
 		result.video.settings?.disableTranscript ??
 		result.orgSettings?.disableTranscript ??
 		false;
+	const selected = !earlyFromSegments && isSpeakerLabelCanary(result.video);
+	const legacyAdmission =
+		selected && (await hasLegacyTranscriptAdmission(videoId));
 	let existingClaim = await loadSpeakerLabelClaim(videoId);
 	const speakerLabels =
-		existingClaim !== null ||
-		(!earlyFromSegments && isSpeakerLabelCanary(result.video));
+		existingClaim !== null || (selected && !legacyAdmission);
 	if (speakerLabels && result.video.transcriptionStatus === "COMPLETE") {
 		if (!existingClaim?.transcriptId) {
 			throw new FatalError(
@@ -389,17 +392,28 @@ async function validateVideo(
 			"Speaker-labeled submission outcome unknown; do not resubmit",
 		);
 	}
-	if (speakerLabels && !existingClaim) {
-		existingClaim = await reserveSpeakerLabelRecording(
+	let speakerLabelCompleted = false;
+	if (speakerLabels) {
+		const admission = await reserveSpeakerLabelRecording(
 			result.video,
 			parseAiGenerationLanguage(result.orgSettings?.aiGenerationLanguage),
 		);
+		existingClaim = admission.claim;
+		speakerLabelCompleted = admission.completed;
+	} else {
+		const transition = await db()
+			.update(videos)
+			.set({ transcriptionStatus: "PROCESSING" })
+			.where(
+				and(
+					eq(videos.id, videoId as Video.VideoId),
+					sql`(${videos.transcriptionStatus} IS NULL OR ${videos.transcriptionStatus} <> 'COMPLETE')`,
+				),
+			);
+		if (!Array.isArray(transition) || transition[0]?.affectedRows !== 1) {
+			throw new FatalError("Transcription already completed or unavailable");
+		}
 	}
-
-	await db()
-		.update(videos)
-		.set({ transcriptionStatus: "PROCESSING" })
-		.where(eq(videos.id, videoId as Video.VideoId));
 
 	return {
 		video: result.video,
@@ -408,6 +422,7 @@ async function validateVideo(
 			result.orgSettings?.aiGenerationLanguage,
 		),
 		speakerLabels,
+		speakerLabelCompleted,
 		speakerLabelTranscriptId: existingClaim?.transcriptId,
 		speakerLabelReservationToken:
 			existingClaim?.state === "reserved" ? existingClaim.token : undefined,
@@ -1040,7 +1055,7 @@ export async function pollSpeakerLabeledTranscription(
 	const claim = await loadSpeakerLabelClaim(videoId);
 	if (
 		!claim ||
-		claim.state === "reserved" ||
+		claim.state !== "accepted" ||
 		claim.transcriptId !== transcriptId
 	) {
 		throw new FatalError("Speaker-label accepted ID requires reconciliation");

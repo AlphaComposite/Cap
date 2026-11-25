@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	isSpeakerLabelCanary,
+	loadSpeakerLabelClaim,
+	loadSpeakerLabelSource,
 	pollSpeakerLabelTranscript,
 	type SpeakerLabelClaim,
 } from "@/lib/speaker-label-claim";
@@ -154,10 +156,109 @@ it("does no IO for an unknown ID or an exhausted deadline", async () => {
 	const fetcher = vi.fn();
 	vi.stubGlobal("fetch", fetcher);
 	await expect(
-		pollSpeakerLabelTranscript({ ...claim, transcriptId: undefined }),
+		pollSpeakerLabelTranscript({
+			...claim,
+			state: "submitting",
+			transcriptId: undefined,
+		}),
 	).rejects.toThrow("unknown outcome");
 	await expect(
 		pollSpeakerLabelTranscript({ ...claim, deadlineMs: Date.now() }),
 	).rejects.toThrow("deadline exhausted");
 	expect(fetcher).not.toHaveBeenCalled();
+});
+
+it.each([
+	null,
+	[],
+	[[{ payload: null }]],
+	[[{ payload: {} }, { payload: {} }]],
+])("fails closed on malformed durable SQL results %j", async (result) => {
+	await expect(
+		loadSpeakerLabelClaim(claim.videoId, {
+			execute: vi.fn().mockResolvedValue(result),
+		}),
+	).rejects.toThrow();
+});
+
+it.each([
+	{ state: "accepted", transcriptId: undefined },
+	{ state: "accepted", transcriptId: "" },
+	{ state: "accepted", transcriptId: null },
+	{ state: "submitting", transcriptId: "known-id" },
+	{ state: "submitting", transcriptId: "" },
+	{ state: "submitting", transcriptId: null },
+	{ state: "reserved", transcriptId: "known-id" },
+])("rejects contradictory claim %j", async (contradiction) => {
+	await expect(
+		loadSpeakerLabelClaim(claim.videoId, {
+			execute: vi
+				.fn()
+				.mockResolvedValue([[{ payload: { ...claim, ...contradiction } }]]),
+		}),
+	).rejects.toThrow("requires reconciliation");
+});
+
+it("requires exactly one source row, not merely the first valid result", async () => {
+	const source = {
+		...claim,
+		sourceKey: `private/source/${claim.videoId}/original`,
+		sourceType: "webMP4",
+		liveTranscript: null,
+		edited: 0,
+		uploadPhase: null,
+	};
+	await expect(
+		loadSpeakerLabelSource(claim.videoId, claim.ownerId, {
+			execute: vi.fn().mockResolvedValue([[source, source]]),
+		}),
+	).rejects.toThrow();
+});
+
+it("distinguishes SQL-null payload from no row and accepts only consistent claim states", async () => {
+	await expect(
+		loadSpeakerLabelClaim(claim.videoId, {
+			execute: vi.fn().mockResolvedValue([[]]),
+		}),
+	).resolves.toBeNull();
+	await expect(
+		loadSpeakerLabelClaim(claim.videoId, {
+			execute: vi.fn().mockResolvedValue([[{ payload: null }]]),
+		}),
+	).rejects.toThrow("requires reconciliation");
+	await expect(
+		loadSpeakerLabelClaim(claim.videoId, {
+			execute: vi.fn().mockResolvedValue([[{ payload: claim }]]),
+		}),
+	).resolves.toEqual(claim);
+	const submitting = { ...claim, state: "submitting", transcriptId: undefined };
+	await expect(
+		loadSpeakerLabelClaim(claim.videoId, {
+			execute: vi.fn().mockResolvedValue([[{ payload: submitting }]]),
+		}),
+	).resolves.toEqual(submitting);
+});
+
+it("accepts SQL-null upload phase and rejects completed sources before polling", async () => {
+	const source = {
+		...claim,
+		sourceKey: `private/source/${claim.videoId}/original`,
+		sourceType: "webMP4",
+		transcriptionStatus: null,
+		liveTranscript: null,
+		edited: 0,
+		uploadPhase: null,
+	};
+	await expect(
+		loadSpeakerLabelSource(claim.videoId, claim.ownerId, {
+			execute: vi.fn().mockResolvedValue([[source]]),
+		}),
+	).resolves.toMatchObject({ sourceKey: source.sourceKey });
+	await expect(
+		loadSpeakerLabelSource(claim.videoId, claim.ownerId, {
+			execute: vi
+				.fn()
+				.mockResolvedValue([[{ ...source, transcriptionStatus: "COMPLETE" }]]),
+		}),
+	).rejects.toThrow("already completed");
 });
