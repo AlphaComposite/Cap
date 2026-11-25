@@ -32,6 +32,7 @@ const schemaMocks = vi.hoisted(() => ({
 const videoRow = vi.hoisted(() => ({
 	id: "video-123",
 	ownerId: "user-456",
+	bucket: null as string | null,
 	duration: 4,
 	createdAt: new Date(),
 	settings: null as { disableTranscript: boolean } | null,
@@ -436,6 +437,7 @@ describe("transcribeVideoWorkflow", () => {
 	beforeEach(() => {
 		mocks.updates.length = 0;
 		videoRow.transcriptionStatus = "PROCESSING";
+		videoRow.bucket = null;
 		videoRow.settings = null;
 		state.editRows = [];
 		state.speakerLabels = false;
@@ -847,6 +849,34 @@ describe("transcribeVideoWorkflow", () => {
 		});
 	});
 
+	it("a rejected retry cannot prevent the speaker owner from marking NO_AUDIO", async () => {
+		state.speakerLabels = true;
+		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
+		const payload = {
+			videoId: videoRow.id,
+			userId: videoRow.ownerId,
+			aiGenerationEnabled: false,
+		};
+		vi.mocked(fetch).mockImplementationOnce(async () => {
+			state.speakerLabels = false;
+			await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
+				"outcome unknown",
+			);
+			return new Response("audio");
+		});
+		mocks.waitUntilReady.mockResolvedValueOnce({
+			id: "labeled-job",
+			status: "error",
+			error: "no spoken audio",
+		});
+		await expect(transcribeVideoWorkflow(payload)).resolves.toMatchObject({
+			success: true,
+		});
+		expect(videoRow.transcriptionStatus).toBe("NO_AUDIO");
+		expect(mocks.submit).toHaveBeenCalledOnce();
+		expect(mocks.transcribe).not.toHaveBeenCalled();
+	});
+
 	it.each(["legacy", "backfill"])(
 		"fences %s admission before its first paid POST against a selected run paused before reservation",
 		async (path) => {
@@ -1021,6 +1051,7 @@ describe("transcribeVideoWorkflow", () => {
 				state.speakerLabels = false;
 				release();
 				await stale;
+				expect(videoRow.transcriptionStatus).toBe("PROCESSING");
 				return mocks.deleteObject.mock.calls.some(
 					([deleted]) => deleted === key,
 				)
@@ -1383,6 +1414,40 @@ describe("transcribeVideoWorkflow", () => {
 		]);
 		expect(mocks.transcribe).not.toHaveBeenCalled();
 	});
+
+	it.each([false, true])(
+		"cleans only bound speaker audio when resuming an accepted ID after a crash (bucket changed=%s)",
+		async (changed) => {
+			const { submitSpeakerLabeledTranscription, transcribeVideoWorkflow } =
+				await import("@/workflows/transcribe");
+			await submitSpeakerLabeledTranscription(
+				"https://storage.test/audio",
+				"auto",
+				...(await speakerSubmitBinding()),
+			);
+			expect(mocks.deleteObject).not.toHaveBeenCalled();
+			if (changed) videoRow.bucket = "other-bucket";
+			const resumed = transcribeVideoWorkflow({
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: false,
+			});
+			if (changed) {
+				await expect(resumed).rejects.toThrow("recording storage changed");
+				expect(mocks.deleteObject).not.toHaveBeenCalled();
+				expect(mocks.waitUntilReady).not.toHaveBeenCalled();
+				return;
+			}
+			await resumed;
+			expect(videoRow.transcriptionStatus).toBe("COMPLETE");
+			expect(mocks.deleteObject).toHaveBeenCalledExactlyOnceWith(
+				"user-456/video-123/audio-temp-speaker.mp3",
+			);
+			expect(mocks.getInternalSignedObjectUrl).not.toHaveBeenCalled();
+			expect(mocks.submit).toHaveBeenCalledOnce();
+			expect(mocks.transcribe).not.toHaveBeenCalled();
+		},
+	);
 
 	it("refuses a stale source binding before another paid submit or artifact write", async () => {
 		state.speakerLabels = true;

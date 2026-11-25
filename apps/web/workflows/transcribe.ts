@@ -133,10 +133,11 @@ export async function transcribeVideoWorkflow(
 		return { success: true, message: "Transcription disabled - skipped" };
 	}
 
-	// A labeled reservation is exclusive; legacy cleanup must use a different key.
-	const tempAudioFilename = videoData.speakerLabelReservationToken
-		? "audio-temp-speaker.mp3"
-		: undefined;
+	// An accepted ID no longer needs the uploaded audio, even after a crash.
+	const tempAudioFilename =
+		videoData.speakerLabelReservationToken || videoData.speakerLabelTranscriptId
+			? "audio-temp-speaker.mp3"
+			: undefined;
 	const ownsTempAudio =
 		!videoData.speakerLabels || tempAudioFilename !== undefined;
 
@@ -259,7 +260,11 @@ export async function transcribeVideoWorkflow(
 			};
 		}
 
-		await markError(videoId);
+		await markError(
+			videoId,
+			videoData.speakerLabelReservationToken,
+			videoData.speakerLabelTranscriptId,
+		);
 		if (ownsTempAudio)
 			await cleanupTempAudio(
 				videoId,
@@ -420,6 +425,15 @@ async function validateVideo(
 		);
 		existingClaim = admission.claim;
 		speakerLabelCompleted = admission.completed;
+		if (
+			existingClaim.state === "accepted" &&
+			(existingClaim.ownerId !== result.video.ownerId ||
+				existingClaim.bucket !== (result.video.bucket ?? null) ||
+				existingClaim.storageIntegrationId !==
+					(result.video.storageIntegrationId ?? null))
+		) {
+			throw new FatalError("Speaker-label recording storage changed");
+		}
 	} else {
 		const transition = await db()
 			.update(videos)
@@ -533,9 +547,12 @@ async function validateEditTranscriptBackfill(
  * metadata flag, or share pages keep polling for a live transcript that can
  * never resolve. Guarded so videos without the flag see a 0-row update.
  */
-async function clearLiveTranscriptFlag(videoId: string): Promise<void> {
+async function clearLiveTranscriptFlag(
+	videoId: string,
+	executor?: Pick<ReturnType<typeof db>, "update">,
+): Promise<void> {
 	try {
-		await db()
+		await (executor ?? db())
 			.update(videos)
 			.set({
 				metadata: sql`JSON_REMOVE(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.liveTranscript')`,
@@ -585,19 +602,37 @@ async function markNoAudio(videoId: string): Promise<void> {
 	await clearLiveTranscriptFlag(videoId);
 }
 
-async function markError(videoId: string): Promise<void> {
+async function markError(
+	videoId: string,
+	reservationToken?: string,
+	transcriptId?: string,
+): Promise<void> {
 	"use step";
 
-	await db()
-		.update(videos)
-		.set({ transcriptionStatus: "ERROR" })
-		.where(
-			and(
-				eq(videos.id, videoId as Video.VideoId),
-				eq(videos.transcriptionStatus, "PROCESSING"),
-			),
+	await db().transaction(async (tx) => {
+		// Match admission's lock order so a new claim cannot slip past this check.
+		await tx.execute(
+			sql`SELECT id FROM videos WHERE id = ${videoId} FOR UPDATE`,
 		);
-	await clearLiveTranscriptFlag(videoId);
+		const claim = await loadSpeakerLabelClaim(videoId, tx);
+		const canWrite = reservationToken
+			? claim?.token === reservationToken
+			: transcriptId
+				? claim?.transcriptId === transcriptId
+				: !claim;
+		if (!canWrite) return;
+
+		await tx
+			.update(videos)
+			.set({ transcriptionStatus: "ERROR" })
+			.where(
+				and(
+					eq(videos.id, videoId as Video.VideoId),
+					eq(videos.transcriptionStatus, "PROCESSING"),
+				),
+			);
+		await clearLiveTranscriptFlag(videoId, tx);
+	});
 }
 
 async function deferEarlyTranscription(videoId: string): Promise<void> {
