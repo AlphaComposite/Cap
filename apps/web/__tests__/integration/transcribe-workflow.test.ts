@@ -563,7 +563,9 @@ describe("transcribeVideoWorkflow", () => {
 		).toEqual([]);
 		expect(
 			mocks.deleteObject.mock.calls.every(([key]) =>
-				String(key).endsWith("audio-temp.mp3"),
+				String(key).endsWith(
+					state.speakerLabels ? "audio-temp-speaker.mp3" : "audio-temp.mp3",
+				),
 			),
 		).toBe(true);
 	});
@@ -1014,12 +1016,24 @@ describe("transcribeVideoWorkflow", () => {
 			await ready;
 			videoRow.transcriptionStatus = "PROCESSING";
 			state.speakerLabels = true;
+			vi.mocked(fetch).mockImplementationOnce(async () => {
+				const key = mocks.getInternalSignedObjectUrl.mock.lastCall?.[0];
+				state.speakerLabels = false;
+				release();
+				await stale;
+				return mocks.deleteObject.mock.calls.some(
+					([deleted]) => deleted === key,
+				)
+					? new Response(null, { status: 404 })
+					: new Response("audio");
+			});
 			await transcribeVideoWorkflow(payload);
-			state.speakerLabels = false;
-			release();
-			await stale;
 			expect(mocks.submit).toHaveBeenCalledOnce();
 			expect(mocks.transcribe).not.toHaveBeenCalled();
+			const audioKey = mocks.getInternalSignedObjectUrl.mock.lastCall?.[0];
+			expect(
+				mocks.deleteObject.mock.calls.filter(([key]) => key === audioKey),
+			).toHaveLength(1);
 		},
 	);
 

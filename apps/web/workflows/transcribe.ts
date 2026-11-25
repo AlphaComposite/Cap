@@ -133,6 +133,13 @@ export async function transcribeVideoWorkflow(
 		return { success: true, message: "Transcription disabled - skipped" };
 	}
 
+	// A labeled reservation is exclusive; legacy cleanup must use a different key.
+	const tempAudioFilename = videoData.speakerLabelReservationToken
+		? "audio-temp-speaker.mp3"
+		: undefined;
+	const ownsTempAudio =
+		!videoData.speakerLabels || tempAudioFilename !== undefined;
+
 	try {
 		if (videoData.speakerLabelTranscriptId) {
 			await saveTranscription(
@@ -195,7 +202,7 @@ export async function transcribeVideoWorkflow(
 					videoId,
 					userId,
 					videoData.video,
-					undefined,
+					tempAudioFilename,
 					speakerLabelSource?.sourceKey,
 					videoData.speakerLabels,
 				);
@@ -239,7 +246,13 @@ export async function transcribeVideoWorkflow(
 			error.message.toLowerCase().includes("no spoken audio")
 		) {
 			await markNoAudio(videoId);
-			await cleanupTempAudio(videoId, userId, videoData.video);
+			if (ownsTempAudio)
+				await cleanupTempAudio(
+					videoId,
+					userId,
+					videoData.video,
+					tempAudioFilename,
+				);
 			return {
 				success: true,
 				message: "Video has no spoken audio - skipped transcription",
@@ -247,11 +260,18 @@ export async function transcribeVideoWorkflow(
 		}
 
 		await markError(videoId);
-		await cleanupTempAudio(videoId, userId, videoData.video);
+		if (ownsTempAudio)
+			await cleanupTempAudio(
+				videoId,
+				userId,
+				videoData.video,
+				tempAudioFilename,
+			);
 		throw error;
 	}
 
-	await cleanupTempAudio(videoId, userId, videoData.video);
+	if (ownsTempAudio)
+		await cleanupTempAudio(videoId, userId, videoData.video, tempAudioFilename);
 
 	if (aiGenerationEnabled) {
 		await queueAiGeneration(videoId, userId);
