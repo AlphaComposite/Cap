@@ -231,8 +231,9 @@ describe("Instant player readiness and failure UX", () => {
 		const first = revision(1);
 		mocks.loadSource.mockClear();
 		await renderRevision(first);
-		const video = videoRef.current!;
-		vi.spyOn(video, "duration", "get").mockReturnValue(first.duration);
+		const video = videoRef.current;
+		if (!video) throw new Error("Expected a mounted video");
+		vi.spyOn(video, "duration", "get").mockReturnValue(45);
 		await act(async () => {
 			video.dispatchEvent(new Event("loadedmetadata"));
 			video.currentTime = 10;

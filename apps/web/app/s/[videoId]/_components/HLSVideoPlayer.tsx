@@ -796,7 +796,8 @@ export function HLSVideoPlayer({
 		isPlaybackSourceReady,
 		reloadPlayback,
 		router,
-		videoRef.current,
+		// The video mounts with this player; ref.current changes after render.
+		videoRef,
 		autoplay,
 	]);
 
