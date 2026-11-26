@@ -225,9 +225,29 @@ describe("Instant player readiness and failure UX", () => {
 			);
 		};
 		await act(render);
-		// Settle the initial null -> mounted videoRef effect dependency before errors.
-		await act(render);
 	};
+
+	it("keeps the initial seek's source attached when metadata updates the player", async () => {
+		const first = revision(1);
+		mocks.loadSource.mockClear();
+		await renderRevision(first);
+		const video = videoRef.current!;
+		vi.spyOn(video, "duration", "get").mockReturnValue(first.duration);
+		await act(async () => {
+			video.dispatchEvent(new Event("loadedmetadata"));
+			video.currentTime = 10;
+		});
+		expect(mocks.loadSource.mock.calls).toEqual([[first.playlistUrl]]);
+		expect(video.currentTime).toBe(10);
+
+		const next = revision(2);
+		await renderRevision(next);
+		expect(mocks.loadSource.mock.calls).toEqual([
+			[first.playlistUrl],
+			[next.playlistUrl],
+		]);
+	});
+
 	const revisionError = () =>
 		act(async () => {
 			if (mocks.supported) {
