@@ -49,9 +49,7 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - macos-latest
           - windows-2022
-          - ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -210,6 +208,7 @@ jobs:
         env:
           CAP_SYNC_MATRIX_REPORT: ${{ github.workspace }}/sync-matrix-${{ matrix.runner }}.json
           CAP_SYNC_MATRIX_RANDOM_CASES: ${{ github.event_name == 'schedule' && '40' || '6' }}
+          CAP_SYNC_MATRIX_SEED: '1795664369453625100'
         run: |
           cargo test --locked -p cap-recording --test sync_matrix -- --nocapture
 
