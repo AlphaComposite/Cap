@@ -100,6 +100,7 @@ vi.mock("next/navigation", () => ({
 	},
 }));
 vi.mock("@/actions/videos/get-analytics", () => ({}));
+vi.mock("@/actions/videos/get-edit-readiness", () => ({}));
 vi.mock("@/app/(org)/dashboard/dashboard-data", () => ({}));
 vi.mock("@/lib/ai/provider", () => ({}));
 vi.mock("@/lib/desktop-segments-recovery", () => ({}));

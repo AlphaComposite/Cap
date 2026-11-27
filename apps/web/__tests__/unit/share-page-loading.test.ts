@@ -1,6 +1,12 @@
 import { Context, Effect, Option } from "effect";
-import { isValidElement, type ReactElement } from "react";
+import {
+	Children,
+	isValidElement,
+	type ReactElement,
+	type ReactNode,
+} from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { planSharePlayback } from "@/lib/revision-playback";
 
 const mocks = vi.hoisted(() => ({
 	select: vi.fn(),
@@ -75,6 +81,23 @@ vi.mock("@/lib/desktop-segments-recovery", () => ({
 }));
 vi.mock("@/lib/Notification", () => ({ createNotification: vi.fn() }));
 vi.mock("@/lib/public-share-video", () => ({ getPublicShareVideo: vi.fn() }));
+vi.mock("@/lib/revision-playback-load", () => ({
+	loadRevisionPlayback: async (input: {
+		isScreenshot: boolean;
+		hasActiveUpload: boolean;
+		sourceType: string;
+	}) => ({
+		publication: { enabled: false, currentRevisionId: null, generation: 0 },
+		plan: planSharePlayback({
+			...input,
+			enabled: false,
+			currentRevisionId: null,
+		}),
+		playback: null,
+		publicPlaylistUrl: null,
+		thumbnailUnavailable: false,
+	}),
+}));
 vi.mock("@/lib/share-playback", () => ({
 	getSharePlaybackUrl: mocks.playbackUrl,
 }));
@@ -99,6 +122,7 @@ vi.mock("@/app/s/[videoId]/_components/ShareHeader", () => ({
 vi.mock("@/app/s/[videoId]/Share", () => ({ Share: () => null }));
 
 import ShareVideoPage from "@/app/s/[videoId]/page";
+import { Share } from "@/app/s/[videoId]/Share";
 
 const createVideo = () => ({
 	id: "video",
@@ -149,14 +173,21 @@ async function renderAuthorizedContent() {
 	if (!isValidElement(content) || typeof content.type !== "function") {
 		throw new Error("Expected authorized share content");
 	}
-	return (await (content.type as (props: unknown) => Promise<unknown>)(
-		content.props,
-	)) as ReactElement<{
-		children: ReactElement<{
+	const rendered = (await (
+		content.type as (props: unknown) => Promise<unknown>
+	)(content.props)) as ReactElement<{ children: ReactNode }>;
+	const share = Children.toArray(rendered.props.children).find(
+		(child) => isValidElement(child) && child.type === Share,
+	);
+	if (
+		!isValidElement<{
 			initialPlaybackUrl?: Promise<string | null>;
 			data: { sharedOrganizations: unknown[]; ownerIsOverShareLimit: boolean };
-		}>;
-	}>;
+		}>(share)
+	) {
+		throw new Error("Expected share player");
+	}
+	return share;
 }
 
 describe("share page loading", () => {
@@ -174,7 +205,7 @@ describe("share page loading", () => {
 			{ id: "shared", organizationId: "shared", name: "Shared team" },
 		];
 		const content = await renderAuthorizedContent();
-		expect(content.props.children.props.data.sharedOrganizations).toEqual([
+		expect(content.props.data.sharedOrganizations).toEqual([
 			{ id: "shared", name: "Shared team" },
 		]);
 		expect(mocks.select).toHaveBeenCalledTimes(3);
@@ -248,17 +279,15 @@ describe("share page loading", () => {
 	it("streams the authorized MP4 URL without waiting for signing to finish", async () => {
 		mocks.playbackUrl.mockReturnValue(new Promise(() => {}));
 		const content = await renderAuthorizedContent();
-		expect(content.props.children.props.initialPlaybackUrl).toBeInstanceOf(
-			Promise,
-		);
+		expect(content.props.initialPlaybackUrl).toBeInstanceOf(Promise);
 		expect(mocks.playbackUrl).toHaveBeenCalledOnce();
 	});
 
 	it("does not sign media hidden by the shareable link quota", async () => {
 		mocks.quota.mockResolvedValue(true);
 		const content = await renderAuthorizedContent();
-		expect(await content.props.children.props.initialPlaybackUrl).toBeNull();
-		expect(content.props.children.props.data.ownerIsOverShareLimit).toBe(true);
+		expect(await content.props.initialPlaybackUrl).toBeNull();
+		expect(content.props.data.ownerIsOverShareLimit).toBe(true);
 		expect(mocks.playbackUrl).not.toHaveBeenCalled();
 	});
 
@@ -271,7 +300,7 @@ describe("share page loading", () => {
 	])("retains the existing player resolution for %j", async (changes) => {
 		arrangeRows([{ ...createVideo(), ...changes }]);
 		const content = await renderAuthorizedContent();
-		expect(content.props.children.props.initialPlaybackUrl).toBeUndefined();
+		expect(content.props.initialPlaybackUrl).toBeUndefined();
 		expect(mocks.playbackUrl).not.toHaveBeenCalled();
 	});
 });
