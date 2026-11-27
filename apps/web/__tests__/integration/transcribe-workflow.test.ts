@@ -1,3 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assemblyAIEditResponse } from "../fixtures/assemblyai-edit-response";
 
@@ -51,6 +58,8 @@ const videoRow = vi.hoisted(() => ({
 }));
 
 const state = vi.hoisted(() => ({
+	realHttp: false,
+	audio: Buffer.alloc(8),
 	editRows: [] as unknown[],
 	speakerLabels: false,
 	claim: null as Record<string, unknown> | null,
@@ -266,15 +275,24 @@ vi.mock("workflow/api", () => ({
 	start: vi.fn(),
 }));
 
-vi.mock("assemblyai", () => ({
-	AssemblyAI: class {
-		transcripts = {
-			transcribe: mocks.transcribe,
-			submit: mocks.submit,
-			waitUntilReady: mocks.waitUntilReady,
-		};
-	},
-}));
+vi.mock("assemblyai", async () => {
+	const actual =
+		await vi.importActual<typeof import("assemblyai")>("assemblyai");
+	return {
+		AssemblyAI: class {
+			transcripts;
+			constructor(options: ConstructorParameters<typeof actual.AssemblyAI>[0]) {
+				this.transcripts = state.realHttp
+					? new actual.AssemblyAI(options).transcripts
+					: {
+							transcribe: mocks.transcribe,
+							submit: mocks.submit,
+							waitUntilReady: mocks.waitUntilReady,
+						};
+			}
+		},
+	};
+});
 
 vi.mock("@cap/web-backend/src/Storage/index", () => ({
 	Storage: {
@@ -302,17 +320,25 @@ vi.mock("@/lib/video-storage", () => ({
 vi.mock("@/lib/media-client", () => ({
 	isMediaServerConfigured: () => true,
 	probeVideoViaMediaServer: mocks.probeVideo,
-	extractAudioViaMediaServer: async () => Buffer.from("audio"),
+	extractAudioViaMediaServer: async () =>
+		state.realHttp ? state.audio : Buffer.alloc(8),
 	checkHasAudioTrackViaMediaServer: async () => true,
 }));
 
-vi.mock("@/lib/audio-extract", () => ({
-	checkHasAudioTrack: async () => true,
-	extractAudioFromUrl: async () => ({
-		filePath: "/tmp/audio.mp3",
-		cleanup: async () => {},
-	}),
-}));
+vi.mock("@/lib/audio-extract", async () => {
+	const actual = await vi.importActual<typeof import("@/lib/audio-extract")>(
+		"@/lib/audio-extract",
+	);
+	return {
+		checkHasAudioTrack: async () => true,
+		extractAudioFromUrl: async () => ({
+			filePath: "/tmp/audio.mp3",
+			cleanup: async () => {},
+		}),
+		verifyExtractedMp3: (buffer: Uint8Array) =>
+			state.realHttp ? actual.verifyExtractedMp3(buffer) : Promise.resolve(4),
+	};
+});
 
 vi.mock("@/lib/audio-enhance", () => ({
 	ENHANCED_AUDIO_CONTENT_TYPE: "audio/mpeg",
@@ -328,18 +354,143 @@ function pipeValue(value: unknown) {
 	return { pipe: (runner: (input: unknown) => unknown) => runner(value) };
 }
 
-async function speakerSubmitBinding() {
-	const { loadSpeakerLabelSource, reserveSpeakerLabelRecording } = await import(
-		"@/lib/speaker-label-claim"
+const nativeFetch = globalThis.fetch;
+
+async function providerStandIn(failure = "") {
+	state.realHttp = true;
+	const { getFfmpegPath } = await vi.importActual<
+		typeof import("@/lib/audio-extract")
+	>("@/lib/audio-extract");
+	state.audio = execFileSync(
+		getFfmpegPath(),
+		[
+			"-v",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=0.2",
+			"-threads",
+			"1",
+			"-f",
+			"mp3",
+			"pipe:1",
+		],
+		{ timeout: 5000 },
 	);
+	const requests: Array<{
+		method: string;
+		path: string;
+		sha256: string;
+		body: string;
+		claim: typeof state.claim;
+	}> = [];
+	const audio = state.audio;
+	let releaseUpload = () => {};
+	const uploadGate = new Promise<void>((resolve) => {
+		releaseUpload = resolve;
+	});
+	const server = createServer(async (request, response) => {
+		const chunks: Buffer[] = [];
+		for await (const chunk of request) chunks.push(Buffer.from(chunk));
+		const body = Buffer.concat(chunks);
+		const path = request.url ?? "";
+		requests.push({
+			method: request.method ?? "",
+			path,
+			sha256: createHash("sha256").update(body).digest("hex"),
+			body: path === "/v2/upload" ? "" : body.toString(),
+			claim: structuredClone(state.claim),
+		});
+		if (path === "/v2/upload" && failure === "pause-upload") await uploadGate;
+		if (failure === `disconnect:${path}`) {
+			request.destroy();
+			return;
+		}
+		if (failure === `reject:${path}`) {
+			response.writeHead(503);
+			response.end();
+			return;
+		}
+		if (path === "/v2/upload" && failure === "source-change")
+			state.sourceSha256 = "b".repeat(64);
+		if (path === "/v2/upload" && failure === "submit-write")
+			state.failTransition = true;
+		if (path === "/v2/upload" && failure === "deadline-change")
+			state.claim = { ...state.claim, deadlineMs: Date.now() - 1 };
+		if (failure === path) {
+			response.writeHead(307, { Location: "/redirect-target" });
+			response.end();
+			return;
+		}
+		if (path === "/storage") {
+			response.end(
+				failure === "changed-bytes" ? Buffer.alloc(audio.length, 1) : audio,
+			);
+			return;
+		}
+		response.setHeader("Content-Type", "application/json");
+		if (path === "/v2/upload") {
+			response.end(
+				JSON.stringify({
+					upload_url:
+						failure === "blank-handle" ? " " : "opaque handle: not a URL",
+				}),
+			);
+			return;
+		}
+		response.end(
+			JSON.stringify({
+				...assemblyAIEditResponse,
+				id: "labeled-job",
+				audio_duration: 4,
+			}),
+		);
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("No listener");
+	const origin = `http://127.0.0.1:${address.port}`;
+	vi.stubGlobal(
+		"fetch",
+		vi.fn((input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(input instanceof Request ? input.url : input);
+			if (url.origin === "https://storage.test") {
+				return nativeFetch(`${origin}/storage`, init);
+			}
+			if (url.origin !== "https://api.assemblyai.com") {
+				throw new Error(`Unexpected destination ${url.origin}`);
+			}
+			return nativeFetch(`${origin}${url.pathname}`, init);
+		}),
+	);
+	return {
+		requests,
+		releaseUpload: () => releaseUpload(),
+		close: async () => {
+			console.info("HTTP evidence", JSON.stringify({ failure, requests }));
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) =>
+				server.close((error) => (error ? reject(error) : resolve())),
+			);
+			state.realHttp = false;
+		},
+	};
+}
+
+async function speakerSubmitBinding() {
+	const {
+		bindSpeakerLabelAudio,
+		loadSpeakerLabelSource,
+		reserveSpeakerLabelRecording,
+	} = await import("@/lib/speaker-label-claim");
 	const { claim: reservation } = await reserveSpeakerLabelRecording(
 		videoRow,
 		"auto",
 	);
-	return [
-		await loadSpeakerLabelSource("video-123", "user-456"),
-		reservation.token,
-	] as const;
+	const source = await loadSpeakerLabelSource("video-123", "user-456");
+	await bindSpeakerLabelAudio(source, reservation.token, Buffer.alloc(8), 4);
+	return [source, reservation.token] as const;
 }
 
 let deliverStep = async (
@@ -441,6 +592,7 @@ describe("transcribeVideoWorkflow", () => {
 	});
 	beforeEach(() => {
 		mocks.updates.length = 0;
+		state.realHttp = false;
 		videoRow.transcriptionStatus = "PROCESSING";
 		videoRow.ownerId = "user-456";
 		videoRow.bucket = null;
@@ -483,13 +635,376 @@ describe("transcribeVideoWorkflow", () => {
 		mocks.startAiGeneration.mockResolvedValue({ success: true, message: "ok" });
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (url: string) =>
-				url.startsWith("https://api.assemblyai.com/")
-					? Response.json(await mocks.waitUntilReady(url.split("/").at(-1)))
-					: new Response(new ArrayBuffer(8)),
-			),
+			vi.fn(async (url: string, init?: RequestInit) => {
+				if (url === "https://api.assemblyai.com/v2/upload")
+					return Response.json({ upload_url: "opaque-handle" });
+				if (url === "https://api.assemblyai.com/v2/transcript")
+					return Response.json(
+						await mocks.submit(JSON.parse(String(init?.body))),
+					);
+				if (url.startsWith("https://api.assemblyai.com/"))
+					return Response.json(
+						await mocks.waitUntilReady(url.split("/").at(-1)),
+					);
+				return new Response(new ArrayBuffer(8));
+			}),
 		);
 	});
+
+	it.each(["/v2/upload", "/v2/transcript", "/v2/transcript/labeled-job"])(
+		"selected HTTP boundary rejects redirect at %s without reaching its target",
+		async (path) => {
+			state.speakerLabels = true;
+			const standIn = await providerStandIn(path);
+			try {
+				const { transcribeVideoWorkflow } = await import(
+					"@/workflows/transcribe"
+				);
+				const result = await transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: false,
+				}).then(
+					() => "resolved",
+					() => "rejected",
+				);
+				expect(
+					standIn.requests.filter(
+						(request) => request.path === "/redirect-target",
+					),
+				).toHaveLength(0);
+				expect(result).toBe("rejected");
+			} finally {
+				await standIn.close();
+			}
+		},
+	);
+
+	it("selected HTTP boundary rejects storage bytes changed after extraction", async () => {
+		state.speakerLabels = true;
+		const standIn = await providerStandIn("changed-bytes");
+		try {
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			await transcribeVideoWorkflow({
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: false,
+			}).catch(() => {});
+			expect(
+				standIn.requests.filter((request) => request.path.startsWith("/v2/")),
+			).toHaveLength(0);
+		} finally {
+			await standIn.close();
+		}
+	});
+
+	it("selected HTTP boundary commits distinct upload and submit budgets and never fetches the opaque handle", async () => {
+		state.speakerLabels = true;
+		const standIn = await providerStandIn();
+		try {
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			await transcribeVideoWorkflow({
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: false,
+			});
+			const provider = standIn.requests.filter((request) =>
+				request.path.startsWith("/v2/"),
+			);
+			expect(provider.map(({ method, path }) => [method, path])).toEqual([
+				["POST", "/v2/upload"],
+				["POST", "/v2/transcript"],
+				["GET", "/v2/transcript/labeled-job"],
+			]);
+			const [upload, submit] = provider;
+			expect(upload?.claim?.http).toMatchObject({
+				uploadSpent: true,
+				audio: {
+					sha256: upload?.sha256,
+					bytes: state.audio.length,
+					sourceKey: state.sourceKey,
+					sourceSha256: state.sourceSha256,
+				},
+			});
+			expect(upload?.claim?.http).not.toHaveProperty("submitSpent");
+			expect(submit?.claim?.http).toMatchObject({
+				uploadSpent: true,
+				submitSpent: true,
+				uploadHandle: "opaque handle: not a URL",
+			});
+			const { getAssemblyAITranscriptionOptions } = await import(
+				"@/lib/assemblyai"
+			);
+			expect(JSON.parse(submit?.body ?? "null")).toEqual({
+				audio_url: "opaque handle: not a URL",
+				...getAssemblyAITranscriptionOptions("auto"),
+				speaker_labels: true,
+			});
+			expect(state.claim).toMatchObject({
+				state: "accepted",
+				transcriptId: "labeled-job",
+			});
+			const count = standIn.requests.length;
+			state.speakerLabels = false;
+			videoRow.transcriptionStatus = "ERROR";
+			await transcribeVideoWorkflow({
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: false,
+			});
+			expect(
+				standIn.requests.slice(count).map(({ method, path }) => [method, path]),
+			).toEqual([["GET", "/v2/transcript/labeled-job"]]);
+			state.claim = { ...state.claim, deadlineMs: Date.now() - 1 };
+			videoRow.transcriptionStatus = "ERROR";
+			await expect(
+				transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: false,
+				}),
+			).rejects.toThrow("deadline exhausted");
+			expect(standIn.requests).toHaveLength(count + 1);
+		} finally {
+			await standIn.close();
+		}
+	});
+
+	it.each(["", "/v2/transcript"])(
+		"selected HTTP boundary leaves the ordinary SDK path unchanged (%s)",
+		async (redirect) => {
+			const standIn = await providerStandIn(redirect);
+			try {
+				const { transcribeVideoWorkflow } = await import(
+					"@/workflows/transcribe"
+				);
+				await transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: false,
+				});
+				const provider = standIn.requests.filter(
+					(request) => request.path !== "/storage",
+				);
+				expect(provider.map(({ method, path }) => [method, path])).toEqual(
+					redirect
+						? [
+								["POST", "/v2/upload"],
+								["POST", "/v2/transcript"],
+								["POST", "/redirect-target"],
+								["GET", "/v2/transcript/labeled-job"],
+							]
+						: [
+								["POST", "/v2/upload"],
+								["POST", "/v2/transcript"],
+								["GET", "/v2/transcript/labeled-job"],
+							],
+				);
+				expect(provider[0]?.sha256).toBe(
+					createHash("sha256").update(state.audio).digest("hex"),
+				);
+				expect(JSON.parse(provider[1]?.body ?? "null")).not.toHaveProperty(
+					"speaker_labels",
+				);
+				expect(state.claim).toBeNull();
+				expect(state.legacy).toBe(true);
+			} finally {
+				await standIn.close();
+			}
+		},
+	);
+
+	it.each(["source-change", "deadline-change", "blank-handle", "submit-write"])(
+		"selected HTTP boundary stops before submit on %s",
+		async (failure) => {
+			state.speakerLabels = true;
+			const standIn = await providerStandIn(failure);
+			try {
+				const { transcribeVideoWorkflow } = await import(
+					"@/workflows/transcribe"
+				);
+				await expect(
+					transcribeVideoWorkflow({
+						videoId: videoRow.id,
+						userId: videoRow.ownerId,
+						aiGenerationEnabled: false,
+					}),
+				).rejects.toThrow("outcome unknown");
+				expect(
+					standIn.requests
+						.filter((request) => request.path.startsWith("/v2/"))
+						.map(({ method, path }) => [method, path]),
+				).toEqual([["POST", "/v2/upload"]]);
+			} finally {
+				await standIn.close();
+			}
+		},
+	);
+
+	it("selected HTTP boundary lets only one racing workflow spend the upload budget", async () => {
+		state.speakerLabels = true;
+		const standIn = await providerStandIn("pause-upload");
+		try {
+			const { transcribeVideoWorkflow } = await import(
+				"@/workflows/transcribe"
+			);
+			const payload = {
+				videoId: videoRow.id,
+				userId: videoRow.ownerId,
+				aiGenerationEnabled: false,
+			};
+			const first = transcribeVideoWorkflow(payload);
+			await vi.waitFor(() =>
+				expect(
+					standIn.requests.filter(({ path }) => path === "/v2/upload"),
+				).toHaveLength(1),
+			);
+			await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
+				"outcome unknown",
+			);
+			standIn.releaseUpload();
+			await first;
+			expect(
+				standIn.requests
+					.filter(({ method }) => method === "POST")
+					.map(({ path }) => path),
+			).toEqual(["/v2/upload", "/v2/transcript"]);
+		} finally {
+			standIn.releaseUpload();
+			await standIn.close();
+		}
+	});
+
+	it.each([
+		"reject:/v2/upload",
+		"reject:/v2/transcript",
+		"disconnect:/v2/upload",
+		"disconnect:/v2/transcript",
+		"disconnect:/v2/transcript/labeled-job",
+	])(
+		"selected HTTP boundary preserves %s across an actual process restart",
+		async (failure) => {
+			state.speakerLabels = true;
+			const standIn = await providerStandIn(failure);
+			try {
+				const { transcribeVideoWorkflow } = await import(
+					"@/workflows/transcribe"
+				);
+				await expect(
+					transcribeVideoWorkflow({
+						videoId: videoRow.id,
+						userId: videoRow.ownerId,
+						aiGenerationEnabled: false,
+					}),
+				).rejects.toThrow();
+				expect(
+					standIn.requests.filter(({ path }) => path === "/v2/upload"),
+				).toHaveLength(1);
+				expect(
+					standIn.requests.filter(({ path }) => path === "/v2/transcript"),
+				).toHaveLength(failure.endsWith("/v2/upload") ? 0 : 1);
+				const directory = mkdtempSync(join(tmpdir(), "speaker-http-restart-"));
+				const file = join(directory, "state.json");
+				writeFileSync(file, JSON.stringify(state.claim));
+				const output = execFileSync(
+					process.execPath,
+					[
+						fileURLToPath(
+							new URL(
+								"../../../../node_modules/vitest/vitest.mjs",
+								import.meta.url,
+							),
+						),
+						"run",
+						...(process.env.CAP_SYNTHETIC_TEST_CONFIG
+							? ["--config", process.env.CAP_SYNTHETIC_TEST_CONFIG]
+							: []),
+						"__tests__/integration/transcribe-workflow.test.ts",
+						"--maxWorkers=1",
+						"--no-file-parallelism",
+						"-t",
+						"selected HTTP restart reader",
+					],
+					{
+						cwd: fileURLToPath(new URL("../../", import.meta.url)),
+						timeout: 25_000,
+						maxBuffer: 1024 * 1024,
+						env: {
+							NODE_ENV: "test",
+							PATH: process.env.PATH,
+							HOME: process.env.HOME,
+							TMPDIR: tmpdir(),
+							NODE_OPTIONS: "--max-old-space-size=768",
+							CAP_SYNTHETIC_RESTART_FILE: file,
+							CAP_SYNTHETIC_TEST_CONFIG: process.env.CAP_SYNTHETIC_TEST_CONFIG,
+						},
+					},
+				);
+				writeFileSync(join(directory, "reader.txt"), output);
+				expect(output.toString()).toContain(
+					"restart reader verified: zero POST",
+				);
+				console.info("Process restart evidence", directory);
+			} finally {
+				await standIn.close();
+			}
+		},
+	);
+
+	it.skipIf(!process.env.CAP_SYNTHETIC_RESTART_FILE)(
+		"selected HTTP restart reader",
+		async () => {
+			const file = process.env.CAP_SYNTHETIC_RESTART_FILE;
+			if (!file) throw new Error("Missing synthetic restart snapshot");
+			state.claim = JSON.parse(readFileSync(file, "utf8"));
+			const saved = structuredClone(state.claim);
+			const standIn = await providerStandIn();
+			try {
+				const { transcribeVideoWorkflow } = await import(
+					"@/workflows/transcribe"
+				);
+				const pending = transcribeVideoWorkflow({
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: false,
+				});
+				if (saved?.state === "accepted")
+					await expect(pending).resolves.toMatchObject({ success: true });
+				else await expect(pending).rejects.toThrow("outcome unknown");
+				expect(
+					standIn.requests.map(({ method, path }) => [method, path]),
+				).toEqual(
+					saved?.state === "accepted"
+						? [["GET", "/v2/transcript/labeled-job"]]
+						: [],
+				);
+				expect(state.claim).toEqual(saved);
+				console.info("restart reader verified: zero POST");
+			} finally {
+				await standIn.close();
+			}
+		},
+	);
+
+	it.each([
+		Buffer.alloc(8),
+		Buffer.from("#EXTM3U\nhttps://example.com/private.mp3"),
+	])(
+		"selected extraction verifier rejects non-MP3 bytes without fetching them (%j)",
+		async (buffer) => {
+			const { verifyExtractedMp3 } = await vi.importActual<
+				typeof import("@/lib/audio-extract")
+			>("@/lib/audio-extract");
+			await expect(verifyExtractedMp3(buffer)).rejects.toThrow(
+				"Invalid extracted MP3",
+			);
+			expect(fetch).not.toHaveBeenCalled();
+		},
+	);
 
 	it("polls AssemblyAI every 1000 ms", async () => {
 		const { transcribeVideoWorkflow } = await import("@/workflows/transcribe");
@@ -735,7 +1250,7 @@ describe("transcribeVideoWorkflow", () => {
 			"@/lib/assemblyai"
 		);
 		expect(mocks.submit).toHaveBeenCalledExactlyOnceWith({
-			audio: expect.any(Buffer),
+			audio_url: "opaque-handle",
 			...getAssemblyAITranscriptionOptions("auto"),
 			disfluencies: true,
 			speaker_labels: true,
