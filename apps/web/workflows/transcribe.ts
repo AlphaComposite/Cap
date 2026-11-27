@@ -29,7 +29,11 @@ import {
 	ENHANCED_AUDIO_EXTENSION,
 	enhanceAudioFromUrl,
 } from "@/lib/audio-enhance";
-import { checkHasAudioTrack, extractAudioFromUrl } from "@/lib/audio-extract";
+import {
+	checkHasAudioTrack,
+	extractAudioFromUrl,
+	verifyExtractedMp3,
+} from "@/lib/audio-extract";
 import {
 	createEditTranscript,
 	editTranscriptWordsToCaptionVtt,
@@ -53,12 +57,14 @@ import type { RelocationState } from "@/lib/source-relocation";
 import {
 	assertNoSpeakerLabelClaim,
 	assertSpeakerLabelSource,
+	bindSpeakerLabelAudio,
 	hasLegacyTranscriptAdmission,
 	isSpeakerLabelCanary,
 	loadSpeakerLabelClaim,
 	loadSpeakerLabelSource,
 	persistSpeakerLabelId,
 	pollSpeakerLabelTranscript,
+	reserveSpeakerLabelHttpSubmit,
 	reserveSpeakerLabelRecording,
 	reserveSpeakerLabelSubmit,
 	type SpeakerLabelClaim,
@@ -216,6 +222,8 @@ export async function transcribeVideoWorkflow(
 					tempAudioFilename,
 					speakerLabelSource?.sourceKey,
 					videoData.speakerLabels,
+					speakerLabelSource,
+					videoData.speakerLabelReservationToken,
 				);
 			}
 
@@ -734,6 +742,8 @@ async function extractAudio(
 	tempAudioFilename = "audio-temp.mp3",
 	sourceKeyOverride?: string,
 	strictSourceKey = false,
+	speakerLabelSource?: SpeakerLabelSource,
+	reservationToken?: string,
 ): Promise<string | null> {
 	"use step";
 
@@ -792,6 +802,14 @@ async function extractAudio(
 		audioBuffer = await audioBufferFromSignedUrl(videoUrl, videoId);
 	}
 	if (!audioBuffer) return null;
+	if (speakerLabelSource) {
+		await bindSpeakerLabelAudio(
+			speakerLabelSource,
+			reservationToken,
+			audioBuffer,
+			await verifyExtractedMp3(audioBuffer),
+		);
+	}
 
 	console.log(
 		`[transcribe] Extracted audio for ${videoId}: ${audioBuffer.length} bytes`,
@@ -1064,31 +1082,109 @@ export async function submitSpeakerLabeledTranscription(
 	if (!audioResponse.ok) {
 		throw new Error("Speaker-labeled transcription audio is unavailable");
 	}
-	const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
-	const client = new AssemblyAI({
-		apiKey: serverEnv().ASSEMBLY_API_KEY as string,
-	});
+	const uploadBody = new Uint8Array(await audioResponse.arrayBuffer());
 	const reserved = await reserveSpeakerLabelSubmit(
 		source,
 		language,
 		reservationToken,
+		uploadBody,
 	);
 	if (!reserved.submit && reserved.claim.transcriptId) {
 		return reserved.claim.transcriptId;
 	}
+	let stage = "upload";
 	try {
-		const transcript = await client.transcripts.submit({
-			audio: audioBuffer,
+		const uploadRemainingMs = reserved.claim.deadlineMs - Date.now();
+		if (uploadRemainingMs <= 0)
+			throw new Error("Speaker-label deadline exhausted");
+		const uploadResponse = await fetch("https://api.assemblyai.com/v2/upload", {
+			method: "POST",
+			redirect: "manual",
+			headers: {
+				Authorization: serverEnv().ASSEMBLY_API_KEY as string,
+				"Content-Type": "application/octet-stream",
+			},
+			body: uploadBody,
+			// Allow 15s of setup plus transfer at 128 bytes/ms (~1 Mbit/s).
+			signal: AbortSignal.timeout(
+				Math.min(
+					uploadRemainingMs,
+					15_000 + Math.ceil(uploadBody.byteLength / 128),
+				),
+			),
+		});
+		console.info("[speaker-label] HTTP response", {
+			stage,
+			status: uploadResponse.status,
+		});
+		stage = "upload-response";
+		if (!uploadResponse.ok) {
+			await uploadResponse.body?.cancel();
+			throw new Error("Upload rejected");
+		}
+		const upload: unknown = await uploadResponse.json();
+		if (
+			!upload ||
+			typeof upload !== "object" ||
+			!("upload_url" in upload) ||
+			typeof upload.upload_url !== "string"
+		) {
+			throw new Error("Invalid upload response");
+		}
+		stage = "submit-reservation";
+		const claim = await reserveSpeakerLabelHttpSubmit(
+			reserved.claim,
+			upload.upload_url,
+		);
+		const options = {
+			audio_url: upload.upload_url,
 			...getAssemblyAITranscriptionOptions(language),
 			disfluencies: true,
 			speaker_labels: true,
+		};
+		stage = "submit";
+		const body = JSON.stringify(options);
+		const submitRemainingMs = claim.deadlineMs - Date.now();
+		if (submitRemainingMs <= 0)
+			throw new Error("Speaker-label deadline exhausted");
+		const submitResponse = await fetch(
+			"https://api.assemblyai.com/v2/transcript",
+			{
+				method: "POST",
+				redirect: "manual",
+				headers: {
+					Authorization: serverEnv().ASSEMBLY_API_KEY as string,
+					"Content-Type": "application/json",
+				},
+				body,
+				signal: AbortSignal.timeout(Math.min(15_000, submitRemainingMs)),
+			},
+		);
+		console.info("[speaker-label] HTTP response", {
+			stage,
+			status: submitResponse.status,
 		});
-		if (typeof transcript.id !== "string" || !transcript.id) {
+		stage = "submit-response";
+		if (!submitResponse.ok) {
+			await submitResponse.body?.cancel();
+			throw new Error("Submit rejected");
+		}
+		const transcript: unknown = await submitResponse.json();
+		if (
+			!transcript ||
+			typeof transcript !== "object" ||
+			!("id" in transcript) ||
+			typeof transcript.id !== "string"
+		) {
 			throw new Error("Missing transcript ID");
 		}
-		await persistSpeakerLabelId(reserved.claim, transcript.id);
+		stage = "acceptance";
+		await persistSpeakerLabelId(claim, transcript.id);
 		return transcript.id;
 	} catch {
+		console.warn("[speaker-label] HTTP outcome requires reconciliation", {
+			stage,
+		});
 		throw new FatalError(
 			"Speaker-labeled submission outcome unknown; do not resubmit",
 		);
