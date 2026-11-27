@@ -1082,19 +1082,18 @@ export async function submitSpeakerLabeledTranscription(
 	if (!audioResponse.ok) {
 		throw new Error("Speaker-labeled transcription audio is unavailable");
 	}
-	const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+	const uploadBody = new Uint8Array(await audioResponse.arrayBuffer());
 	const reserved = await reserveSpeakerLabelSubmit(
 		source,
 		language,
 		reservationToken,
-		audioBuffer,
+		uploadBody,
 	);
 	if (!reserved.submit && reserved.claim.transcriptId) {
 		return reserved.claim.transcriptId;
 	}
 	let stage = "upload";
 	try {
-		const uploadBody = new Uint8Array(audioBuffer);
 		const uploadRemainingMs = reserved.claim.deadlineMs - Date.now();
 		if (uploadRemainingMs <= 0)
 			throw new Error("Speaker-label deadline exhausted");
@@ -1106,7 +1105,13 @@ export async function submitSpeakerLabeledTranscription(
 				"Content-Type": "application/octet-stream",
 			},
 			body: uploadBody,
-			signal: AbortSignal.timeout(Math.min(15_000, uploadRemainingMs)),
+			// Allow 15s of setup plus transfer at 128 bytes/ms (~1 Mbit/s).
+			signal: AbortSignal.timeout(
+				Math.min(
+					uploadRemainingMs,
+					15_000 + Math.ceil(uploadBody.byteLength / 128),
+				),
+			),
 		});
 		console.info("[speaker-label] HTTP response", {
 			stage,

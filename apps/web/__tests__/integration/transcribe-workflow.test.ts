@@ -709,6 +709,7 @@ describe("transcribeVideoWorkflow", () => {
 	it("selected HTTP boundary commits distinct upload and submit budgets and never fetches the opaque handle", async () => {
 		state.speakerLabels = true;
 		const standIn = await providerStandIn();
+		const timeout = vi.spyOn(AbortSignal, "timeout");
 		try {
 			const { transcribeVideoWorkflow } = await import(
 				"@/workflows/transcribe"
@@ -718,6 +719,12 @@ describe("transcribeVideoWorkflow", () => {
 				userId: videoRow.ownerId,
 				aiGenerationEnabled: false,
 			});
+			const { SPEAKER_LABEL_DEADLINE_MS } = await import(
+				"@/lib/speaker-label-claim"
+			);
+			const uploadMs = timeout.mock.calls[0]?.[0];
+			expect(uploadMs).toBeGreaterThan(15_000);
+			expect(uploadMs).toBeLessThanOrEqual(SPEAKER_LABEL_DEADLINE_MS);
 			const provider = standIn.requests.filter((request) =>
 				request.path.startsWith("/v2/"),
 			);
@@ -776,6 +783,7 @@ describe("transcribeVideoWorkflow", () => {
 			).rejects.toThrow("deadline exhausted");
 			expect(standIn.requests).toHaveLength(count + 1);
 		} finally {
+			timeout.mockRestore();
 			await standIn.close();
 		}
 	});
