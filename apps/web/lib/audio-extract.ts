@@ -48,6 +48,59 @@ export interface AudioExtractionResult {
 	cleanup: () => Promise<void>;
 }
 
+export async function verifyExtractedMp3(buffer: Uint8Array): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const proc = spawn(
+			/*turbopackIgnore: true*/ getFfmpegPath(),
+			[
+				"-v",
+				"error",
+				"-xerror",
+				"-protocol_whitelist",
+				"pipe",
+				"-f",
+				"mp3",
+				"-threads",
+				"1",
+				"-i",
+				"pipe:0",
+				"-map",
+				"0:a:0",
+				"-f",
+				"null",
+				"-",
+				"-progress",
+				"pipe:1",
+			],
+			{ stdio: ["pipe", "pipe", "ignore"], timeout: 30_000 },
+		);
+		let durationSeconds = 0;
+		let progress = "";
+		proc.stdout.on("data", (chunk: Buffer) => {
+			progress += chunk.toString();
+			const lines = progress.split("\n");
+			progress = lines.pop() ?? "";
+			for (const line of lines) {
+				if (line.startsWith("out_time_us=")) {
+					const value = Number(line.slice("out_time_us=".length)) / 1_000_000;
+					if (Number.isFinite(value))
+						durationSeconds = Math.max(durationSeconds, value);
+				}
+			}
+		});
+		proc.on("error", () => reject(new Error("Cannot verify extracted MP3")));
+		proc.stdin.on("error", () => {});
+		proc.on("close", (code) => {
+			if (code === 0 && durationSeconds > 0) resolve(durationSeconds);
+			else
+				reject(
+					new Error("Invalid extracted MP3 or verification deadline exhausted"),
+				);
+		});
+		proc.stdin.end(buffer);
+	});
+}
+
 export async function extractAudioFromUrl(
 	videoUrl: string,
 ): Promise<AudioExtractionResult> {

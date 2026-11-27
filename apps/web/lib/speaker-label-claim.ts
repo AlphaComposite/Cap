@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { db } from "@cap/database";
@@ -20,10 +20,29 @@ const bindingSchema = z.object({
 	sourceKey: z.string().min(1),
 	sourceSha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
+const audioSchema = bindingSchema.extend({
+	sha256: z.string().regex(/^[a-f0-9]{64}$/),
+	bytes: z.number().int().positive(),
+	durationSeconds: z.number().finite().positive(),
+});
+const opaqueHandle = z
+	.string()
+	.max(8192)
+	.refine((value) => value.trim().length > 0);
+const transcriptIdSchema = opaqueHandle.refine(
+	(value) => value !== "." && value !== "..",
+);
+const httpSchema = z.object({
+	audio: audioSchema,
+	uploadSpent: z.literal(true),
+	uploadHandle: opaqueHandle.optional(),
+	submitSpent: z.literal(true).optional(),
+});
 const submitSchema = bindingSchema.extend({
 	token: z.string().uuid(),
 	language: z.string().min(1),
 	deadlineMs: z.number().finite().positive(),
+	http: httpSchema.optional(),
 });
 const claimSchema = z.discriminatedUnion("state", [
 	submitSchema.extend({
@@ -32,7 +51,7 @@ const claimSchema = z.discriminatedUnion("state", [
 	}),
 	submitSchema.extend({
 		state: z.literal("accepted"),
-		transcriptId: z.string().min(1),
+		transcriptId: transcriptIdSchema,
 	}),
 ]);
 const reservationSchema = bindingSchema
@@ -42,6 +61,7 @@ const reservationSchema = bindingSchema
 		token: z.string().uuid(),
 		language: z.string().min(1),
 		transcriptId: z.undefined(),
+		audio: audioSchema.optional(),
 	});
 const durableSchema = z.union([claimSchema, reservationSchema]);
 export type SpeakerLabelSource = z.infer<typeof bindingSchema>;
@@ -301,6 +321,7 @@ export async function reserveSpeakerLabelSubmit(
 	source: SpeakerLabelSource,
 	language: AiGenerationLanguage,
 	reservationToken?: string,
+	audioBuffer?: Uint8Array,
 ): Promise<{ submit: boolean; claim: SpeakerLabelClaim }> {
 	return db().transaction(async (tx) => {
 		const video = await lockRecording(source.videoId, tx);
@@ -340,12 +361,23 @@ export async function reserveSpeakerLabelSubmit(
 				"Speaker-label reservation changed; reconciliation required",
 			);
 		}
+		if (
+			!existing.audio ||
+			!sameSource(source, existing.audio) ||
+			!audioBuffer ||
+			existing.audio.bytes !== audioBuffer.byteLength ||
+			existing.audio.sha256 !==
+				createHash("sha256").update(audioBuffer).digest("hex")
+		) {
+			throw new FatalError("Speaker-label verified extraction bytes mismatch");
+		}
 		const claim: SpeakerLabelClaim = {
 			...source,
 			state: "submitting",
 			language,
 			token: existing.token,
 			deadlineMs: Date.now() + SPEAKER_LABEL_DEADLINE_MS,
+			http: { audio: existing.audio, uploadSpent: true },
 		};
 		requireOneWrite(
 			await tx.execute(sql`
@@ -357,11 +389,98 @@ export async function reserveSpeakerLabelSubmit(
 	});
 }
 
+export async function bindSpeakerLabelAudio(
+	source: SpeakerLabelSource,
+	token: string | undefined,
+	buffer: Uint8Array,
+	durationSeconds: number,
+) {
+	const audio = audioSchema.parse({
+		...source,
+		sha256: createHash("sha256").update(buffer).digest("hex"),
+		bytes: buffer.byteLength,
+		durationSeconds,
+	});
+	await db().transaction(async (tx) => {
+		await lockRecording(source.videoId, tx);
+		const current = await loadSpeakerLabelSource(
+			source.videoId,
+			source.ownerId,
+			tx,
+		);
+		const claim = await loadSpeakerLabelClaim(source.videoId, tx);
+		if (
+			!claim ||
+			claim.state !== "reserved" ||
+			claim.token !== token ||
+			claim.ownerId !== source.ownerId ||
+			claim.bucket !== source.bucket ||
+			claim.storageIntegrationId !== source.storageIntegrationId ||
+			!sameSource(source, current) ||
+			(claim.audio && JSON.stringify(claim.audio) !== JSON.stringify(audio))
+		) {
+			throw new FatalError(
+				"Speaker-label extraction binding changed; reconciliation required",
+			);
+		}
+		requireOneWrite(
+			await tx.execute(sql`
+			UPDATE outbox SET payload = ${JSON.stringify({ ...claim, audio })}
+			WHERE videoId = ${source.videoId} AND job = ${SPEAKER_LABEL_JOB}
+		`),
+		);
+	});
+}
+
+export async function reserveSpeakerLabelHttpSubmit(
+	claim: SpeakerLabelClaim,
+	uploadHandle: string,
+): Promise<SpeakerLabelClaim> {
+	if (!opaqueHandle.safeParse(uploadHandle).success) {
+		throw new FatalError("Speaker-label upload response invalid");
+	}
+	return db().transaction(async (tx) => {
+		await lockRecording(claim.videoId, tx);
+		const source = await loadSpeakerLabelSource(
+			claim.videoId,
+			claim.ownerId,
+			tx,
+		);
+		const current = await loadSpeakerLabelClaim(claim.videoId, tx);
+		if (
+			!current ||
+			current.state !== "submitting" ||
+			JSON.stringify(current) !== JSON.stringify(claimSchema.parse(claim)) ||
+			!sameSource(current, source) ||
+			!current.http ||
+			current.http.submitSpent ||
+			current.http.uploadHandle ||
+			Date.now() >= current.deadlineMs
+		) {
+			throw new FatalError(
+				"Speaker-label HTTP budget unavailable; do not resubmit",
+			);
+		}
+		const next: SpeakerLabelClaim = {
+			...current,
+			http: { ...current.http, uploadHandle, submitSpent: true },
+		};
+		requireOneWrite(
+			await tx.execute(sql`
+			UPDATE outbox SET payload = ${JSON.stringify(next)}
+			WHERE videoId = ${claim.videoId} AND job = ${SPEAKER_LABEL_JOB}
+		`),
+		);
+		return next;
+	});
+}
+
 export async function persistSpeakerLabelId(
 	claim: SpeakerLabelClaim,
 	transcriptId: string,
 ): Promise<void> {
-	if (!transcriptId) throw new FatalError("Speaker-label accepted ID required");
+	if (!transcriptIdSchema.safeParse(transcriptId).success)
+		throw new FatalError("Speaker-label accepted ID required");
 	await db().transaction(async (tx) => {
 		await lockRecording(claim.videoId, tx);
 		const current = await loadSpeakerLabelClaim(claim.videoId, tx);
@@ -369,7 +488,9 @@ export async function persistSpeakerLabelId(
 			!current ||
 			current.state !== "submitting" ||
 			current.token !== claim.token ||
-			current.transcriptId
+			current.transcriptId ||
+			!current.http?.submitSpent ||
+			JSON.stringify(current) !== JSON.stringify(claimSchema.parse(claim))
 		) {
 			throw new FatalError(
 				"Speaker-label claim changed; reconciliation required",
@@ -433,7 +554,10 @@ const providerResult = z.object({
 });
 
 export async function pollSpeakerLabelTranscript(claim: SpeakerLabelClaim) {
-	if (claim.state !== "accepted" || !claim.transcriptId) {
+	if (
+		claim.state !== "accepted" ||
+		!transcriptIdSchema.safeParse(claim.transcriptId).success
+	) {
 		throw new FatalError(
 			"Speaker-label unknown outcome requires reconciliation",
 		);
@@ -442,6 +566,8 @@ export async function pollSpeakerLabelTranscript(claim: SpeakerLabelClaim) {
 		const response = await fetch(
 			`https://api.assemblyai.com/v2/transcript/${encodeURIComponent(claim.transcriptId)}`,
 			{
+				method: "GET",
+				redirect: "manual",
 				headers: { Authorization: serverEnv().ASSEMBLY_API_KEY as string },
 				signal: AbortSignal.timeout(
 					Math.max(1, Math.min(15_000, claim.deadlineMs - Date.now())),
@@ -472,6 +598,7 @@ export async function pollSpeakerLabelTranscript(claim: SpeakerLabelClaim) {
 			waitMs = Number.isFinite(delay) ? Math.max(waitMs, delay) : 30_000;
 			await response.body?.cancel();
 		} else {
+			await response.body?.cancel();
 			throw new FatalError(
 				"Speaker-label polling rejected; reconcile known ID",
 			);
