@@ -75,6 +75,7 @@ const state = vi.hoisted(() => ({
 	uploadPhase: "complete" as string | null,
 	queries: [] as string[],
 	transaction: Promise.resolve() as Promise<unknown>,
+	afterCommit: null as null | (() => void),
 }));
 
 vi.mock("@cap/env", () => ({
@@ -169,7 +170,11 @@ vi.mock("@cap/database", () => ({
 		},
 		transaction: async (run: (tx: unknown) => Promise<unknown>) => {
 			const { db } = await import("@cap/database");
-			const pending = state.transaction.then(() => run(db()));
+			const pending = state.transaction.then(async () => {
+				const result = await run(db());
+				state.afterCommit?.();
+				return result;
+			});
 			state.transaction = pending.catch(() => {});
 			return pending;
 		},
@@ -614,6 +619,7 @@ describe("transcribeVideoWorkflow", () => {
 		state.uploadPhase = "complete";
 		state.queries = [];
 		state.transaction = Promise.resolve();
+		state.afterCommit = null;
 		mocks.waitUntilReady.mockReset();
 		mocks.probeVideo.mockReset();
 		mocks.probeVideo.mockResolvedValue({ audioCodec: "aac" });
@@ -840,6 +846,84 @@ describe("transcribeVideoWorkflow", () => {
 						.map(({ method, path }) => [method, path]),
 				).toEqual([["POST", "/v2/upload"]]);
 			} finally {
+				await standIn.close();
+			}
+		},
+	);
+
+	it.each([
+		["upload", 0],
+		["upload", 1],
+		["submit", 0],
+		["submit", 1],
+	] as const)(
+		"selected HTTP boundary initiates no %s fetch at deadline + %i ms after commit",
+		async (stage, offset) => {
+			state.speakerLabels = true;
+			const standIn = await providerStandIn();
+			const clock = vi.spyOn(Date, "now");
+			let committed: typeof state.claim = null;
+			state.afterCommit = () => {
+				const http = state.claim?.http;
+				if (
+					state.claim?.state !== "submitting" ||
+					!http ||
+					typeof http !== "object" ||
+					!("uploadSpent" in http) ||
+					http.uploadSpent !== true ||
+					"submitSpent" in http !== (stage === "submit")
+				) {
+					return;
+				}
+				committed = structuredClone(state.claim);
+				state.afterCommit = null;
+				clock.mockReturnValue(Number(committed?.deadlineMs) + offset);
+			};
+			try {
+				const { transcribeVideoWorkflow } = await import(
+					"@/workflows/transcribe"
+				);
+				const payload = {
+					videoId: videoRow.id,
+					userId: videoRow.ownerId,
+					aiGenerationEnabled: false,
+				};
+				const outcome = await transcribeVideoWorkflow(payload).then(
+					() => "resolved",
+					(error: Error) => error.message,
+				);
+				expect(committed).not.toBeNull();
+				const initiated = vi
+					.mocked(fetch)
+					.mock.calls.filter(([, init]) => init?.method === "POST")
+					.map(([input]) => String(input));
+				const expected = stage === "upload" ? [] : ["/v2/upload"];
+				console.info(
+					"Post-commit deadline evidence",
+					JSON.stringify({ stage, offset, initiated, committed }),
+				);
+				expect
+					.soft(initiated)
+					.toEqual(expected.map((path) => `https://api.assemblyai.com${path}`));
+				expect
+					.soft(
+						standIn.requests
+							.filter(({ method }) => method === "POST")
+							.map(({ path }) => path),
+					)
+					.toEqual(expected);
+				expect.soft(outcome).toContain("outcome unknown");
+				expect.soft(state.claim).toEqual(committed);
+				clock.mockRestore();
+				const calls = vi.mocked(fetch).mock.calls.length;
+				await expect(transcribeVideoWorkflow(payload)).rejects.toThrow(
+					"outcome unknown",
+				);
+				expect(vi.mocked(fetch).mock.calls).toHaveLength(calls);
+				expect(state.claim).toEqual(committed);
+			} finally {
+				state.afterCommit = null;
+				clock.mockRestore();
 				await standIn.close();
 			}
 		},

@@ -1094,6 +1094,10 @@ export async function submitSpeakerLabeledTranscription(
 	}
 	let stage = "upload";
 	try {
+		const uploadBody = new Uint8Array(audioBuffer);
+		const uploadRemainingMs = reserved.claim.deadlineMs - Date.now();
+		if (uploadRemainingMs <= 0)
+			throw new Error("Speaker-label deadline exhausted");
 		const uploadResponse = await fetch("https://api.assemblyai.com/v2/upload", {
 			method: "POST",
 			redirect: "manual",
@@ -1101,10 +1105,8 @@ export async function submitSpeakerLabeledTranscription(
 				Authorization: serverEnv().ASSEMBLY_API_KEY as string,
 				"Content-Type": "application/octet-stream",
 			},
-			body: new Uint8Array(audioBuffer),
-			signal: AbortSignal.timeout(
-				Math.max(1, Math.min(15_000, reserved.claim.deadlineMs - Date.now())),
-			),
+			body: uploadBody,
+			signal: AbortSignal.timeout(Math.min(15_000, uploadRemainingMs)),
 		});
 		console.info("[speaker-label] HTTP response", {
 			stage,
@@ -1136,6 +1138,10 @@ export async function submitSpeakerLabeledTranscription(
 			speaker_labels: true,
 		};
 		stage = "submit";
+		const body = JSON.stringify(options);
+		const submitRemainingMs = claim.deadlineMs - Date.now();
+		if (submitRemainingMs <= 0)
+			throw new Error("Speaker-label deadline exhausted");
 		const submitResponse = await fetch(
 			"https://api.assemblyai.com/v2/transcript",
 			{
@@ -1145,10 +1151,8 @@ export async function submitSpeakerLabeledTranscription(
 					Authorization: serverEnv().ASSEMBLY_API_KEY as string,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify(options),
-				signal: AbortSignal.timeout(
-					Math.max(1, Math.min(15_000, claim.deadlineMs - Date.now())),
-				),
+				body,
+				signal: AbortSignal.timeout(Math.min(15_000, submitRemainingMs)),
 			},
 		);
 		console.info("[speaker-label] HTTP response", {
